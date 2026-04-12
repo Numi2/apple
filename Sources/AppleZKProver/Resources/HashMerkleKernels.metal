@@ -6,12 +6,14 @@ struct SHA3BatchParams {
     uint inputStride;
     uint inputLength;
     uint outputStride;
+    uint simdgroupsPerThreadgroup;
 };
 
 struct KeccakPermutationParams {
     uint count;
     uint inputStride;
     uint outputStride;
+    uint simdgroupsPerThreadgroup;
 };
 
 struct MerkleParentParams {
@@ -325,9 +327,11 @@ kernel void keccak_f1600_permutation_simdgroup(
     device ulong *outputs [[buffer(1)]],
     constant KeccakPermutationParams &params [[buffer(2)]],
     uint lane [[thread_index_in_simdgroup]],
+    uint simdgroupIndex [[simdgroup_index_in_threadgroup]],
     uint simdWidth [[threads_per_simdgroup]],
-    uint stateIndex [[threadgroup_position_in_grid]])
+    uint threadgroupIndex [[threadgroup_position_in_grid]])
 {
+    const uint stateIndex = threadgroupIndex * params.simdgroupsPerThreadgroup + simdgroupIndex;
     if (stateIndex >= params.count || simdWidth < 25u) {
         return;
     }
@@ -413,9 +417,11 @@ kernel void sha3_256_oneblock_simdgroup_specialized(
     device uchar *outputs [[buffer(1)]],
     constant SHA3BatchParams &params [[buffer(2)]],
     uint lane [[thread_index_in_simdgroup]],
+    uint simdgroupIndex [[simdgroup_index_in_threadgroup]],
     uint simdWidth [[threads_per_simdgroup]],
-    uint gid [[threadgroup_position_in_grid]])
+    uint threadgroupIndex [[threadgroup_position_in_grid]])
 {
+    const uint gid = threadgroupIndex * params.simdgroupsPerThreadgroup + simdgroupIndex;
     if (gid >= params.count || simdWidth < 25u) {
         return;
     }
@@ -432,9 +438,11 @@ kernel void keccak_256_oneblock_simdgroup_specialized(
     device uchar *outputs [[buffer(1)]],
     constant SHA3BatchParams &params [[buffer(2)]],
     uint lane [[thread_index_in_simdgroup]],
+    uint simdgroupIndex [[simdgroup_index_in_threadgroup]],
     uint simdWidth [[threads_per_simdgroup]],
-    uint gid [[threadgroup_position_in_grid]])
+    uint threadgroupIndex [[threadgroup_position_in_grid]])
 {
+    const uint gid = threadgroupIndex * params.simdgroupsPerThreadgroup + simdgroupIndex;
     if (gid >= params.count || simdWidth < 25u) {
         return;
     }

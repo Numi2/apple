@@ -176,6 +176,18 @@ public final class MetalContext: @unchecked Sendable {
         return MTLSize(width: rounded, height: 1, depth: 1)
     }
 
+    public func maxSIMDGroupsPerThreadgroup(for pipeline: MTLComputePipelineState) -> Int {
+        let simdWidth = max(1, pipeline.threadExecutionWidth)
+        return max(1, pipeline.maxTotalThreadsPerThreadgroup / simdWidth)
+    }
+
+    public func preferredSIMDGroupsPerThreadgroup(
+        for pipeline: MTLComputePipelineState,
+        limit: Int = 2
+    ) -> Int {
+        max(1, min(limit, maxSIMDGroupsPerThreadgroup(for: pipeline)))
+    }
+
     public func dispatch1D(
         _ encoder: MTLComputeCommandEncoder,
         pipeline: MTLComputePipelineState,
@@ -194,6 +206,24 @@ public final class MetalContext: @unchecked Sendable {
                 threadsPerThreadgroup: threadsPerThreadgroup
             )
         }
+    }
+
+    public func dispatchSIMDGroups1D(
+        _ encoder: MTLComputeCommandEncoder,
+        pipeline: MTLComputePipelineState,
+        simdgroupCount: Int,
+        simdgroupsPerThreadgroup: Int
+    ) {
+        let simdWidth = max(1, pipeline.threadExecutionWidth)
+        let groupsPerThreadgroup = max(1, min(
+            simdgroupsPerThreadgroup,
+            max(1, pipeline.maxTotalThreadsPerThreadgroup / simdWidth)
+        ))
+        let threadgroupCount = (simdgroupCount + groupsPerThreadgroup - 1) / groupsPerThreadgroup
+        encoder.dispatchThreadgroups(
+            MTLSize(width: threadgroupCount, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: simdWidth * groupsPerThreadgroup, height: 1, depth: 1)
+        )
     }
 
     private func makeFunction(for spec: KernelSpec) throws -> MTLFunction {

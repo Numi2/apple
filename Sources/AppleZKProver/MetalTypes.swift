@@ -20,6 +20,7 @@ public enum AppleZKProverError: Error, Equatable, LocalizedError {
     case correctnessValidationFailed(String)
     case commandExecutionFailed(String)
     case unavailableOnThisPlatform
+    case invalidKernelConfiguration(String)
 
     public var errorDescription: String? {
         switch self {
@@ -61,6 +62,8 @@ public enum AppleZKProverError: Error, Equatable, LocalizedError {
             return "Metal command execution failed: \(message)"
         case .unavailableOnThisPlatform:
             return "Metal acceleration is unavailable on this platform."
+        case let .invalidKernelConfiguration(message):
+            return "Invalid kernel configuration: \(message)"
         }
     }
 }

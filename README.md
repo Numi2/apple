@@ -80,7 +80,7 @@ swift test -c release -Xswiftc -Osize
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --iterations 10 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash keccak-256 --json
-swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash-kernel simdgroup --json
+swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --merkle-subtree-leaves 64 --json
 swift run zkmetal-bench --suite --leaves 16384 --iterations 5 --json
 ```
@@ -99,11 +99,11 @@ Reusable plans retain their Metal buffers by design. Call `clearReusableBuffers(
 
 CPU Merkle oracle entry points and one-block hash shortcuts throw `AppleZKProverError` for malformed public layout parameters. Internal invariants may still use Swift preconditions, but caller-controlled cryptographic input validation is typed.
 
-Benchmark JSON includes the selected Merkle subtree leaf count, upper-fusion node limit, and device threadgroup memory size so results can be compared across Apple GPU families.
+Benchmark JSON includes the selected Merkle subtree leaf count, upper-fusion node limit, fixed-hash simdgroup packing when applicable, and device threadgroup memory size so results can be compared across Apple GPU families.
 
 `--hash keccak-256` changes only the standalone batch-hash benchmark. Merkle commitments remain SHA3-256 in this stage so commitment semantics do not change silently. A Keccak-domain Merkle tree should be added as a separate, domain-tagged API when the protocol layer needs it.
 
-`--hash-kernel simdgroup` selects the Apple7+ simdgroup fixed-rate hash path for the standalone hash benchmark only. It does not change Merkle commitment kernels or planner eligibility.
+`--hash-kernel simdgroup` selects the Apple7+ simdgroup fixed-rate hash path for the standalone hash benchmark only. `--hash-simdgroups-per-threadgroup N` controls how many independent Keccak states are packed into each threadgroup for that path. It does not change Merkle commitment kernels or planner eligibility.
 
 `MetalProofPlanner` can run a correctness-gated Merkle short race, persist every Merkle candidate in SQLite, and construct the current GPU-resident M31 sum-check chunk plan. See `docs/PLANNER.md` for the current planner contract and eligibility rules.
 
@@ -121,4 +121,4 @@ The next step is not another protocol wrapper. The next step is a better kernel 
 - binary archive caching for pipeline creation,
 - streaming codeword / matrix kernels that keep the exact same GPU residency discipline.
 
-The first simdgroup Keccak-F1600 path is present, CPU-differential-tested, and wired into selectable fixed-width SHA3-256 and Keccak-256 batch hash kernels. Current Apple M4 / Apple9 measurements are slower than the scalar baseline, so this path remains opt-in and planner-ineligible while the next kernel iteration is designed.
+The first simdgroup Keccak-F1600 path is present, CPU-differential-tested, wired into selectable fixed-width SHA3-256 and Keccak-256 batch hash kernels, and benchmarked with explicit simdgroup packing. Current Apple M4 / Apple9 measurements remain slower than the scalar baseline, so this path stays opt-in and planner-ineligible while the next kernel iteration targets the lane-shuffle and occupancy cost.

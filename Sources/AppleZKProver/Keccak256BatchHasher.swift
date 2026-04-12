@@ -30,17 +30,28 @@ public final class Keccak256BatchHasher: @unchecked Sendable {
 
     public func makeFixedOneBlockPlan(
         descriptor: FixedMessageBatchDescriptor,
-        kernelFamily: FixedOneBlockHashKernelFamily = .scalar
+        kernelFamily: FixedOneBlockHashKernelFamily = .scalar,
+        simdgroupsPerThreadgroup: Int? = nil
     ) throws -> Keccak256FixedOneBlockHashPlan {
-        try Keccak256FixedOneBlockHashPlan(context: context, descriptor: descriptor, kernelFamily: kernelFamily)
+        try Keccak256FixedOneBlockHashPlan(
+            context: context,
+            descriptor: descriptor,
+            kernelFamily: kernelFamily,
+            simdgroupsPerThreadgroup: simdgroupsPerThreadgroup
+        )
     }
 
     public func hashFixedOneBlock(
         messages: Data,
         descriptor: FixedMessageBatchDescriptor,
-        kernelFamily: FixedOneBlockHashKernelFamily = .scalar
+        kernelFamily: FixedOneBlockHashKernelFamily = .scalar,
+        simdgroupsPerThreadgroup: Int? = nil
     ) throws -> GPUHashBatchResult {
-        let plan = try makeFixedOneBlockPlan(descriptor: descriptor, kernelFamily: kernelFamily)
+        let plan = try makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: kernelFamily,
+            simdgroupsPerThreadgroup: simdgroupsPerThreadgroup
+        )
         return try plan.hash(messages: messages)
     }
 }
@@ -51,6 +62,7 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
     private let declaredInputLength: Int
     private let outputLength: Int
     private let kernelFamily: FixedOneBlockHashKernelFamily
+    public let simdgroupsPerThreadgroup: Int
     private let inputBuffer: MTLBuffer
     private let outputBuffer: MTLBuffer
     private let pipeline: MTLComputePipelineState
@@ -60,7 +72,8 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
     init(
         context: MetalContext,
         descriptor: FixedMessageBatchDescriptor,
-        kernelFamily: FixedOneBlockHashKernelFamily = .scalar
+        kernelFamily: FixedOneBlockHashKernelFamily = .scalar,
+        simdgroupsPerThreadgroup requestedSIMDGroupsPerThreadgroup: Int? = nil
     ) throws {
         guard descriptor.messageLength >= 0, descriptor.messageLength <= SHA3Oracle.sha3_256Rate else {
             throw AppleZKProverError.unsupportedOneBlockLength(descriptor.messageLength)
@@ -97,6 +110,7 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
             forInputLength: descriptor.messageLength,
             family: kernelFamily
         ))
+        var simdgroupsPerThreadgroup = 1
         if kernelFamily == .simdgroup {
             guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
                 throw AppleZKProverError.unavailableOnThisPlatform
@@ -104,12 +118,30 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
             guard pipeline.threadExecutionWidth >= 25 else {
                 throw AppleZKProverError.unavailableOnThisPlatform
             }
+            let maxSIMDGroupsPerThreadgroup = context.maxSIMDGroupsPerThreadgroup(for: pipeline)
+            if let requestedSIMDGroupsPerThreadgroup {
+                guard requestedSIMDGroupsPerThreadgroup > 0,
+                      requestedSIMDGroupsPerThreadgroup <= maxSIMDGroupsPerThreadgroup else {
+                    throw AppleZKProverError.invalidKernelConfiguration(
+                        "SIMD groups per threadgroup must be in 1...\(maxSIMDGroupsPerThreadgroup), got \(requestedSIMDGroupsPerThreadgroup)."
+                    )
+                }
+                simdgroupsPerThreadgroup = requestedSIMDGroupsPerThreadgroup
+            } else {
+                simdgroupsPerThreadgroup = context.preferredSIMDGroupsPerThreadgroup(for: pipeline)
+            }
+        } else if let requestedSIMDGroupsPerThreadgroup, requestedSIMDGroupsPerThreadgroup != 1 {
+            throw AppleZKProverError.invalidKernelConfiguration(
+                "Scalar fixed-hash kernels require one SIMD group per threadgroup, got \(requestedSIMDGroupsPerThreadgroup)."
+            )
         }
+        self.simdgroupsPerThreadgroup = simdgroupsPerThreadgroup
         self.params = SHA3BatchParams(
             count: count32,
             inputStride: inputStride32,
             inputLength: inputLength32,
-            outputStride: outputStride32
+            outputStride: outputStride32,
+            simdgroupsPerThreadgroup: try checkedUInt32(simdgroupsPerThreadgroup)
         )
     }
 
@@ -171,9 +203,11 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
         case .scalar:
             context.dispatch1D(encoder, pipeline: pipeline, elementCount: descriptor.count)
         case .simdgroup:
-            encoder.dispatchThreadgroups(
-                MTLSize(width: descriptor.count, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1)
+            context.dispatchSIMDGroups1D(
+                encoder,
+                pipeline: pipeline,
+                simdgroupCount: descriptor.count,
+                simdgroupsPerThreadgroup: Int(params.simdgroupsPerThreadgroup)
             )
         }
     }

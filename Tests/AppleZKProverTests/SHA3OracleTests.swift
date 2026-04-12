@@ -32,6 +32,7 @@ final class SHA3OracleTests: XCTestCase {
         var count: UInt32
         var inputStride: UInt32
         var outputStride: UInt32
+        var simdgroupsPerThreadgroup: UInt32
     }
 
     func testEmptyStringVector() {
@@ -219,6 +220,7 @@ final class SHA3OracleTests: XCTestCase {
             threadsPerThreadgroup: UInt16(max(25, context.capabilities.maxThreadsPerThreadgroup))
         ))
         XCTAssertGreaterThanOrEqual(pipeline.threadExecutionWidth, 25)
+        let simdgroupsPerThreadgroup = min(4, max(1, pipeline.maxTotalThreadsPerThreadgroup / pipeline.threadExecutionWidth))
 
         guard let input = context.device.makeBuffer(
             bytes: inputWords,
@@ -236,7 +238,8 @@ final class SHA3OracleTests: XCTestCase {
         var params = KeccakPermutationParams(
             count: UInt32(stateCount),
             inputStride: UInt32(inputStride),
-            outputStride: UInt32(outputStride)
+            outputStride: UInt32(outputStride),
+            simdgroupsPerThreadgroup: UInt32(simdgroupsPerThreadgroup)
         )
 
         guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
@@ -248,8 +251,8 @@ final class SHA3OracleTests: XCTestCase {
         encoder.setBuffer(output, offset: 0, index: 1)
         encoder.setBytes(&params, length: MemoryLayout<KeccakPermutationParams>.stride, index: 2)
         encoder.dispatchThreadgroups(
-            MTLSize(width: stateCount, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1)
+            MTLSize(width: (stateCount + simdgroupsPerThreadgroup - 1) / simdgroupsPerThreadgroup, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth * simdgroupsPerThreadgroup, height: 1, depth: 1)
         )
         encoder.endEncoding()
         commandBuffer.commit()
@@ -315,6 +318,43 @@ final class SHA3OracleTests: XCTestCase {
                 let keccakDigest = keccakResult.digests.subdata(in: digestStart..<(digestStart + 32))
                 XCTAssertEqual(sha3Digest, SHA3Oracle.sha3_256(message), "SHA3 length \(messageLength), message \(i)")
                 XCTAssertEqual(keccakDigest, KeccakOracle.keccak_256(message), "Keccak length \(messageLength), message \(i)")
+            }
+        }
+    }
+
+    func testGPUFixedHashPlansRejectInvalidSIMDGroupPacking() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let descriptor = FixedMessageBatchDescriptor(
+            count: 1,
+            messageStride: 32,
+            messageLength: 32,
+            outputStride: 32
+        )
+
+        XCTAssertThrowsError(try SHA3BatchHasher(context: context).makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: .scalar,
+            simdgroupsPerThreadgroup: 2
+        )) { error in
+            guard case .invalidKernelConfiguration = error as? AppleZKProverError else {
+                return XCTFail("expected invalidKernelConfiguration, got \(error)")
+            }
+        }
+
+        guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
+            return
+        }
+        XCTAssertThrowsError(try Keccak256BatchHasher(context: context).makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: .simdgroup,
+            simdgroupsPerThreadgroup: 0
+        )) { error in
+            guard case .invalidKernelConfiguration = error as? AppleZKProverError else {
+                return XCTFail("expected invalidKernelConfiguration, got \(error)")
             }
         }
     }

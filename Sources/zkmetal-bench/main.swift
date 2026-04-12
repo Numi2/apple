@@ -46,6 +46,7 @@ struct BenchConfig {
     var leafLength: Int = 32
     var hashFunction: BenchHashFunction = .sha3_256
     var hashKernelFamily: FixedOneBlockHashKernelFamily = .scalar
+    var hashSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
     var verifyWithCPU = true
     var warmupIterations = 1
@@ -122,6 +123,11 @@ struct BenchConfig {
                     return BenchError.invalidArgument("--hash-kernel must be either 'scalar' or 'simdgroup'.")
                 }
                 hashKernelFamily = parsed
+            case "--hash-simdgroups-per-threadgroup":
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): hashSIMDGroupsPerThreadgroup = value
+                case let .failure(error): return error
+                }
             case "--json":
                 format = .json
             case "--suite":
@@ -187,6 +193,8 @@ struct BenchConfig {
           --format text|json         Output format. Default: text
           --hash-function NAME       Standalone hash benchmark: sha3-256 or keccak-256. Default: sha3-256
           --hash-kernel NAME         Standalone hash kernel family: scalar or simdgroup. Default: scalar
+          --hash-simdgroups-per-threadgroup N
+                                      SIMD-group hash kernel packing. Default: 2
           --json                     Shortcut for --format json
           --suite                    Run the supported benchmark matrix
           --suite-leaf-bytes LIST    Comma-separated suite leaf lengths. Default: 0,32,64,128,135,136
@@ -374,6 +382,7 @@ struct BenchmarkConfigReport: Codable {
     let leafStride: Int
     let hashFunction: String
     let hashKernelFamily: String
+    let hashSIMDGroupsPerThreadgroup: Int?
     let merkleSubtreeMode: String
     let warmupIterations: Int
     let iterations: Int
@@ -385,6 +394,7 @@ struct BenchmarkSuiteConfigReport: Codable {
     let leafLengths: [Int]
     let hashFunctions: [String]
     let hashKernelFamily: String
+    let hashSIMDGroupsPerThreadgroup: Int?
     let merkleSubtreeMode: String
     let warmupIterations: Int
     let iterations: Int
@@ -575,6 +585,9 @@ func emitText(_ report: BenchmarkReport) {
     print("  leaf bytes   : \(report.configuration.leafLength)")
     print("  hash fn      : \(report.configuration.hashFunction)")
     print("  hash kernel  : \(report.configuration.hashKernelFamily)")
+    if let simdgroups = report.configuration.hashSIMDGroupsPerThreadgroup {
+        print("  hash simd/tg : \(simdgroups)")
+    }
     print("  subtree mode : \(report.configuration.merkleSubtreeMode)")
     print("  warmups      : \(report.configuration.warmupIterations)")
     print("  iterations   : \(report.configuration.iterations)")
@@ -635,6 +648,9 @@ func emitText(_ suite: BenchmarkSuiteReport) {
     print("  leaf bytes   : \(suite.configuration.leafLengths.map(String.init).joined(separator: ","))")
     print("  hash fns     : \(suite.configuration.hashFunctions.joined(separator: ","))")
     print("  hash kernel  : \(suite.configuration.hashKernelFamily)")
+    if let simdgroups = suite.configuration.hashSIMDGroupsPerThreadgroup {
+        print("  hash simd/tg : \(simdgroups)")
+    }
     print("  subtree mode : \(suite.configuration.merkleSubtreeMode)")
     print("  warmups      : \(suite.configuration.warmupIterations)")
     print("  iterations   : \(suite.configuration.iterations)")
@@ -660,7 +676,7 @@ func suiteTarget(for reports: [BenchmarkReport]) -> String {
 
 func makeSuiteReport(config: BenchConfig, reports: [BenchmarkReport]) -> BenchmarkSuiteReport {
     BenchmarkSuiteReport(
-        schemaVersion: 3,
+        schemaVersion: 4,
         generatedAt: iso8601Now(),
         target: suiteTarget(for: reports),
         configuration: BenchmarkSuiteConfigReport(
@@ -668,6 +684,9 @@ func makeSuiteReport(config: BenchConfig, reports: [BenchmarkReport]) -> Benchma
             leafLengths: config.suiteLeafLengths,
             hashFunctions: config.suiteHashFunctions.map(\.rawValue),
             hashKernelFamily: config.hashKernelFamily.rawValue,
+            hashSIMDGroupsPerThreadgroup: config.hashKernelFamily == .simdgroup
+                ? config.hashSIMDGroupsPerThreadgroup
+                : nil,
             merkleSubtreeMode: merkleSubtreeModeDescription(config.merkleSubtreeMode),
             warmupIterations: config.warmupIterations,
             iterations: config.iterations,
@@ -697,8 +716,9 @@ func verificationFailureMessages(in report: BenchmarkReport) -> [String] {
     }
     guard report.verification.matchedCPU == true else {
         let cpuRoot = report.verification.cpuRootHex ?? "missing"
+        let simdgroups = report.configuration.hashSIMDGroupsPerThreadgroup.map { " simdgroups/tg=\($0)" } ?? ""
         return [
-            "\(report.configuration.hashFunction) kernel=\(report.configuration.hashKernelFamily) leaf-bytes=\(report.configuration.leafLength) target=\(report.target) root=\(report.verification.rootHex) cpu-root=\(cpuRoot)",
+            "\(report.configuration.hashFunction) kernel=\(report.configuration.hashKernelFamily)\(simdgroups) leaf-bytes=\(report.configuration.leafLength) target=\(report.target) root=\(report.verification.rootHex) cpu-root=\(cpuRoot)",
         ]
     }
     return []
@@ -708,23 +728,34 @@ func verificationFailureMessages(in suite: BenchmarkSuiteReport) -> [String] {
     suite.reports.flatMap { verificationFailureMessages(in: $0) }
 }
 
-@inline(never)
-func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
-    let leaves = makeDeterministicLeaves(count: config.leafCount, leafLength: config.leafLength)
-    let configReport = BenchmarkConfigReport(
+func makeBenchmarkConfigReport(
+    config: BenchConfig,
+    effectiveSIMDGroupsPerThreadgroup: Int?
+) -> BenchmarkConfigReport {
+    BenchmarkConfigReport(
         leafCount: config.leafCount,
         leafLength: config.leafLength,
         leafStride: config.leafLength,
         hashFunction: config.hashFunction.rawValue,
         hashKernelFamily: config.hashKernelFamily.rawValue,
+        hashSIMDGroupsPerThreadgroup: effectiveSIMDGroupsPerThreadgroup,
         merkleSubtreeMode: merkleSubtreeModeDescription(config.merkleSubtreeMode),
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
     )
+}
+
+@inline(never)
+func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
+    let leaves = makeDeterministicLeaves(count: config.leafCount, leafLength: config.leafLength)
 
     #if canImport(Metal)
     guard let device = MTLCreateSystemDefaultDevice() else {
+        let configReport = makeBenchmarkConfigReport(
+            config: config,
+            effectiveSIMDGroupsPerThreadgroup: nil
+        )
         let cpuRoot = try MerkleOracle.rootSHA3_256(
             rawLeaves: leaves,
             leafCount: config.leafCount,
@@ -732,7 +763,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
             leafLength: config.leafLength
         )
         let report = BenchmarkReport(
-            schemaVersion: 3,
+            schemaVersion: 4,
             generatedAt: iso8601Now(),
             target: "cpu",
             configuration: configReport,
@@ -760,13 +791,20 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
         outputStride: 32
     )
     let runHash: () throws -> GPUHashBatchResult
+    let effectiveSIMDGroupsPerThreadgroup: Int?
     switch config.hashFunction {
     case .sha3_256:
         let hasher = SHA3BatchHasher(context: context)
         let hashPlan = try hasher.makeFixedOneBlockPlan(
             descriptor: descriptor,
-            kernelFamily: config.hashKernelFamily
+            kernelFamily: config.hashKernelFamily,
+            simdgroupsPerThreadgroup: config.hashKernelFamily == .simdgroup
+                ? config.hashSIMDGroupsPerThreadgroup
+                : nil
         )
+        effectiveSIMDGroupsPerThreadgroup = config.hashKernelFamily == .simdgroup
+            ? hashPlan.simdgroupsPerThreadgroup
+            : nil
         runHash = {
             try hashPlan.hash(messages: leaves)
         }
@@ -774,12 +812,22 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
         let hasher = Keccak256BatchHasher(context: context)
         let hashPlan = try hasher.makeFixedOneBlockPlan(
             descriptor: descriptor,
-            kernelFamily: config.hashKernelFamily
+            kernelFamily: config.hashKernelFamily,
+            simdgroupsPerThreadgroup: config.hashKernelFamily == .simdgroup
+                ? config.hashSIMDGroupsPerThreadgroup
+                : nil
         )
+        effectiveSIMDGroupsPerThreadgroup = config.hashKernelFamily == .simdgroup
+            ? hashPlan.simdgroupsPerThreadgroup
+            : nil
         runHash = {
             try hashPlan.hash(messages: leaves)
         }
     }
+    let configReport = makeBenchmarkConfigReport(
+        config: config,
+        effectiveSIMDGroupsPerThreadgroup: effectiveSIMDGroupsPerThreadgroup
+    )
     let merklePlan = try committer.makeRawLeavesCommitPlan(
         leafCount: config.leafCount,
         leafStride: config.leafLength,
@@ -820,7 +868,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     let merkleHashInvocations = config.leafCount + config.leafCount - 1
     let merkleInputBytes = hashInputBytes + Double(config.leafCount - 1) * 64
     let report = BenchmarkReport(
-        schemaVersion: 3,
+        schemaVersion: 4,
         generatedAt: iso8601Now(),
         target: "metal",
         configuration: configReport,
@@ -854,6 +902,10 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
 
     return report
     #else
+    let configReport = makeBenchmarkConfigReport(
+        config: config,
+        effectiveSIMDGroupsPerThreadgroup: nil
+    )
     let cpuRoot = try MerkleOracle.rootSHA3_256(
         rawLeaves: leaves,
         leafCount: config.leafCount,
@@ -861,7 +913,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
         leafLength: config.leafLength
     )
     let report = BenchmarkReport(
-        schemaVersion: 3,
+        schemaVersion: 4,
         generatedAt: iso8601Now(),
         target: "cpu",
         configuration: configReport,
