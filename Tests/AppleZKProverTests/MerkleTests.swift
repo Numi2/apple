@@ -28,6 +28,25 @@ final class MerkleTests: XCTestCase {
         XCTAssertEqual(root, try MerkleOracle.rootSHA3_256(leaves: repeatedEmptyLeaves))
     }
 
+    func testCPULargeRawMerkleRootMatchesDataLeaves() throws {
+        let leafCount = 1024
+        let leafLength = 32
+        let leaves = Self.makeLeaves(count: leafCount, leafLength: leafLength, salt: 71)
+        let rawRoot = try MerkleOracle.rootSHA3_256(
+            rawLeaves: leaves,
+            leafCount: leafCount,
+            leafStride: leafLength,
+            leafLength: leafLength
+        )
+        let dataLeaves = (0..<leafCount).map { leaf in
+            let start = leaf * leafLength
+            return leaves.subdata(in: start..<(start + leafLength))
+        }
+
+        XCTAssertEqual(rawRoot, try MerkleOracle.rootSHA3_256(leaves: dataLeaves))
+        XCTAssertEqual(rawRoot.hexString, "328b14d25423df985c5d7649d24a474625ee648e90130e136164de604c93836d")
+    }
+
     func testCPUMerkleRejectsMalformedInputs() {
         XCTAssertThrowsError(try MerkleOracle.rootSHA3_256(leaves: [])) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidLeafCount(0))

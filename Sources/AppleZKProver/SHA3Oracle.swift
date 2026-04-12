@@ -20,7 +20,7 @@ public enum SHA3Oracle {
             var offset = 0
 
             while offset + rate <= bytes.count {
-                SHA3Oracle.absorbBlock(bytes[offset..<(offset + rate)], into: &state)
+                SHA3Oracle.absorbBlock(bytes, offset: offset, into: &state)
                 SHA3Oracle.keccakF1600(&state)
                 offset += rate
             }
@@ -32,7 +32,7 @@ public enum SHA3Oracle {
             }
             tail[tailCount] ^= domainSuffix
             tail[rate - 1] ^= 0x80
-            SHA3Oracle.absorbBlock(tail[0..<rate], into: &state)
+            SHA3Oracle.absorbBlock(tail, offset: 0, into: &state)
             SHA3Oracle.keccakF1600(&state)
         }
 
@@ -99,6 +99,15 @@ public enum SHA3Oracle {
         return sha3_256(data)
     }
 
+    static func keccakF1600Permutation(_ lanes: [UInt64]) throws -> [UInt64] {
+        guard lanes.count == 25 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var state = lanes
+        keccakF1600(&state)
+        return state
+    }
+
     static func sponge256(_ data: Data, domainSuffix: UInt8) -> Data {
         var state = Array(repeating: UInt64(0), count: 25)
         let bytes = [UInt8](data)
@@ -106,7 +115,7 @@ public enum SHA3Oracle {
         var offset = 0
 
         while offset + rate <= bytes.count {
-            absorbBlock(bytes[offset..<(offset + rate)], into: &state)
+            absorbBlock(bytes, offset: offset, into: &state)
             keccakF1600(&state)
             offset += rate
         }
@@ -118,7 +127,7 @@ public enum SHA3Oracle {
         }
         tail[tailCount] ^= domainSuffix
         tail[rate - 1] ^= 0x80
-        absorbBlock(tail[0..<rate], into: &state)
+        absorbBlock(tail, offset: 0, into: &state)
         keccakF1600(&state)
 
         var digest = Data(count: 32)
@@ -133,14 +142,13 @@ public enum SHA3Oracle {
         return digest
     }
 
-    private static func absorbBlock<C: Collection>(_ block: C, into state: inout [UInt64]) where C.Element == UInt8 {
-        precondition(block.count == sha3_256Rate)
-        var index = block.startIndex
+    private static func absorbBlock(_ bytes: [UInt8], offset: Int, into state: inout [UInt64]) {
+        precondition(offset >= 0)
+        precondition(offset + sha3_256Rate <= bytes.count)
         for lane in 0..<(sha3_256Rate / 8) {
             var value: UInt64 = 0
             for shift in 0..<8 {
-                value |= UInt64(block[index]) << UInt64(shift * 8)
-                index = block.index(after: index)
+                value |= UInt64(bytes[offset + lane * 8 + shift]) << UInt64(shift * 8)
             }
             state[lane] ^= value
         }

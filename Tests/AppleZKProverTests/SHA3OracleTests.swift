@@ -28,6 +28,12 @@ final class TestFailureRecorder: @unchecked Sendable {
 }
 
 final class SHA3OracleTests: XCTestCase {
+    struct KeccakPermutationParams {
+        var count: UInt32
+        var inputStride: UInt32
+        var outputStride: UInt32
+    }
+
     func testEmptyStringVector() {
         let digest = SHA3Oracle.sha3_256(Data())
         XCTAssertEqual(
@@ -178,6 +184,86 @@ final class SHA3OracleTests: XCTestCase {
                 let digest = result.digests.subdata(in: digestStart..<(digestStart + 32))
                 XCTAssertEqual(digest, KeccakOracle.keccak_256(message))
             }
+        }
+    }
+
+    func testGPUSIMDGroupKeccakF1600PermutationMatchesCPU() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
+            throw XCTSkip("SIMD-group permutation path requires Apple7 or equivalent SIMD-group support")
+        }
+
+        let stateCount = 6
+        let wordsPerState = 25
+        let inputStride = wordsPerState * MemoryLayout<UInt64>.stride
+        let outputStride = inputStride
+        var inputWords: [UInt64] = []
+        inputWords.reserveCapacity(stateCount * wordsPerState)
+        for state in 0..<stateCount {
+            for lane in 0..<wordsPerState {
+                let value = UInt64(truncatingIfNeeded: state * 0x1f1f_0101 + lane * 0x0102_0305)
+                    ^ (UInt64(lane) << 40)
+                    ^ (UInt64(state) << 56)
+                inputWords.append(value)
+            }
+        }
+
+        let pipeline = try context.pipeline(for: KernelSpec(
+            kernel: "keccak_f1600_permutation_simdgroup",
+            family: .simdgroup,
+            queueMode: .metal3,
+            threadsPerThreadgroup: UInt16(max(25, context.capabilities.maxThreadsPerThreadgroup))
+        ))
+        XCTAssertGreaterThanOrEqual(pipeline.threadExecutionWidth, 25)
+
+        guard let input = context.device.makeBuffer(
+            bytes: inputWords,
+            length: inputWords.count * MemoryLayout<UInt64>.stride,
+            options: .storageModeShared
+        ) else {
+            throw AppleZKProverError.failedToCreateBuffer(label: "KeccakPermutation.Input", length: inputWords.count * MemoryLayout<UInt64>.stride)
+        }
+        guard let output = context.device.makeBuffer(
+            length: inputWords.count * MemoryLayout<UInt64>.stride,
+            options: .storageModeShared
+        ) else {
+            throw AppleZKProverError.failedToCreateBuffer(label: "KeccakPermutation.Output", length: inputWords.count * MemoryLayout<UInt64>.stride)
+        }
+        var params = KeccakPermutationParams(
+            count: UInt32(stateCount),
+            inputStride: UInt32(inputStride),
+            outputStride: UInt32(outputStride)
+        )
+
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(input, offset: 0, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 1)
+        encoder.setBytes(&params, length: MemoryLayout<KeccakPermutationParams>.stride, index: 2)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: stateCount, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let outputWords = output.contents().bindMemory(to: UInt64.self, capacity: inputWords.count)
+        for state in 0..<stateCount {
+            let start = state * wordsPerState
+            let expected = try SHA3Oracle.keccakF1600Permutation(Array(inputWords[start..<(start + wordsPerState)]))
+            let actual = (0..<wordsPerState).map { outputWords[start + $0] }
+            XCTAssertEqual(actual, expected, "state \(state)")
         }
     }
 

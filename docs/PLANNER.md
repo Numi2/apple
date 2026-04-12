@@ -16,6 +16,7 @@
 - Upload and final root readback may use shared buffers. Intermediate Merkle state lives in reusable private buffers through `ResidencyArena`.
 - `MetalSumcheckChunkPlan` executes `round_eval -> coeff_pack -> transcript_absorb -> challenge_squeeze -> fold_halve` inside one command buffer for the supported M31 chunk shape.
 - Sum-check chunk execution reads back only final proof material: the final folded vector, coefficient words, and challenges after the superstep completes.
+- A real simdgroup Keccak-F1600 permutation-only kernel exists and is differentially tested against the CPU permutation on Apple7+ class hardware. It is intentionally not planner-eligible until it is integrated into domain-correct SHA3/Keccak absorb/squeeze kernels with fixed-width hash tests.
 
 ## Current Merkle Race
 
@@ -116,6 +117,6 @@ Apple documentation pages currently require JavaScript in a browser, but the can
 
 ## Next Gates
 
-1. Implement a real Apple7 simdgroup Keccak-F1600 family before enabling simdgroup candidates.
-2. Add randomized larger-lane sum-check batches and persist eligible sum-check winners once distinct scalar, simdgroup, and fused implementations exist.
-3. Add tuned sum-check candidate families only when the scalar resident chunk is stable and the cooperative kernels perform distinct GPU work.
+1. Integrate the tested simdgroup Keccak-F1600 permutation into fixed-width SHA3-256 and Keccak-256 hash kernels before enabling simdgroup hash or Merkle candidates.
+2. Persist eligible sum-check winners only after distinct scalar, simdgroup, and fused implementations exist.
+3. Add tuned sum-check candidate families only when the scalar resident chunk remains stable under broader release and randomized regression coverage.

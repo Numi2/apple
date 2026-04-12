@@ -76,6 +76,7 @@ print(commitment.root.hexString)
 
 ```bash
 swift test
+swift test -c release -Xswiftc -Osize
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --iterations 10 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash keccak-256 --json
@@ -103,6 +104,8 @@ Benchmark JSON includes the selected Merkle subtree leaf count, upper-fusion nod
 
 `MetalProofPlanner` can run a correctness-gated Merkle short race, persist every Merkle candidate in SQLite, and construct the current GPU-resident M31 sum-check chunk plan. See `docs/PLANNER.md` for the current planner contract and eligibility rules.
 
+Release benchmark baselines are stored under `BenchmarkBaselines/`. The current Apple M4 / Apple9 baseline was produced with `swift build -c release -Xswiftc -Osize`; see `docs/BENCHMARK_FINDINGS.md` for the exact measurement constraint and command.
+
 ## What to build next
 
 The next step is not another protocol wrapper. The next step is a better kernel set:
@@ -114,3 +117,5 @@ The next step is not another protocol wrapper. The next step is a better kernel 
 - private-buffer upload staging with ring-buffered command submission,
 - binary archive caching for pipeline creation,
 - streaming codeword / matrix kernels that keep the exact same GPU residency discipline.
+
+The first simdgroup Keccak-F1600 permutation-only kernel is present and CPU-differential-tested. It is deliberately not used for commitments yet; the next step is to wire that tested permutation into domain-correct fixed-width SHA3-256 and Keccak-256 hash kernels, then benchmark it against the scalar family before planner eligibility.

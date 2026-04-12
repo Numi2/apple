@@ -36,6 +36,11 @@ enum BenchError: Error, LocalizedError {
     }
 }
 
+enum BenchParseResult {
+    case success(BenchConfig)
+    case failure(BenchError)
+}
+
 struct BenchConfig {
     var leafCount: Int = 1 << 14
     var leafLength: Int = 32
@@ -51,28 +56,58 @@ struct BenchConfig {
     var suiteLeafLengths = [0, 32, 64, 128, 135, SHA3Oracle.sha3_256Rate]
     var suiteHashFunctions: [BenchHashFunction] = [.sha3_256, .keccak_256]
 
-    init(arguments: [String]) throws {
+    static func parse(arguments: [String]) -> BenchParseResult {
+        var config = BenchConfig()
+        if let error = config.apply(arguments: arguments) {
+            return .failure(error)
+        }
+        return .success(config)
+    }
+
+    private mutating func apply(arguments: [String]) -> BenchError? {
         var iterator = arguments.dropFirst().makeIterator()
         while let arg = iterator.next() {
             switch arg {
             case "--leaves":
-                leafCount = try Self.parsePositiveInt(flag: arg, value: iterator.next())
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): leafCount = value
+                case let .failure(error): return error
+                }
             case "--leaf-bytes":
-                leafLength = try Self.parseNonnegativeInt(flag: arg, value: iterator.next())
+                switch Self.parseNonnegativeInt(flag: arg, value: iterator.next()) {
+                case let .success(value): leafLength = value
+                case let .failure(error): return error
+                }
             case "--iterations":
-                iterations = try Self.parsePositiveInt(flag: arg, value: iterator.next())
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): iterations = value
+                case let .failure(error): return error
+                }
             case "--warmups":
-                warmupIterations = try Self.parseNonnegativeInt(flag: arg, value: iterator.next())
+                switch Self.parseNonnegativeInt(flag: arg, value: iterator.next()) {
+                case let .success(value): warmupIterations = value
+                case let .failure(error): return error
+                }
             case "--format":
-                let value = try Self.requireValue(flag: arg, value: iterator.next())
+                let valueResult = Self.requireValue(flag: arg, value: iterator.next())
+                let value: String
+                switch valueResult {
+                case let .success(parsed): value = parsed
+                case let .failure(error): return error
+                }
                 guard let parsed = BenchFormat(rawValue: value) else {
-                    throw BenchError.invalidArgument("--format must be either 'text' or 'json'.")
+                    return BenchError.invalidArgument("--format must be either 'text' or 'json'.")
                 }
                 format = parsed
             case "--hash-function", "--hash":
-                let value = try Self.requireValue(flag: arg, value: iterator.next())
+                let valueResult = Self.requireValue(flag: arg, value: iterator.next())
+                let value: String
+                switch valueResult {
+                case let .success(parsed): value = parsed
+                case let .failure(error): return error
+                }
                 guard let parsed = BenchHashFunction(rawValue: value) else {
-                    throw BenchError.invalidArgument("--hash-function must be either 'sha3-256' or 'keccak-256'.")
+                    return BenchError.invalidArgument("--hash-function must be either 'sha3-256' or 'keccak-256'.")
                 }
                 hashFunction = parsed
             case "--json":
@@ -81,16 +116,27 @@ struct BenchConfig {
                 suite = true
             case "--suite-leaf-bytes":
                 suite = true
-                suiteLeafLengths = try Self.parseNonnegativeIntList(flag: arg, value: iterator.next())
+                switch Self.parseNonnegativeIntList(flag: arg, value: iterator.next()) {
+                case let .success(value): suiteLeafLengths = value
+                case let .failure(error): return error
+                }
             case "--suite-hashes", "--suite-hash-functions":
                 suite = true
-                suiteHashFunctions = try Self.parseHashFunctionList(flag: arg, value: iterator.next())
+                switch Self.parseHashFunctionList(flag: arg, value: iterator.next()) {
+                case let .success(value): suiteHashFunctions = value
+                case let .failure(error): return error
+                }
             case "--no-verify":
                 verifyWithCPU = false
             case "--verify":
                 verifyWithCPU = true
             case "--pipeline-archive":
-                let value = try Self.requireValue(flag: arg, value: iterator.next())
+                let valueResult = Self.requireValue(flag: arg, value: iterator.next())
+                let value: String
+                switch valueResult {
+                case let .success(parsed): value = parsed
+                case let .failure(error): return error
+                }
                 pipelineArchiveURL = URL(fileURLWithPath: value)
                 usePipelineArchive = true
             case "--no-pipeline-archive":
@@ -99,18 +145,22 @@ struct BenchConfig {
             case "--merkle-subtree-auto":
                 merkleSubtreeMode = .automatic
             case "--merkle-subtree-leaves":
-                let subtreeLeafCount = try Self.parsePositiveInt(flag: arg, value: iterator.next())
+                let subtreeLeafCount: Int
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): subtreeLeafCount = value
+                case let .failure(error): return error
+                }
                 merkleSubtreeMode = .fixed(subtreeLeafCount)
             case "--no-merkle-subtree":
                 merkleSubtreeMode = .disabled
             case "--help", "-h":
-                throw BenchError.helpRequested
+                return BenchError.helpRequested
             default:
-                throw BenchError.invalidArgument("Unknown argument: \(arg)")
+                return BenchError.invalidArgument("Unknown argument: \(arg)")
             }
         }
 
-        try validate()
+        return validate()
     }
 
     static var usage: String {
@@ -137,122 +187,144 @@ struct BenchConfig {
         """
     }
 
-    private mutating func validate() throws {
+    private mutating func validate() -> BenchError? {
         guard leafCount > 0, leafCount.nonzeroBitCount == 1 else {
-            throw BenchError.invalidArgument("--leaves must be a non-zero power of two.")
+            return BenchError.invalidArgument("--leaves must be a non-zero power of two.")
         }
         if suite {
             guard !suiteLeafLengths.isEmpty else {
-                throw BenchError.invalidArgument("--suite-leaf-bytes must contain at least one length.")
+                return BenchError.invalidArgument("--suite-leaf-bytes must contain at least one length.")
             }
             for length in suiteLeafLengths {
-                try Self.validateLeafLength(length, flag: "--suite-leaf-bytes")
+                if let error = Self.validateLeafLength(length, flag: "--suite-leaf-bytes") {
+                    return error
+                }
             }
             guard !suiteHashFunctions.isEmpty else {
-                throw BenchError.invalidArgument("--suite-hashes must contain at least one hash function.")
+                return BenchError.invalidArgument("--suite-hashes must contain at least one hash function.")
             }
         } else {
-            try Self.validateLeafLength(leafLength, flag: "--leaf-bytes")
+            if let error = Self.validateLeafLength(leafLength, flag: "--leaf-bytes") {
+                return error
+            }
         }
         guard iterations > 0 else {
-            throw BenchError.invalidArgument("--iterations must be greater than zero.")
+            return BenchError.invalidArgument("--iterations must be greater than zero.")
         }
         guard warmupIterations >= 0 else {
-            throw BenchError.invalidArgument("--warmups must be non-negative.")
+            return BenchError.invalidArgument("--warmups must be non-negative.")
         }
         let largestLeafLength = suite ? (suiteLeafLengths.max() ?? 0) : leafLength
         guard !leafCount.multipliedReportingOverflow(by: max(largestLeafLength, 1)).overflow else {
-            throw BenchError.invalidArgument("Requested leaf buffer is too large for this process.")
+            return BenchError.invalidArgument("Requested leaf buffer is too large for this process.")
         }
         guard leafCount <= (Int.max - 1) / 2 else {
-            throw BenchError.invalidArgument("Requested leaf count is too large for Merkle hash accounting.")
+            return BenchError.invalidArgument("Requested leaf count is too large for Merkle hash accounting.")
         }
         switch merkleSubtreeMode {
         case .disabled:
             break
         case .automatic:
             guard suite ? suiteLeafLengths.allSatisfy({ $0 == 32 }) : leafLength == 32 else {
-                throw BenchError.invalidArgument("--merkle-subtree-auto currently requires --leaf-bytes 32.")
+                return BenchError.invalidArgument("--merkle-subtree-auto currently requires --leaf-bytes 32.")
             }
         case let .fixed(value):
             guard suite ? suiteLeafLengths.allSatisfy({ $0 == 32 }) : leafLength == 32 else {
-                throw BenchError.invalidArgument("--merkle-subtree-leaves currently requires --leaf-bytes 32.")
+                return BenchError.invalidArgument("--merkle-subtree-leaves currently requires --leaf-bytes 32.")
             }
             guard value >= 2, value.nonzeroBitCount == 1 else {
-                throw BenchError.invalidArgument("--merkle-subtree-leaves must be a power of two greater than or equal to 2.")
+                return BenchError.invalidArgument("--merkle-subtree-leaves must be a power of two greater than or equal to 2.")
             }
             guard value <= leafCount, leafCount.isMultiple(of: value) else {
-                throw BenchError.invalidArgument("--merkle-subtree-leaves must evenly divide --leaves.")
+                return BenchError.invalidArgument("--merkle-subtree-leaves must evenly divide --leaves.")
             }
         }
+        return nil
     }
 
-    private static func validateLeafLength(_ length: Int, flag: String) throws {
+    private static func validateLeafLength(_ length: Int, flag: String) -> BenchError? {
         guard (0...SHA3Oracle.sha3_256Rate).contains(length) else {
-            throw BenchError.invalidArgument("\(flag) must be in 0...136 for the current fixed-rate SHA3 path.")
+            return BenchError.invalidArgument("\(flag) must be in 0...136 for the current fixed-rate SHA3 path.")
         }
+        return nil
     }
 
-    private static func parsePositiveInt(flag: String, value: String?) throws -> Int {
-        let parsed = try parseNonnegativeInt(flag: flag, value: value)
+    private static func parsePositiveInt(flag: String, value: String?) -> Result<Int, BenchError> {
+        let parsed: Int
+        switch parseNonnegativeInt(flag: flag, value: value) {
+        case let .success(value): parsed = value
+        case let .failure(error): return .failure(error)
+        }
         guard parsed > 0 else {
-            throw BenchError.invalidArgument("\(flag) must be greater than zero.")
+            return .failure(BenchError.invalidArgument("\(flag) must be greater than zero."))
         }
-        return parsed
+        return .success(parsed)
     }
 
-    private static func parseNonnegativeInt(flag: String, value: String?) throws -> Int {
-        let value = try requireValue(flag: flag, value: value)
-        guard let parsed = Int(value), parsed >= 0 else {
-            throw BenchError.invalidArgument("\(flag) must be a non-negative integer.")
+    private static func parseNonnegativeInt(flag: String, value: String?) -> Result<Int, BenchError> {
+        let valueString: String
+        switch requireValue(flag: flag, value: value) {
+        case let .success(parsed): valueString = parsed
+        case let .failure(error): return .failure(error)
         }
-        return parsed
+        guard let parsed = Int(valueString), parsed >= 0 else {
+            return .failure(BenchError.invalidArgument("\(flag) must be a non-negative integer."))
+        }
+        return .success(parsed)
     }
 
-    private static func requireValue(flag: String, value: String?) throws -> String {
+    private static func requireValue(flag: String, value: String?) -> Result<String, BenchError> {
         guard let value else {
-            throw BenchError.missingValue(flag)
+            return .failure(BenchError.missingValue(flag))
         }
-        return value
+        return .success(value)
     }
 
-    private static func parseNonnegativeIntList(flag: String, value: String?) throws -> [Int] {
-        let value = try requireValue(flag: flag, value: value)
-        let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+    private static func parseNonnegativeIntList(flag: String, value: String?) -> Result<[Int], BenchError> {
+        let valueString: String
+        switch requireValue(flag: flag, value: value) {
+        case let .success(parsed): valueString = parsed
+        case let .failure(error): return .failure(error)
+        }
+        let parts = valueString.split(separator: ",", omittingEmptySubsequences: false)
         guard !parts.isEmpty else {
-            throw BenchError.invalidArgument("\(flag) must be a comma-separated list of non-negative integers.")
+            return .failure(BenchError.invalidArgument("\(flag) must be a comma-separated list of non-negative integers."))
         }
 
         var parsed: [Int] = []
         for part in parts {
             guard let number = Int(part.trimmingCharacters(in: .whitespacesAndNewlines)), number >= 0 else {
-                throw BenchError.invalidArgument("\(flag) must be a comma-separated list of non-negative integers.")
+                return .failure(BenchError.invalidArgument("\(flag) must be a comma-separated list of non-negative integers."))
             }
             if !parsed.contains(number) {
                 parsed.append(number)
             }
         }
-        return parsed
+        return .success(parsed)
     }
 
-    private static func parseHashFunctionList(flag: String, value: String?) throws -> [BenchHashFunction] {
-        let value = try requireValue(flag: flag, value: value)
-        let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+    private static func parseHashFunctionList(flag: String, value: String?) -> Result<[BenchHashFunction], BenchError> {
+        let valueString: String
+        switch requireValue(flag: flag, value: value) {
+        case let .success(parsed): valueString = parsed
+        case let .failure(error): return .failure(error)
+        }
+        let parts = valueString.split(separator: ",", omittingEmptySubsequences: false)
         guard !parts.isEmpty else {
-            throw BenchError.invalidArgument("\(flag) must be a comma-separated list containing sha3-256 or keccak-256.")
+            return .failure(BenchError.invalidArgument("\(flag) must be a comma-separated list containing sha3-256 or keccak-256."))
         }
 
         var parsed: [BenchHashFunction] = []
         for part in parts {
             let rawValue = part.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let hashFunction = BenchHashFunction(rawValue: rawValue) else {
-                throw BenchError.invalidArgument("\(flag) must contain only sha3-256 or keccak-256.")
+                return .failure(BenchError.invalidArgument("\(flag) must contain only sha3-256 or keccak-256."))
             }
             if !parsed.contains(hashFunction) {
                 parsed.append(hashFunction)
             }
         }
-        return parsed
+        return .success(parsed)
     }
 }
 
@@ -629,6 +701,7 @@ func exitIfVerificationFailed(_ messages: [String]) {
     exit(verificationFailureExitCode)
 }
 
+@inline(never)
 func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     let leaves = makeDeterministicLeaves(count: config.leafCount, leafLength: config.leafLength)
     let configReport = BenchmarkConfigReport(
@@ -790,29 +863,55 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     #endif
 }
 
-do {
-    let config = try BenchConfig(arguments: CommandLine.arguments)
-    if config.suite {
-        let reports = try makeSuiteConfigs(config).map { try runBenchmark($0) }
-        let suite = makeSuiteReport(config: config, reports: reports)
-        if config.format == .json {
-            try emitJSON(suite)
-        } else {
-            emitText(suite)
+@inline(never)
+func runCLI() -> Int32 {
+    do {
+        let config: BenchConfig
+        switch BenchConfig.parse(arguments: CommandLine.arguments) {
+        case let .success(parsed):
+            config = parsed
+        case .failure(.helpRequested):
+            print(BenchConfig.usage)
+            return 0
+        case let .failure(error):
+            fputs("error: \(error.localizedDescription)\n\n\(BenchConfig.usage)\n", stderr)
+            return 1
         }
-        exitIfVerificationFailed(verificationFailureMessages(in: suite))
-    } else {
-        let report = try runBenchmark(config)
-        if config.format == .json {
-            try emitJSON(report)
+        if config.suite {
+            let reports = try makeSuiteConfigs(config).map { try runBenchmark($0) }
+            let suite = makeSuiteReport(config: config, reports: reports)
+            if config.format == .json {
+                try emitJSON(suite)
+            } else {
+                emitText(suite)
+            }
+            let failures = verificationFailureMessages(in: suite)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
         } else {
-            emitText(report)
+            let report = try runBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
         }
-        exitIfVerificationFailed(verificationFailureMessages(in: report))
+        return 0
+    } catch {
+        fputs("error: \(error.localizedDescription)\n\n\(BenchConfig.usage)\n", stderr)
+        return 1
     }
-} catch BenchError.helpRequested {
-    print(BenchConfig.usage)
-} catch {
-    fputs("error: \(error.localizedDescription)\n\n\(BenchConfig.usage)\n", stderr)
-    exit(1)
 }
+
+exit(runCLI())

@@ -8,6 +8,12 @@ struct SHA3BatchParams {
     uint outputStride;
 };
 
+struct KeccakPermutationParams {
+    uint count;
+    uint inputStride;
+    uint outputStride;
+};
+
 struct MerkleParentParams {
     uint pairCount;
 };
@@ -90,8 +96,32 @@ constant uint KECCAKF_PI[24] = {
     15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
 };
 
+constant uint KECCAKF_SIMD_SOURCE[25] = {
+    0, 6, 12, 18, 24,
+    3, 9, 10, 16, 22,
+    1, 7, 13, 19, 20,
+    4, 5, 11, 17, 23,
+    2, 8, 14, 15, 21,
+};
+
+constant uint KECCAKF_SIMD_RHO[25] = {
+    0, 44, 43, 21, 14,
+    28, 20, 3, 45, 61,
+    1, 6, 25, 8, 18,
+    27, 36, 10, 15, 56,
+    62, 55, 39, 41, 2,
+};
+
 inline ulong rotl64(ulong value, uint amount) {
     return (value << amount) | (value >> (64 - amount));
+}
+
+inline ulong rotl64_any(ulong value, uint amount) {
+    const uint shift = amount & 63u;
+    if (shift == 0u) {
+        return value;
+    }
+    return (value << shift) | (value >> (64u - shift));
 }
 
 inline ulong load_le64_partial(const device uchar *src, uint count) {
@@ -209,6 +239,110 @@ inline void keccak_f1600(thread ulong s[25]) {
         }
 
         s[0] ^= KECCAKF_ROUND_CONSTANTS[round];
+    }
+}
+
+inline uint2 split_u64(ulong value) {
+    return uint2(uint(value & 0xffffffffUL), uint(value >> 32));
+}
+
+inline ulong join_u64(uint2 value) {
+    return ulong(value.x) | (ulong(value.y) << 32);
+}
+
+inline uint2 rotl64_pair(uint2 value, uint amount) {
+    const uint shift = amount & 63u;
+    if (shift == 0u) {
+        return value;
+    }
+    if (shift < 32u) {
+        return uint2(
+            (value.x << shift) | (value.y >> (32u - shift)),
+            (value.y << shift) | (value.x >> (32u - shift))
+        );
+    }
+    if (shift == 32u) {
+        return uint2(value.y, value.x);
+    }
+    const uint highShift = shift - 32u;
+    return uint2(
+        (value.y << highShift) | (value.x >> (32u - highShift)),
+        (value.x << highShift) | (value.y >> (32u - highShift))
+    );
+}
+
+inline uint2 shuffle_u64_pair(uint2 value, uint sourceLane) {
+    return uint2(
+        simd_shuffle(value.x, ushort(sourceLane)),
+        simd_shuffle(value.y, ushort(sourceLane))
+    );
+}
+
+inline uint2 keccak_f1600_simdgroup_pair(uint2 word, uint lane) {
+    for (uint round = 0; round < 24; ++round) {
+        if (lane < 25u) {
+            const uint x = lane % 5u;
+            const uint prevX = (x + 4u) % 5u;
+            const uint nextX = (x + 1u) % 5u;
+            const uint2 cPrev =
+                shuffle_u64_pair(word, prevX + 0u) ^
+                shuffle_u64_pair(word, prevX + 5u) ^
+                shuffle_u64_pair(word, prevX + 10u) ^
+                shuffle_u64_pair(word, prevX + 15u) ^
+                shuffle_u64_pair(word, prevX + 20u);
+            const uint2 cNext =
+                shuffle_u64_pair(word, nextX + 0u) ^
+                shuffle_u64_pair(word, nextX + 5u) ^
+                shuffle_u64_pair(word, nextX + 10u) ^
+                shuffle_u64_pair(word, nextX + 15u) ^
+                shuffle_u64_pair(word, nextX + 20u);
+            word ^= cPrev ^ rotl64_pair(cNext, 1u);
+        }
+
+        if (lane < 25u) {
+            const uint source = KECCAKF_SIMD_SOURCE[lane];
+            const uint rotation = KECCAKF_SIMD_RHO[lane];
+            word = rotl64_pair(shuffle_u64_pair(word, source), rotation);
+        }
+
+        if (lane < 25u) {
+            const uint row = (lane / 5u) * 5u;
+            const uint x = lane % 5u;
+            const uint2 right1 = shuffle_u64_pair(word, row + ((x + 1u) % 5u));
+            const uint2 right2 = shuffle_u64_pair(word, row + ((x + 2u) % 5u));
+            word = word ^ ((~right1) & right2);
+        }
+
+        if (lane == 0u) {
+            word ^= split_u64(KECCAKF_ROUND_CONSTANTS[round]);
+        }
+    }
+    return word;
+}
+
+kernel void keccak_f1600_permutation_simdgroup(
+    const device ulong *inputs [[buffer(0)]],
+    device ulong *outputs [[buffer(1)]],
+    constant KeccakPermutationParams &params [[buffer(2)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdWidth [[threads_per_simdgroup]],
+    uint stateIndex [[threadgroup_position_in_grid]])
+{
+    if (stateIndex >= params.count || simdWidth < 25u) {
+        return;
+    }
+
+    uint2 word = uint2(0, 0);
+    if (lane < 25u) {
+        const uint inputBase = stateIndex * (params.inputStride / 8u);
+        word = split_u64(inputs[inputBase + lane]);
+    }
+
+    word = keccak_f1600_simdgroup_pair(word, lane);
+
+    if (lane < 25u) {
+        const uint outputBase = stateIndex * (params.outputStride / 8u);
+        outputs[outputBase + lane] = join_u64(word);
     }
 }
 

@@ -1,0 +1,1526 @@
+{
+  "configuration" : {
+    "hashFunctions" : [
+      "sha3-256",
+      "keccak-256"
+    ],
+    "iterations" : 10,
+    "leafCount" : 16384,
+    "leafLengths" : [
+      0,
+      32,
+      64,
+      128,
+      135,
+      136
+    ],
+    "merkleSubtreeMode" : "disabled",
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1
+  },
+  "generatedAt" : "2026-04-12T23:14:36.690Z",
+  "reports" : [
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 0,
+        "leafStride" : 0,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:35.730Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00015974976122379303,
+        "gpuSeconds" : {
+          "max" : 0.0008013751357793808,
+          "mean" : 0.00039161667227745057,
+          "median" : 0.0004472085274755955,
+          "min" : 0.00015974976122379303,
+          "samples" : [
+            0.00044462503865361214,
+            0.0004497920162975788,
+            0.0004637916572391987,
+            0.0004687081091105938,
+            0.0004542497918009758,
+            0.0008013751357793808,
+            0.0003425832837820053,
+            0.00016654189676046371,
+            0.00015974976122379303,
+            0.00016475003212690353
+          ]
+        },
+        "hashInvocationsPerSecond" : 102560403.68691191,
+        "inputBytesPerSecond" : 0,
+        "wallSeconds" : {
+          "max" : 0.001899334,
+          "mean" : 0.0010488085000000002,
+          "median" : 0.000843542,
+          "min" : 0.000691334,
+          "samples" : [
+            0.001009208,
+            0.001899334,
+            0.000691334,
+            0.00070825,
+            0.000696666,
+            0.001240208,
+            0.001832959,
+            0.000723042,
+            0.00074725,
+            0.000939834
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0005290000699460506,
+        "gpuSeconds" : {
+          "max" : 0.0029513752087950706,
+          "mean" : 0.0013843374326825142,
+          "median" : 0.001560666598379612,
+          "min" : 0.0005290000699460506,
+          "samples" : [
+            0.0014500832185149193,
+            0.0016761664301156998,
+            0.0016712499782443047,
+            0.0029513752087950706,
+            0.0017204582691192627,
+            0.0017016250640153885,
+            0.0006301663815975189,
+            0.0005290000699460506,
+            0.000956166535615921,
+            0.0005570831708610058
+          ]
+        },
+        "hashInvocationsPerSecond" : 61941390.675698206,
+        "inputBytesPerSecond" : 1982064010.1369572,
+        "wallSeconds" : {
+          "max" : 0.004263459,
+          "mean" : 0.0021722333000000005,
+          "median" : 0.001843708,
+          "min" : 0.000887542,
+          "samples" : [
+            0.001774583,
+            0.003287625,
+            0.001912833,
+            0.003290083,
+            0.002597041,
+            0.004263459,
+            0.001039542,
+            0.000887542,
+            0.001458791,
+            0.001210834
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "33f5823fbfddf7db2e049f5389cfdf9d7aa9cfddd4ba8815c4b184be6cd1da16",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "33f5823fbfddf7db2e049f5389cfdf9d7aa9cfddd4ba8815c4b184be6cd1da16"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 0,
+        "leafStride" : 0,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:35.799Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00016120867803692818,
+        "gpuSeconds" : {
+          "max" : 0.0007811249233782291,
+          "mean" : 0.00024195415899157523,
+          "median" : 0.00017808331176638603,
+          "min" : 0.00016120867803692818,
+          "samples" : [
+            0.00024020811542868614,
+            0.00016120867803692818,
+            0.00016745831817388535,
+            0.00016733305528759956,
+            0.00018637487664818764,
+            0.00016979174688458443,
+            0.000189958605915308,
+            0.00018687499687075615,
+            0.0007811249233782291,
+            0.00016920827329158783
+          ]
+        },
+        "hashInvocationsPerSecond" : 101632245.85370588,
+        "inputBytesPerSecond" : 0,
+        "wallSeconds" : {
+          "max" : 0.002691042,
+          "mean" : 0.0010244749,
+          "median" : 0.0008739374999999999,
+          "min" : 0.000495458,
+          "samples" : [
+            0.001033375,
+            0.000786625,
+            0.000521291,
+            0.000529583,
+            0.002691042,
+            0.001091417,
+            0.000564792,
+            0.000495458,
+            0.001569916,
+            0.00096125
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.000546999741345644,
+        "gpuSeconds" : {
+          "max" : 0.0006725001148879528,
+          "mean" : 0.0006019833497703075,
+          "median" : 0.0006200415082275867,
+          "min" : 0.000546999741345644,
+          "samples" : [
+            0.0006332499906420708,
+            0.0005556251853704453,
+            0.0005532503128051758,
+            0.000546999741345644,
+            0.0006725001148879528,
+            0.0006254585459828377,
+            0.0006245831027626991,
+            0.0006154999136924744,
+            0.0006380416452884674,
+            0.0005546249449253082
+          ]
+        },
+        "hashInvocationsPerSecond" : 59903136.186850294,
+        "inputBytesPerSecond" : 1916841857.03747,
+        "wallSeconds" : {
+          "max" : 0.001305792,
+          "mean" : 0.0010943373999999998,
+          "median" : 0.0010851250000000002,
+          "min" : 0.000814583,
+          "samples" : [
+            0.001122958,
+            0.0012425,
+            0.000985417,
+            0.000814583,
+            0.001284791,
+            0.001305792,
+            0.000932417,
+            0.001047292,
+            0.001235541,
+            0.000972083
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "33f5823fbfddf7db2e049f5389cfdf9d7aa9cfddd4ba8815c4b184be6cd1da16",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "33f5823fbfddf7db2e049f5389cfdf9d7aa9cfddd4ba8815c4b184be6cd1da16"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 32,
+        "leafStride" : 32,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:35.872Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00020179152488708496,
+        "gpuSeconds" : {
+          "max" : 0.0002177502028644085,
+          "mean" : 0.00020665419287979603,
+          "median" : 0.00020445836707949638,
+          "min" : 0.00020179152488708496,
+          "samples" : [
+            0.0002020834945142269,
+            0.00020187487825751305,
+            0.00020387489348649979,
+            0.00021454179659485817,
+            0.00020179152488708496,
+            0.00020504184067249298,
+            0.00020849984139204025,
+            0.00020200014114379883,
+            0.00020908331498503685,
+            0.0002177502028644085
+          ]
+        },
+        "hashInvocationsPerSecond" : 81192706.2306897,
+        "inputBytesPerSecond" : 2598166599.3820705,
+        "wallSeconds" : {
+          "max" : 0.003435,
+          "mean" : 0.0009435209,
+          "median" : 0.0005468335,
+          "min" : 0.000433,
+          "samples" : [
+            0.000433,
+            0.000438834,
+            0.00044575,
+            0.003435,
+            0.000527959,
+            0.000525333,
+            0.000565708,
+            0.000600417,
+            0.000581625,
+            0.001881583
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0006253751926124096,
+        "gpuSeconds" : {
+          "max" : 0.002030625008046627,
+          "mean" : 0.000819029239937663,
+          "median" : 0.0006566666997969151,
+          "min" : 0.0006253751926124096,
+          "samples" : [
+            0.0006253751926124096,
+            0.0006271251477301121,
+            0.0007784580811858177,
+            0.0008082501590251923,
+            0.0006291670724749565,
+            0.002030625008046627,
+            0.0006576664745807648,
+            0.0006550834514200687,
+            0.0006556669250130653,
+            0.0007228748872876167
+          ]
+        },
+        "hashInvocationsPerSecond" : 52395746.40484355,
+        "inputBytesPerSecond" : 2514970242.7911596,
+        "wallSeconds" : {
+          "max" : 0.002321417,
+          "mean" : 0.0012762335,
+          "median" : 0.0010404375000000001,
+          "min" : 0.00086525,
+          "samples" : [
+            0.00086525,
+            0.000937084,
+            0.001484208,
+            0.002056417,
+            0.000969209,
+            0.002321417,
+            0.00109425,
+            0.001048125,
+            0.00103275,
+            0.000953625
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "7516dd8a0f87f7e744dac803d44774e60abc8122d700fe90fd2efb7569787d64",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "7516dd8a0f87f7e744dac803d44774e60abc8122d700fe90fd2efb7569787d64"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 32,
+        "leafStride" : 32,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:35.947Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00021337484940886497,
+        "gpuSeconds" : {
+          "max" : 0.00026462459936738014,
+          "mean" : 0.00025115818716585635,
+          "median" : 0.00025902059860527515,
+          "min" : 0.00021337484940886497,
+          "samples" : [
+            0.00021904148161411285,
+            0.0002587498165667057,
+            0.00025841640308499336,
+            0.0002609998919069767,
+            0.00025937519967556,
+            0.000258374959230423,
+            0.00026462459936738014,
+            0.00021337484940886497,
+            0.0002593332901597023,
+            0.0002592913806438446
+          ]
+        },
+        "hashInvocationsPerSecond" : 76785057.12079158,
+        "inputBytesPerSecond" : 2457121827.8653307,
+        "wallSeconds" : {
+          "max" : 0.002382208,
+          "mean" : 0.0007274372999999999,
+          "median" : 0.0004910415,
+          "min" : 0.000481125,
+          "samples" : [
+            0.00096275,
+            0.00048325,
+            0.000481125,
+            0.000515333,
+            0.0004885,
+            0.000490833,
+            0.000491916,
+            0.002382208,
+            0.00049125,
+            0.000487208
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0008022496476769447,
+        "gpuSeconds" : {
+          "max" : 0.0020292499102652073,
+          "mean" : 0.0010547625366598367,
+          "median" : 0.0008061667904257774,
+          "min" : 0.0008022496476769447,
+          "samples" : [
+            0.0008022496476769447,
+            0.0008032917976379395,
+            0.0020153336226940155,
+            0.0008049583993852139,
+            0.0008026249706745148,
+            0.0008207918144762516,
+            0.0008591250516474247,
+            0.000807375181466341,
+            0.0008026249706745148,
+            0.0020292499102652073
+          ]
+        },
+        "hashInvocationsPerSecond" : 40843894.53442906,
+        "inputBytesPerSecond" : 1960486993.7360766,
+        "wallSeconds" : {
+          "max" : 0.002880042,
+          "mean" : 0.0015387833000000003,
+          "median" : 0.0012451250000000001,
+          "min" : 0.001032625,
+          "samples" : [
+            0.001366875,
+            0.001032625,
+            0.002221208,
+            0.001043667,
+            0.001044791,
+            0.001192375,
+            0.002880042,
+            0.001297875,
+            0.001051833,
+            0.002256542
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "7516dd8a0f87f7e744dac803d44774e60abc8122d700fe90fd2efb7569787d64",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "7516dd8a0f87f7e744dac803d44774e60abc8122d700fe90fd2efb7569787d64"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 64,
+        "leafStride" : 64,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.033Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00029283342882990837,
+        "gpuSeconds" : {
+          "max" : 0.0010298751294612885,
+          "mean" : 0.00042235837318003175,
+          "median" : 0.0003058542497456074,
+          "min" : 0.00029283342882990837,
+          "samples" : [
+            0.00034224987030029297,
+            0.00029687490314245224,
+            0.00030850013718008995,
+            0.0005280417390167713,
+            0.0002971249632537365,
+            0.000298250000923872,
+            0.0003032083623111248,
+            0.0005266251973807812,
+            0.0010298751294612885,
+            0.00029283342882990837
+          ]
+        },
+        "hashInvocationsPerSecond" : 55949896.38125164,
+        "inputBytesPerSecond" : 3580793368.400105,
+        "wallSeconds" : {
+          "max" : 0.005205708,
+          "mean" : 0.0013677290999999999,
+          "median" : 0.0009375625,
+          "min" : 0.00062925,
+          "samples" : [
+            0.000991875,
+            0.00062925,
+            0.005205708,
+            0.001200458,
+            0.000762167,
+            0.001121667,
+            0.000761333,
+            0.00088325,
+            0.001388333,
+            0.00073325
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0008466248400509357,
+        "gpuSeconds" : {
+          "max" : 0.003038333263248205,
+          "mean" : 0.0013319583144038917,
+          "median" : 0.0010499584022909403,
+          "min" : 0.0008466248400509357,
+          "samples" : [
+            0.0008746250532567501,
+            0.0008657500147819519,
+            0.0015419167466461658,
+            0.003038333263248205,
+            0.0008649998344480991,
+            0.0010189586319029331,
+            0.0016308748163282871,
+            0.00155654177069664,
+            0.0010809581726789474,
+            0.0008466248400509357
+          ]
+        },
+        "hashInvocationsPerSecond" : 38703093.0937824,
+        "inputBytesPerSecond" : 2476997958.002074,
+        "wallSeconds" : {
+          "max" : 0.0038155,
+          "mean" : 0.0021315793,
+          "median" : 0.0017140005,
+          "min" : 0.001165542,
+          "samples" : [
+            0.001322,
+            0.001329083,
+            0.0027605,
+            0.003591875,
+            0.001165542,
+            0.0038155,
+            0.001997459,
+            0.002689542,
+            0.001430542,
+            0.00121375
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "2a0aa6cf88a3531795986b5f5fc0090f956e6beef58e3e8129f41ae0934d7ca0",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "2a0aa6cf88a3531795986b5f5fc0090f956e6beef58e3e8129f41ae0934d7ca0"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 64,
+        "leafStride" : 64,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.118Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.000299875158816576,
+        "gpuSeconds" : {
+          "max" : 0.001444083172827959,
+          "mean" : 0.0006437041331082583,
+          "median" : 0.0005380415823310614,
+          "min" : 0.000299875158816576,
+          "samples" : [
+            0.000537416897714138,
+            0.000299875158816576,
+            0.0005375416949391365,
+            0.001444083172827959,
+            0.0005271248519420624,
+            0.0005385414697229862,
+            0.00030504167079925537,
+            0.0005413750186562538,
+            0.0005413750186562538,
+            0.0011646663770079613
+          ]
+        },
+        "hashInvocationsPerSecond" : 54636069.43855448,
+        "inputBytesPerSecond" : 3496708444.067487,
+        "wallSeconds" : {
+          "max" : 0.0018235,
+          "mean" : 0.0010212749999999999,
+          "median" : 0.0008031875000000001,
+          "min" : 0.0005635,
+          "samples" : [
+            0.001071833,
+            0.0005635,
+            0.000785208,
+            0.001641125,
+            0.000750542,
+            0.0018235,
+            0.000694125,
+            0.000821167,
+            0.000684792,
+            0.001376958
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.001020999625325203,
+        "gpuSeconds" : {
+          "max" : 0.003115416970103979,
+          "mean" : 0.0017729375511407852,
+          "median" : 0.0015383751597255468,
+          "min" : 0.001020999625325203,
+          "samples" : [
+            0.001020999625325203,
+            0.0014273752458393574,
+            0.0025290418416261673,
+            0.0015185000374913216,
+            0.0015582502819597721,
+            0.0018433332443237305,
+            0.001486124936491251,
+            0.003115416970103979,
+            0.0017138333059847355,
+            0.0015165000222623348
+          ]
+        },
+        "hashInvocationsPerSecond" : 32093057.810440667,
+        "inputBytesPerSecond" : 2053955699.8682027,
+        "wallSeconds" : {
+          "max" : 0.003507417,
+          "mean" : 0.0022813916000000004,
+          "median" : 0.0019739165,
+          "min" : 0.001735875,
+          "samples" : [
+            0.003507417,
+            0.002012208,
+            0.002784333,
+            0.001776333,
+            0.001935625,
+            0.002129375,
+            0.001735875,
+            0.003285416,
+            0.001903792,
+            0.001743542
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "2a0aa6cf88a3531795986b5f5fc0090f956e6beef58e3e8129f41ae0934d7ca0",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "2a0aa6cf88a3531795986b5f5fc0090f956e6beef58e3e8129f41ae0934d7ca0"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 128,
+        "leafStride" : 128,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.207Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00034175021573901176,
+        "gpuSeconds" : {
+          "max" : 0.0014028334990143776,
+          "mean" : 0.0006133791524916887,
+          "median" : 0.0006122293416410685,
+          "min" : 0.00034175021573901176,
+          "samples" : [
+            0.0006209998391568661,
+            0.00035399990156292915,
+            0.0006041247397661209,
+            0.0014028334990143776,
+            0.000604500062763691,
+            0.0003431248478591442,
+            0.0006216666661202908,
+            0.0006208331324160099,
+            0.000619958620518446,
+            0.00034175021573901176
+          ]
+        },
+        "hashInvocationsPerSecond" : 47941447.424021974,
+        "inputBytesPerSecond" : 6136505270.274813,
+        "wallSeconds" : {
+          "max" : 0.002602125,
+          "mean" : 0.0011932043,
+          "median" : 0.001010771,
+          "min" : 0.0007365,
+          "samples" : [
+            0.00124875,
+            0.000794375,
+            0.00099275,
+            0.002602125,
+            0.001000167,
+            0.000846792,
+            0.001021375,
+            0.001395459,
+            0.00129375,
+            0.0007365
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0010051247663795948,
+        "gpuSeconds" : {
+          "max" : 0.003710999619215727,
+          "mean" : 0.0016926290933042764,
+          "median" : 0.0014630414079874754,
+          "min" : 0.0010051247663795948,
+          "samples" : [
+            0.0010051247663795948,
+            0.0013261246494948864,
+            0.0015999581664800644,
+            0.0021660001948475838,
+            0.0018542497418820858,
+            0.001048749778419733,
+            0.0018689585849642754,
+            0.003710999619215727,
+            0.001021750271320343,
+            0.0013243751600384712
+          ]
+        },
+        "hashInvocationsPerSecond" : 32599932.959591642,
+        "inputBytesPerSecond" : 3129625400.9644117,
+        "wallSeconds" : {
+          "max" : 0.004139125,
+          "mean" : 0.0026479126000000003,
+          "median" : 0.002331167,
+          "min" : 0.001698459,
+          "samples" : [
+            0.003331833,
+            0.001698459,
+            0.001943917,
+            0.002514625,
+            0.003489541,
+            0.001796,
+            0.002147709,
+            0.004139125,
+            0.003657,
+            0.001760917
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "13c2f20947524e4b5d1c49eee9f7b8f9d6c17f4b82adbad5d0c4743cba182603",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "13c2f20947524e4b5d1c49eee9f7b8f9d6c17f4b82adbad5d0c4743cba182603"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 128,
+        "leafStride" : 128,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.299Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00033233361318707466,
+        "gpuSeconds" : {
+          "max" : 0.0006109997630119324,
+          "mean" : 0.0004464250523597002,
+          "median" : 0.0003511665854603052,
+          "min" : 0.00033233361318707466,
+          "samples" : [
+            0.0006109997630119324,
+            0.00059525016695261,
+            0.00033233361318707466,
+            0.00034970836713910103,
+            0.0003526248037815094,
+            0.000598374754190445,
+            0.00033350009471178055,
+            0.00034679193049669266,
+            0.00034462520852684975,
+            0.0006000418215990067
+          ]
+        },
+        "hashInvocationsPerSecond" : 49299858.184303634,
+        "inputBytesPerSecond" : 6310381847.590865,
+        "wallSeconds" : {
+          "max" : 0.00306425,
+          "mean" : 0.0013504709,
+          "median" : 0.00099475,
+          "min" : 0.000719042,
+          "samples" : [
+            0.001105875,
+            0.000964083,
+            0.000770042,
+            0.00306425,
+            0.001061917,
+            0.001010833,
+            0.000719042,
+            0.002886167,
+            0.000943833,
+            0.000978667
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0008965833112597466,
+        "gpuSeconds" : {
+          "max" : 0.00429824972525239,
+          "mean" : 0.0020500124897807836,
+          "median" : 0.001611562678590417,
+          "min" : 0.0008965833112597466,
+          "samples" : [
+            0.0016124583780765533,
+            0.003243749961256981,
+            0.0008965833112597466,
+            0.0010553747415542603,
+            0.0016135000623762608,
+            0.00429824972525239,
+            0.0008997498080134392,
+            0.0010328334756195545,
+            0.0016106669791042805,
+            0.004236958455294371
+          ]
+        },
+        "hashInvocationsPerSecond" : 36546520.09299687,
+        "inputBytesPerSecond" : 3508501619.977933,
+        "wallSeconds" : {
+          "max" : 0.004693792,
+          "mean" : 0.0026171501000000004,
+          "median" : 0.0019658540000000004,
+          "min" : 0.001309375,
+          "samples" : [
+            0.001963292,
+            0.004491833,
+            0.001556,
+            0.001309375,
+            0.001964958,
+            0.004693792,
+            0.001317292,
+            0.002288292,
+            0.00196675,
+            0.004619917
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "13c2f20947524e4b5d1c49eee9f7b8f9d6c17f4b82adbad5d0c4743cba182603",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "13c2f20947524e4b5d1c49eee9f7b8f9d6c17f4b82adbad5d0c4743cba182603"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 135,
+        "leafStride" : 135,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.393Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.00035291677340865135,
+        "gpuSeconds" : {
+          "max" : 0.0006315000355243683,
+          "mean" : 0.0005132208578288555,
+          "median" : 0.0005654999986290932,
+          "min" : 0.00035291677340865135,
+          "samples" : [
+            0.00047512492164969444,
+            0.00035291677340865135,
+            0.0005998751148581505,
+            0.0006017913110554218,
+            0.0003742501139640808,
+            0.0006315000355243683,
+            0.000596500001847744,
+            0.0006051249802112579,
+            0.00036062533035874367,
+            0.0005344999954104424
+          ]
+        },
+        "hashInvocationsPerSecond" : 46424543.21951014,
+        "inputBytesPerSecond" : 6267313334.633868,
+        "wallSeconds" : {
+          "max" : 0.002817958,
+          "mean" : 0.0012604708000000001,
+          "median" : 0.001048792,
+          "min" : 0.000870083,
+          "samples" : [
+            0.002817958,
+            0.001132083,
+            0.001016375,
+            0.001031334,
+            0.001628584,
+            0.001082083,
+            0.000990917,
+            0.000969041,
+            0.00106625,
+            0.000870083
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0009760414250195026,
+        "gpuSeconds" : {
+          "max" : 0.0044228751212358475,
+          "mean" : 0.0019022708293050528,
+          "median" : 0.0016034585423767567,
+          "min" : 0.0009760414250195026,
+          "samples" : [
+            0.0010639997199177742,
+            0.0016894163563847542,
+            0.0044228751212358475,
+            0.0018722498789429665,
+            0.0009760414250195026,
+            0.0016036252491176128,
+            0.0033173752017319202,
+            0.0013960832729935646,
+            0.0010777502320706844,
+            0.0016032918356359005
+          ]
+        },
+        "hashInvocationsPerSecond" : 33571321.01165201,
+        "inputBytesPerSecond" : 3340382812.0664587,
+        "wallSeconds" : {
+          "max" : 0.004701709,
+          "mean" : 0.0026935125999999997,
+          "median" : 0.0019659789999999996,
+          "min" : 0.001547125,
+          "samples" : [
+            0.001947333,
+            0.001950042,
+            0.004701709,
+            0.0040465,
+            0.001547125,
+            0.001963875,
+            0.0040035,
+            0.003002625,
+            0.001804334,
+            0.001968083
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "f30191a9c85303786b57b6a3f97b0294652956c7a8aae93786b800db869316bf",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "f30191a9c85303786b57b6a3f97b0294652956c7a8aae93786b800db869316bf"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 135,
+        "leafStride" : 135,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.487Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.0004486246034502983,
+        "gpuSeconds" : {
+          "max" : 0.0006662500090897083,
+          "mean" : 0.0005904207937419415,
+          "median" : 0.0006061876192688942,
+          "min" : 0.0004486246034502983,
+          "samples" : [
+            0.0005988748744130135,
+            0.0005942084826529026,
+            0.0006662500090897083,
+            0.0006353333592414856,
+            0.0006095003336668015,
+            0.0006028749048709869,
+            0.0004819580353796482,
+            0.0006378334946930408,
+            0.0006287498399615288,
+            0.0004486246034502983
+          ]
+        },
+        "hashInvocationsPerSecond" : 36520511.52342814,
+        "inputBytesPerSecond" : 4930269055.662799,
+        "wallSeconds" : {
+          "max" : 0.003459875,
+          "mean" : 0.0012778290999999999,
+          "median" : 0.0010504795000000002,
+          "min" : 0.000822666,
+          "samples" : [
+            0.000966666,
+            0.001049292,
+            0.003459875,
+            0.00093525,
+            0.001340667,
+            0.000822666,
+            0.001087916,
+            0.001230417,
+            0.001051667,
+            0.000833875
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0010577919892966747,
+        "gpuSeconds" : {
+          "max" : 0.004265500232577324,
+          "mean" : 0.0020903667435050012,
+          "median" : 0.0017562711145728827,
+          "min" : 0.0010577919892966747,
+          "samples" : [
+            0.004265500232577324,
+            0.0016132914461195469,
+            0.0010726251639425755,
+            0.0016567502170801163,
+            0.003286291379481554,
+            0.001875000074505806,
+            0.0010577919892966747,
+            0.001855792012065649,
+            0.0031479583121836185,
+            0.0010726666077971458
+          ]
+        },
+        "hashInvocationsPerSecond" : 30976789.701146025,
+        "inputBytesPerSecond" : 3082224135.7375054,
+        "wallSeconds" : {
+          "max" : 0.004618708,
+          "mean" : 0.0029270998,
+          "median" : 0.0027792084999999998,
+          "min" : 0.001489416,
+          "samples" : [
+            0.004618708,
+            0.002445792,
+            0.001934291,
+            0.001957917,
+            0.003641833,
+            0.003384792,
+            0.001489416,
+            0.002204833,
+            0.004480791,
+            0.003112625
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "f30191a9c85303786b57b6a3f97b0294652956c7a8aae93786b800db869316bf",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "f30191a9c85303786b57b6a3f97b0294652956c7a8aae93786b800db869316bf"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "sha3-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 136,
+        "leafStride" : 136,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.591Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.0005172914825379848,
+        "gpuSeconds" : {
+          "max" : 0.0009825830347836018,
+          "mean" : 0.0007778874598443509,
+          "median" : 0.0009297083597630262,
+          "min" : 0.0005172914825379848,
+          "samples" : [
+            0.000527416355907917,
+            0.0009298748336732388,
+            0.0009692083112895489,
+            0.00093112513422966,
+            0.0005172914825379848,
+            0.0009295418858528137,
+            0.0009825830347836018,
+            0.0005206665955483913,
+            0.0005342084914445877,
+            0.0009369584731757641
+          ]
+        },
+        "hashInvocationsPerSecond" : 31672665.321329582,
+        "inputBytesPerSecond" : 4307482483.700823,
+        "wallSeconds" : {
+          "max" : 0.001990833,
+          "mean" : 0.0014059208,
+          "median" : 0.001334479,
+          "min" : 0.000791959,
+          "samples" : [
+            0.001325,
+            0.001343958,
+            0.001950166,
+            0.001990833,
+            0.000791959,
+            0.00130175,
+            0.00177975,
+            0.000951,
+            0.001181625,
+            0.001443167
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0011847084388136864,
+        "gpuSeconds" : {
+          "max" : 0.0030136248096823692,
+          "mean" : 0.0016689082141965628,
+          "median" : 0.0015003122389316559,
+          "min" : 0.0011847084388136864,
+          "samples" : [
+            0.0011963332071900368,
+            0.0019628750160336494,
+            0.0030136248096823692,
+            0.0011847084388136864,
+            0.0015579997561872005,
+            0.0021969997324049473,
+            0.0014426247216761112,
+            0.001184999942779541,
+            0.0012667500413954258,
+            0.00168216647580266
+          ]
+        },
+        "hashInvocationsPerSecond" : 27658281.925307628,
+        "inputBytesPerSecond" : 2765858579.754168,
+        "wallSeconds" : {
+          "max" : 0.00326375,
+          "mean" : 0.0023489960999999995,
+          "median" : 0.0021785005,
+          "min" : 0.001750209,
+          "samples" : [
+            0.001965583,
+            0.002479667,
+            0.00326375,
+            0.002011959,
+            0.001882375,
+            0.002864209,
+            0.001750209,
+            0.002915208,
+            0.002318292,
+            0.002038709
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "3a07eb4e2d317bc5476c54db58af8674a0e78571ad8117986081892b73d2179a",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "3a07eb4e2d317bc5476c54db58af8674a0e78571ad8117986081892b73d2179a"
+      }
+    },
+    {
+      "configuration" : {
+        "hashFunction" : "keccak-256",
+        "iterations" : 10,
+        "leafCount" : 16384,
+        "leafLength" : 136,
+        "leafStride" : 136,
+        "merkleSubtreeMode" : "disabled",
+        "verifyWithCPU" : true,
+        "warmupIterations" : 1
+      },
+      "device" : {
+        "hasUnifiedMemory" : true,
+        "maxThreadgroupMemoryLength" : 32768,
+        "maxThreadsPerThreadgroup" : 1024,
+        "name" : "Apple M4",
+        "registryID" : 4294968699,
+        "supports64BitAtomics" : true,
+        "supportsApple3" : true,
+        "supportsApple4" : true,
+        "supportsApple7" : true,
+        "supportsApple9" : true,
+        "supportsBinaryArchives" : true,
+        "supportsNonuniformThreadgroups" : true,
+        "supportsSIMDReductions" : true
+      },
+      "generatedAt" : "2026-04-12T23:14:36.689Z",
+      "hash" : {
+        "bestSecondsForThroughput" : 0.0005056248046457767,
+        "gpuSeconds" : {
+          "max" : 0.0009488333016633987,
+          "mean" : 0.0006314499769359827,
+          "median" : 0.0005216251593083143,
+          "min" : 0.0005056248046457767,
+          "samples" : [
+            0.0009117498993873596,
+            0.0006390833295881748,
+            0.0005056248046457767,
+            0.0005151252262294292,
+            0.0005152914673089981,
+            0.0009488333016633987,
+            0.0007223333232104778,
+            0.0005132080987095833,
+            0.0005180002190172672,
+            0.0005252500995993614
+          ]
+        },
+        "hashInvocationsPerSecond" : 32403473.582507614,
+        "inputBytesPerSecond" : 4406872407.221036,
+        "wallSeconds" : {
+          "max" : 0.002324417,
+          "mean" : 0.0014486167,
+          "median" : 0.0013271665,
+          "min" : 0.000913875,
+          "samples" : [
+            0.001312958,
+            0.001638458,
+            0.000947042,
+            0.002272958,
+            0.000913875,
+            0.001341375,
+            0.001782292,
+            0.00092675,
+            0.002324417,
+            0.001026042
+          ]
+        }
+      },
+      "merkle" : {
+        "bestSecondsForThroughput" : 0.0010630832985043526,
+        "gpuSeconds" : {
+          "max" : 0.001914499793201685,
+          "mean" : 0.0013584208209067583,
+          "median" : 0.0011862500105053186,
+          "min" : 0.0010630832985043526,
+          "samples" : [
+            0.001914499793201685,
+            0.0011180415749549866,
+            0.0010784585028886795,
+            0.0011777500621974468,
+            0.0011947499588131905,
+            0.0019108750857412815,
+            0.0011382498778402805,
+            0.0010630832985043526,
+            0.0012304582633078098,
+            0.0017580417916178703
+          ]
+        },
+        "hashInvocationsPerSecond" : 30822608.20586661,
+        "inputBytesPerSecond" : 3082294684.3488426,
+        "wallSeconds" : {
+          "max" : 0.002494125,
+          "mean" : 0.0018105876,
+          "median" : 0.0016475,
+          "min" : 0.001341958,
+          "samples" : [
+            0.002363916,
+            0.001469834,
+            0.001341958,
+            0.00172125,
+            0.00157375,
+            0.002308667,
+            0.001484959,
+            0.001367584,
+            0.001979833,
+            0.002494125
+          ]
+        }
+      },
+      "merkleFusedUpperNodeLimit" : 512,
+      "merkleSubtreeLeafCount" : 0,
+      "pipelineArchive" : {
+        "enabled" : true,
+        "mode" : "readWrite",
+        "path" : "\/Users\/home\/MetalCryptography\/AppleZKProver\/.build\/applezkprover-pipeline-archives\/Apple-M4-10000057b.metalar"
+      },
+      "schemaVersion" : 2,
+      "target" : "metal",
+      "verification" : {
+        "cpuRootHex" : "3a07eb4e2d317bc5476c54db58af8674a0e78571ad8117986081892b73d2179a",
+        "enabled" : true,
+        "matchedCPU" : true,
+        "rootHex" : "3a07eb4e2d317bc5476c54db58af8674a0e78571ad8117986081892b73d2179a"
+      }
+    }
+  ],
+  "schemaVersion" : 1,
+  "target" : "metal"
+}
