@@ -267,6 +267,58 @@ final class SHA3OracleTests: XCTestCase {
         }
     }
 
+    func testGPUSIMDGroupOneBlockHashersMatchCPU() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
+            throw XCTSkip("SIMD-group hash path requires Apple7 or equivalent SIMD-group support")
+        }
+
+        let sha3Hasher = SHA3BatchHasher(context: context)
+        let keccakHasher = Keccak256BatchHasher(context: context)
+        for messageLength in [0, 1, 31, 32, 64, 128, 135, 136] {
+            let count = 9
+            let messageStride = messageLength == 0 ? 0 : messageLength + 3
+            let outputStride = 40
+            let messages = Self.makeBatchMessages(
+                count: count,
+                messageStride: messageStride,
+                messageLength: messageLength,
+                salt: messageLength * 13
+            )
+            let descriptor = FixedMessageBatchDescriptor(
+                count: count,
+                messageStride: messageStride,
+                messageLength: messageLength,
+                outputStride: outputStride
+            )
+
+            let sha3Result = try sha3Hasher.hashFixedOneBlock(
+                messages: messages,
+                descriptor: descriptor,
+                kernelFamily: .simdgroup
+            )
+            let keccakResult = try keccakHasher.hashFixedOneBlock(
+                messages: messages,
+                descriptor: descriptor,
+                kernelFamily: .simdgroup
+            )
+
+            for i in 0..<count {
+                let messageStart = i * messageStride
+                let message = messages.subdata(in: messageStart..<(messageStart + messageLength))
+                let digestStart = i * outputStride
+                let sha3Digest = sha3Result.digests.subdata(in: digestStart..<(digestStart + 32))
+                let keccakDigest = keccakResult.digests.subdata(in: digestStart..<(digestStart + 32))
+                XCTAssertEqual(sha3Digest, SHA3Oracle.sha3_256(message), "SHA3 length \(messageLength), message \(i)")
+                XCTAssertEqual(keccakDigest, KeccakOracle.keccak_256(message), "Keccak length \(messageLength), message \(i)")
+            }
+        }
+    }
+
     func testGPUHashPlansRejectUInt32OverflowingCounts() throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("No Metal device on this test machine")

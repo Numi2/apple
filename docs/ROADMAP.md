@@ -56,7 +56,7 @@ Exit gate:
 This is the first performance battlefield.
 
 - Keep one-thread-per-Keccak-state kernels as correctness baselines.
-- Implement Apple7+ simdgroup-cooperative Keccak-F1600. The permutation-only kernel is implemented and CPU-differential-tested; fixed-width SHA3/Keccak integration remains before planner eligibility.
+- Implement Apple7+ simdgroup-cooperative Keccak-F1600. The first path is implemented, CPU-differential-tested, and wired into selectable fixed-width SHA3/Keccak batch kernels; current Apple M4 / Apple9 measurements are slower than scalar, so it remains opt-in and planner-ineligible.
 - Specialize SHA3 paths for 32-byte, 64-byte, 128-byte, and full-rate 136-byte absorbs. The 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak paths are implemented.
 - Keep Keccak-256 domain handling separate from SHA3-256 and add Keccak-domain Merkle only as a distinct commitment API.
 - Add Keccak-F permutation-only batch kernels for Plonky3-style benchmark relevance.

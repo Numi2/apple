@@ -80,6 +80,7 @@ swift test -c release -Xswiftc -Osize
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --iterations 10 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash keccak-256 --json
+swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash-kernel simdgroup --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --merkle-subtree-leaves 64 --json
 swift run zkmetal-bench --suite --leaves 16384 --iterations 5 --json
 ```
@@ -102,6 +103,8 @@ Benchmark JSON includes the selected Merkle subtree leaf count, upper-fusion nod
 
 `--hash keccak-256` changes only the standalone batch-hash benchmark. Merkle commitments remain SHA3-256 in this stage so commitment semantics do not change silently. A Keccak-domain Merkle tree should be added as a separate, domain-tagged API when the protocol layer needs it.
 
+`--hash-kernel simdgroup` selects the Apple7+ simdgroup fixed-rate hash path for the standalone hash benchmark only. It does not change Merkle commitment kernels or planner eligibility.
+
 `MetalProofPlanner` can run a correctness-gated Merkle short race, persist every Merkle candidate in SQLite, and construct the current GPU-resident M31 sum-check chunk plan. See `docs/PLANNER.md` for the current planner contract and eligibility rules.
 
 Release benchmark baselines are stored under `BenchmarkBaselines/`. The current Apple M4 / Apple9 baseline was produced with `swift build -c release -Xswiftc -Osize`; see `docs/BENCHMARK_FINDINGS.md` for the exact measurement constraint and command.
@@ -118,4 +121,4 @@ The next step is not another protocol wrapper. The next step is a better kernel 
 - binary archive caching for pipeline creation,
 - streaming codeword / matrix kernels that keep the exact same GPU residency discipline.
 
-The first simdgroup Keccak-F1600 permutation-only kernel is present and CPU-differential-tested. It is deliberately not used for commitments yet; the next step is to wire that tested permutation into domain-correct fixed-width SHA3-256 and Keccak-256 hash kernels, then benchmark it against the scalar family before planner eligibility.
+The first simdgroup Keccak-F1600 path is present, CPU-differential-tested, and wired into selectable fixed-width SHA3-256 and Keccak-256 batch hash kernels. Current Apple M4 / Apple9 measurements are slower than the scalar baseline, so this path remains opt-in and planner-ineligible while the next kernel iteration is designed.

@@ -99,6 +99,11 @@ public struct FixedMessageBatchDescriptor: Sendable {
     }
 }
 
+public enum FixedOneBlockHashKernelFamily: String, Sendable {
+    case scalar
+    case simdgroup
+}
+
 public struct GPUHashBatchResult: Sendable {
     public let digests: Data
     public let stats: GPUExecutionStats

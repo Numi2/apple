@@ -346,6 +346,106 @@ kernel void keccak_f1600_permutation_simdgroup(
     }
 }
 
+inline uint2 load_rate_lane_pair(const device uchar *msg, uint inputLength, uint lane) {
+    if (lane >= 17u) {
+        return uint2(0, 0);
+    }
+
+    const uint base = lane * 8u;
+    if (base >= inputLength) {
+        return uint2(0, 0);
+    }
+
+    const uint count = min(8u, inputLength - base);
+    return split_u64(load_le64_partial(msg + base, count));
+}
+
+inline uint2 xor_byte_into_lane_pair(uint2 word, uint lane, uint targetLane, uint byteOffset, uchar value) {
+    if (lane != targetLane) {
+        return word;
+    }
+
+    const uint shift = byteOffset * 8u;
+    if (shift < 32u) {
+        word.x ^= uint(value) << shift;
+    } else {
+        word.y ^= uint(value) << (shift - 32u);
+    }
+    return word;
+}
+
+inline uint2 absorb_oneblock_simdgroup_pair(
+    const device uchar *msg,
+    uint inputLength,
+    uchar domainSuffix,
+    uint lane)
+{
+    uint2 word = load_rate_lane_pair(msg, inputLength, lane);
+
+    if (inputLength == 136u) {
+        word = keccak_f1600_simdgroup_pair(word, lane);
+        if (lane == 0u) {
+            word.x ^= uint(domainSuffix);
+        }
+        if (lane == 16u) {
+            word.y ^= 0x80000000u;
+        }
+        return keccak_f1600_simdgroup_pair(word, lane);
+    }
+
+    const uint padLane = inputLength >> 3;
+    const uint padByte = inputLength & 7u;
+    word = xor_byte_into_lane_pair(word, lane, padLane, padByte, domainSuffix);
+    if (lane == 16u) {
+        word.y ^= 0x80000000u;
+    }
+    return keccak_f1600_simdgroup_pair(word, lane);
+}
+
+inline void store_digest_lane_pair(uint2 word, device uchar *dst, uint lane) {
+    if (lane < 4u) {
+        store_le64(join_u64(word), dst + lane * 8u);
+    }
+}
+
+kernel void sha3_256_oneblock_simdgroup_specialized(
+    const device uchar *inputs [[buffer(0)]],
+    device uchar *outputs [[buffer(1)]],
+    constant SHA3BatchParams &params [[buffer(2)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdWidth [[threads_per_simdgroup]],
+    uint gid [[threadgroup_position_in_grid]])
+{
+    if (gid >= params.count || simdWidth < 25u) {
+        return;
+    }
+
+    const uint inputLength = uint(AZK_FC_LEAF_BYTES);
+    const device uchar *msg = inputs + gid * params.inputStride;
+    uint2 word = absorb_oneblock_simdgroup_pair(msg, inputLength, uchar(AZK_FC_DOMAIN_SUFFIX), lane);
+    device uchar *dst = outputs + gid * params.outputStride;
+    store_digest_lane_pair(word, dst, lane);
+}
+
+kernel void keccak_256_oneblock_simdgroup_specialized(
+    const device uchar *inputs [[buffer(0)]],
+    device uchar *outputs [[buffer(1)]],
+    constant SHA3BatchParams &params [[buffer(2)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdWidth [[threads_per_simdgroup]],
+    uint gid [[threadgroup_position_in_grid]])
+{
+    if (gid >= params.count || simdWidth < 25u) {
+        return;
+    }
+
+    const uint inputLength = uint(AZK_FC_LEAF_BYTES);
+    const device uchar *msg = inputs + gid * params.inputStride;
+    uint2 word = absorb_oneblock_simdgroup_pair(msg, inputLength, uchar(AZK_FC_DOMAIN_SUFFIX), lane);
+    device uchar *dst = outputs + gid * params.outputStride;
+    store_digest_lane_pair(word, dst, lane);
+}
+
 inline void absorb_fixed_32(const device uchar *msg, thread ulong state[25], uchar domainSuffix) {
     clear_state(state);
     state[0] = load_le64(msg + 0);

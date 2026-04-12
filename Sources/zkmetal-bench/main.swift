@@ -45,6 +45,7 @@ struct BenchConfig {
     var leafCount: Int = 1 << 14
     var leafLength: Int = 32
     var hashFunction: BenchHashFunction = .sha3_256
+    var hashKernelFamily: FixedOneBlockHashKernelFamily = .scalar
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
     var verifyWithCPU = true
     var warmupIterations = 1
@@ -110,6 +111,17 @@ struct BenchConfig {
                     return BenchError.invalidArgument("--hash-function must be either 'sha3-256' or 'keccak-256'.")
                 }
                 hashFunction = parsed
+            case "--hash-kernel", "--hash-kernel-family":
+                let valueResult = Self.requireValue(flag: arg, value: iterator.next())
+                let value: String
+                switch valueResult {
+                case let .success(parsed): value = parsed
+                case let .failure(error): return error
+                }
+                guard let parsed = FixedOneBlockHashKernelFamily(rawValue: value) else {
+                    return BenchError.invalidArgument("--hash-kernel must be either 'scalar' or 'simdgroup'.")
+                }
+                hashKernelFamily = parsed
             case "--json":
                 format = .json
             case "--suite":
@@ -174,6 +186,7 @@ struct BenchConfig {
           --iterations N             Timed iterations. Default: 5
           --format text|json         Output format. Default: text
           --hash-function NAME       Standalone hash benchmark: sha3-256 or keccak-256. Default: sha3-256
+          --hash-kernel NAME         Standalone hash kernel family: scalar or simdgroup. Default: scalar
           --json                     Shortcut for --format json
           --suite                    Run the supported benchmark matrix
           --suite-leaf-bytes LIST    Comma-separated suite leaf lengths. Default: 0,32,64,128,135,136
@@ -360,6 +373,7 @@ struct BenchmarkConfigReport: Codable {
     let leafLength: Int
     let leafStride: Int
     let hashFunction: String
+    let hashKernelFamily: String
     let merkleSubtreeMode: String
     let warmupIterations: Int
     let iterations: Int
@@ -370,6 +384,7 @@ struct BenchmarkSuiteConfigReport: Codable {
     let leafCount: Int
     let leafLengths: [Int]
     let hashFunctions: [String]
+    let hashKernelFamily: String
     let merkleSubtreeMode: String
     let warmupIterations: Int
     let iterations: Int
@@ -559,6 +574,7 @@ func emitText(_ report: BenchmarkReport) {
     print("  leaves       : \(report.configuration.leafCount)")
     print("  leaf bytes   : \(report.configuration.leafLength)")
     print("  hash fn      : \(report.configuration.hashFunction)")
+    print("  hash kernel  : \(report.configuration.hashKernelFamily)")
     print("  subtree mode : \(report.configuration.merkleSubtreeMode)")
     print("  warmups      : \(report.configuration.warmupIterations)")
     print("  iterations   : \(report.configuration.iterations)")
@@ -618,6 +634,7 @@ func emitText(_ suite: BenchmarkSuiteReport) {
     print("  leaves       : \(suite.configuration.leafCount)")
     print("  leaf bytes   : \(suite.configuration.leafLengths.map(String.init).joined(separator: ","))")
     print("  hash fns     : \(suite.configuration.hashFunctions.joined(separator: ","))")
+    print("  hash kernel  : \(suite.configuration.hashKernelFamily)")
     print("  subtree mode : \(suite.configuration.merkleSubtreeMode)")
     print("  warmups      : \(suite.configuration.warmupIterations)")
     print("  iterations   : \(suite.configuration.iterations)")
@@ -643,13 +660,14 @@ func suiteTarget(for reports: [BenchmarkReport]) -> String {
 
 func makeSuiteReport(config: BenchConfig, reports: [BenchmarkReport]) -> BenchmarkSuiteReport {
     BenchmarkSuiteReport(
-        schemaVersion: 1,
+        schemaVersion: 3,
         generatedAt: iso8601Now(),
         target: suiteTarget(for: reports),
         configuration: BenchmarkSuiteConfigReport(
             leafCount: config.leafCount,
             leafLengths: config.suiteLeafLengths,
             hashFunctions: config.suiteHashFunctions.map(\.rawValue),
+            hashKernelFamily: config.hashKernelFamily.rawValue,
             merkleSubtreeMode: merkleSubtreeModeDescription(config.merkleSubtreeMode),
             warmupIterations: config.warmupIterations,
             iterations: config.iterations,
@@ -680,7 +698,7 @@ func verificationFailureMessages(in report: BenchmarkReport) -> [String] {
     guard report.verification.matchedCPU == true else {
         let cpuRoot = report.verification.cpuRootHex ?? "missing"
         return [
-            "\(report.configuration.hashFunction) leaf-bytes=\(report.configuration.leafLength) target=\(report.target) root=\(report.verification.rootHex) cpu-root=\(cpuRoot)",
+            "\(report.configuration.hashFunction) kernel=\(report.configuration.hashKernelFamily) leaf-bytes=\(report.configuration.leafLength) target=\(report.target) root=\(report.verification.rootHex) cpu-root=\(cpuRoot)",
         ]
     }
     return []
@@ -688,17 +706,6 @@ func verificationFailureMessages(in report: BenchmarkReport) -> [String] {
 
 func verificationFailureMessages(in suite: BenchmarkSuiteReport) -> [String] {
     suite.reports.flatMap { verificationFailureMessages(in: $0) }
-}
-
-func exitIfVerificationFailed(_ messages: [String]) {
-    guard !messages.isEmpty else {
-        return
-    }
-
-    for message in messages {
-        fputs("verification failure: \(message)\n", stderr)
-    }
-    exit(verificationFailureExitCode)
 }
 
 @inline(never)
@@ -709,6 +716,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
         leafLength: config.leafLength,
         leafStride: config.leafLength,
         hashFunction: config.hashFunction.rawValue,
+        hashKernelFamily: config.hashKernelFamily.rawValue,
         merkleSubtreeMode: merkleSubtreeModeDescription(config.merkleSubtreeMode),
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
@@ -724,7 +732,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
             leafLength: config.leafLength
         )
         let report = BenchmarkReport(
-            schemaVersion: 2,
+            schemaVersion: 3,
             generatedAt: iso8601Now(),
             target: "cpu",
             configuration: configReport,
@@ -755,13 +763,19 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     switch config.hashFunction {
     case .sha3_256:
         let hasher = SHA3BatchHasher(context: context)
-        let hashPlan = try hasher.makeFixedOneBlockPlan(descriptor: descriptor)
+        let hashPlan = try hasher.makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: config.hashKernelFamily
+        )
         runHash = {
             try hashPlan.hash(messages: leaves)
         }
     case .keccak_256:
         let hasher = Keccak256BatchHasher(context: context)
-        let hashPlan = try hasher.makeFixedOneBlockPlan(descriptor: descriptor)
+        let hashPlan = try hasher.makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: config.hashKernelFamily
+        )
         runHash = {
             try hashPlan.hash(messages: leaves)
         }
@@ -806,7 +820,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     let merkleHashInvocations = config.leafCount + config.leafCount - 1
     let merkleInputBytes = hashInputBytes + Double(config.leafCount - 1) * 64
     let report = BenchmarkReport(
-        schemaVersion: 2,
+        schemaVersion: 3,
         generatedAt: iso8601Now(),
         target: "metal",
         configuration: configReport,
@@ -847,7 +861,7 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
         leafLength: config.leafLength
     )
     let report = BenchmarkReport(
-        schemaVersion: 2,
+        schemaVersion: 3,
         generatedAt: iso8601Now(),
         target: "cpu",
         configuration: configReport,
