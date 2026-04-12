@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+*.xccheckout
+*.xcscmblueprint
+*.xcuserstate
+xcuserdata/
+BenchmarkBaselines/*.local.json
