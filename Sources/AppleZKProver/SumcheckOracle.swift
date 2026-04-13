@@ -30,6 +30,38 @@ public enum M31Field {
         multiply(value, value)
     }
 
+    public static func inverse(_ value: UInt32) throws -> UInt32 {
+        guard value > 0, value < modulus else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return pow(value, exponent: modulus - 2)
+    }
+
+    public static func batchInverse(_ values: [UInt32]) throws -> [UInt32] {
+        guard !values.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try validateCanonical(values)
+        guard values.allSatisfy({ $0 != 0 }) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        var prefixes = Array(repeating: UInt32(1), count: values.count)
+        var accumulator: UInt32 = 1
+        for index in values.indices {
+            prefixes[index] = accumulator
+            accumulator = multiply(accumulator, values[index])
+        }
+
+        var inverseAccumulator = try inverse(accumulator)
+        var inverses = Array(repeating: UInt32(0), count: values.count)
+        for index in values.indices.reversed() {
+            inverses[index] = multiply(inverseAccumulator, prefixes[index])
+            inverseAccumulator = multiply(inverseAccumulator, values[index])
+        }
+        return inverses
+    }
+
     public static func dotProduct(lhs: [UInt32], rhs: [UInt32]) throws -> UInt32 {
         guard lhs.count == rhs.count, !lhs.isEmpty else {
             throw AppleZKProverError.invalidInputLayout
@@ -63,7 +95,7 @@ public enum M31Field {
                     return subtract(left, right)
                 case .multiply:
                     return multiply(left, right)
-                case .negate, .square:
+                case .negate, .square, .inverse:
                     preconditionFailure("unary M31 operation reached binary oracle path")
                 }
             }
@@ -71,6 +103,9 @@ public enum M31Field {
 
         guard rhs == nil else {
             throw AppleZKProverError.invalidInputLayout
+        }
+        if operation == .inverse {
+            return try batchInverse(lhs)
         }
         return lhs.map { value in
             switch operation {
@@ -80,8 +115,26 @@ public enum M31Field {
                 return square(value)
             case .add, .subtract, .multiply:
                 preconditionFailure("binary M31 operation reached unary oracle path")
+            case .inverse:
+                preconditionFailure("M31 inverse reached non-batch oracle path")
             }
         }
+    }
+
+    private static func pow(_ base: UInt32, exponent: UInt32) -> UInt32 {
+        var result: UInt32 = 1
+        var power = base
+        var remaining = exponent
+        while remaining > 0 {
+            if remaining & 1 == 1 {
+                result = multiply(result, power)
+            }
+            remaining >>= 1
+            if remaining > 0 {
+                power = square(power)
+            }
+        }
+        return result
     }
 
     private static func reduce(_ value: UInt64) -> UInt32 {

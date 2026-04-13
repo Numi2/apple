@@ -21,7 +21,7 @@ round-trips.
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
-| M31 field lanes | CPU oracle plus reusable GPU vector add, subtract, negate, multiply, square, and dot-product plans |
+| M31 field lanes | CPU oracle plus reusable GPU vector add, subtract, negate, multiply, square, inverse, and dot-product plans |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
 | Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
@@ -71,8 +71,9 @@ Implemented today:
 - Reusable hash, permutation, Merkle, and sum-check plans with explicit clearing
   for private buffers.
 - Canonical M31 field arithmetic oracles and reusable GPU vector plans for add,
-  subtract, negate, multiply, square, and dot product. Inputs are validated as
-  canonical field elements before CPU-backed APIs accept the result.
+  subtract, negate, multiply, square, inverse, and dot product. Inputs are
+  validated as canonical field elements before CPU-backed APIs accept the
+  result, and inversion rejects zero at the public API boundary.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan
   history, drift observation, and M31 sum-check plan construction.
 - GPU transcript helpers for canonical packing, Keccak absorb, and challenge
@@ -166,6 +167,7 @@ swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --iterations 10 --json
 swift run zkmetal-bench --suite --leaves 16384 --iterations 5 --json
 swift run zkmetal-bench --keccakf-permutation --states 16384 --iterations 5 --json
 swift run zkmetal-bench --m31-dot-product --elements 16384 --iterations 5 --json
+swift run zkmetal-bench --m31-inverse --elements 16384 --iterations 5 --json
 ```
 
 Useful benchmark variants:

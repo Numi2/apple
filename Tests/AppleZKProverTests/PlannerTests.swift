@@ -135,7 +135,22 @@ final class PlannerTests: XCTestCase {
         XCTAssertEqual(try M31Field.apply(.negate, lhs: lhs), [0, M31Field.modulus - 1, M31Field.modulus - 2, 2, 1])
         XCTAssertEqual(try M31Field.apply(.multiply, lhs: lhs, rhs: rhs), [0, M31Field.modulus - 1, M31Field.modulus - 4, M31Field.modulus - 4, M31Field.modulus - 1])
         XCTAssertEqual(try M31Field.apply(.square, lhs: lhs), [0, 1, 4, 4, 1])
+
+        let nonzero: [UInt32] = [1, 2, 3, M31Field.modulus - 2, M31Field.modulus - 1]
+        let inverses = try M31Field.batchInverse(nonzero)
+        XCTAssertEqual(inverses, [1, 1_073_741_824, 1_431_655_765, 1_073_741_823, M31Field.modulus - 1])
+        XCTAssertEqual(try M31Field.apply(.inverse, lhs: nonzero), inverses)
+        for (value, inverse) in zip(nonzero, inverses) {
+            XCTAssertEqual(M31Field.multiply(value, inverse), 1)
+        }
+
         XCTAssertThrowsError(try M31Field.apply(.add, lhs: [M31Field.modulus], rhs: [0])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try M31Field.batchInverse([0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try M31Field.batchInverse([M31Field.modulus])) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
     }
@@ -460,32 +475,45 @@ final class PlannerTests: XCTestCase {
         rhs.replaceSubrange(0..<5, with: [0, M31Field.modulus - 1, M31Field.modulus - 2, 2, 1])
 
         for operation in M31VectorOperation.allCases {
+            let operationLHS = operation == .inverse
+                ? lhs.map { $0 == 0 ? UInt32(1) : $0 }
+                : lhs
+            let operationRHS = operation.requiresRightHandSide ? rhs : nil
             let plan = try M31VectorArithmeticPlan(
                 context: context,
                 operation: operation,
-                count: lhs.count
+                count: operationLHS.count
             )
             let measured = try plan.executeVerified(
-                lhs: lhs,
-                rhs: operation.requiresRightHandSide ? rhs : nil
+                lhs: operationLHS,
+                rhs: operationRHS
             )
             let expected = try M31Field.apply(
                 operation,
-                lhs: lhs,
-                rhs: operation.requiresRightHandSide ? rhs : nil
+                lhs: operationLHS,
+                rhs: operationRHS
             )
 
             XCTAssertEqual(measured.values, expected, "M31 \(operation) mismatch")
+            if operation == .inverse {
+                for (value, inverse) in zip(operationLHS, measured.values) {
+                    XCTAssertEqual(M31Field.multiply(value, inverse), 1)
+                }
+            }
             try plan.clearReusableBuffers()
 
+            let reusedLHS = operation == .inverse
+                ? rhs.map { $0 == 0 ? UInt32(1) : $0 }
+                : rhs
+            let reusedRHS = operation.requiresRightHandSide ? lhs : nil
             let reused = try plan.executeVerified(
-                lhs: rhs,
-                rhs: operation.requiresRightHandSide ? lhs : nil
+                lhs: reusedLHS,
+                rhs: reusedRHS
             )
             let reusedExpected = try M31Field.apply(
                 operation,
-                lhs: rhs,
-                rhs: operation.requiresRightHandSide ? lhs : nil
+                lhs: reusedLHS,
+                rhs: reusedRHS
             )
             XCTAssertEqual(reused.values, reusedExpected, "M31 \(operation) mismatch after clear/reuse")
         }
@@ -510,6 +538,10 @@ final class PlannerTests: XCTestCase {
         }
         let unaryPlan = try M31VectorArithmeticPlan(context: context, operation: .square, count: 2)
         XCTAssertThrowsError(try unaryPlan.execute(lhs: [0, 1], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let inversePlan = try M31VectorArithmeticPlan(context: context, operation: .inverse, count: 2)
+        XCTAssertThrowsError(try inversePlan.execute(lhs: [0, 1])) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
     }

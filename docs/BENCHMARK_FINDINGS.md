@@ -23,6 +23,7 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - CPU verification is now a hard benchmark gate: when enabled, any false or missing CPU match emits the report, writes a mismatch summary to stderr, and exits with status `2`.
 - Added a dedicated Keccak-F1600 permutation-only benchmark mode for Plonky3-style raw permutation relevance. It emits schema v1 JSON reports separate from the existing hash/Merkle schema v4 reports and verifies the output digest against the CPU permutation oracle.
 - Added a dedicated M31 dot-product benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, records threadgroup geometry, and verifies the one-word GPU reduction against the CPU M31 oracle.
+- Added a dedicated M31 vector inverse benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, and verifies the GPU output digest against the CPU M31 batch-inversion oracle.
 - Extended the lower Merkle treelet path from 32-byte leaves to the full fixed-rate SHA3 leaf contract (`0...136` bytes). The new treelet remains a SHA3 Merkle commitment path: standalone Keccak-256 suite rows still use SHA3 for the Merkle root, matching the existing commitment API.
 - Added `zkmetal-bench --merkle-opening` for raw-leaf SHA3 opening extraction. It emits a schema v1 opening report with root, proof digest, sibling count, CPU proof match, and opening timing without dumping proof nodes.
 - Reworked threadgroup-local Merkle treelet and fused-upper reductions to use ping-pong scratch halves, eliminating the intra-threadgroup read/write overlap that parent compaction could otherwise create.
@@ -43,6 +44,8 @@ swift run zkmetal-bench --keccakf-permutation --states 128 --iterations 1 --warm
 swift run zkmetal-bench --keccakf-permutation --states 64 --permutation-kernel simdgroup --iterations 1 --warmups 0 --no-pipeline-archive --json
 swift run zkmetal-bench --m31-dot-product --elements 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-m31-dot-product.json
 .build/release/zkmetal-bench --m31-dot-product --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-m31-dot-product.json
+swift run zkmetal-bench --m31-inverse --leaves 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-m31-inverse.json
+.build/release/zkmetal-bench --m31-inverse --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-m31-inverse.json
 swift run zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256,keccak-256 --leaves 256 --iterations 1 --warmups 0 --no-pipeline-archive --merkle-subtree-leaves 16 --json > /tmp/applezk-treelet-fixedrate-suite.json
 swift run zkmetal-bench --merkle-opening --leaves 1024 --leaf-bytes 135 --opening-leaf-index 777 --merkle-subtree-auto --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-merkle-opening.json
 swift build -c release -Xswiftc -Osize
@@ -63,6 +66,8 @@ After Merkle opening extraction was added, `swift test` passed 65 tests. After t
 After the combined treelet root/opening kernel, `swift test` and `swift test -c release -Xswiftc -Osize` passed 67 tests. The updated optimized opening smoke report had `verification.matchedCPU == true`, 14 siblings for 16,384 leaves, selected a 64-leaf opening treelet, and produced matching root/proof digests against the CPU oracle.
 
 After the M31 dot-product primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 73 tests. The debug dot-product smoke report for 4,097 elements had `verification.matchedCPU == true` and selected 256 threads per threadgroup and 1,024 elements per threadgroup. The release `-Osize` smoke report for 16,384 elements had `verification.matchedCPU == true`, the same reduction geometry, 372,011,357.55 elements/sec, and 2,976,090,860.37 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
+
+After the M31 vector inverse primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 73 tests. The debug inverse smoke report for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 elements had `verification.matchedCPU == true`, 167,825,862.18 elements/sec, and 671,303,448.74 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 

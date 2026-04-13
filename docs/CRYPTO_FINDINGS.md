@@ -2,6 +2,25 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: M31 Vector Inversion Primitive
+
+Finding:
+
+- The M31 field-lane roadmap had elementwise arithmetic and dot products, but no inverse primitive. Inversion is required by FRI/PCS denominators, normalization steps, and future batch evaluation code.
+
+Work completed:
+
+- Added `M31Field.inverse(_:)` and `M31Field.batchInverse(_:)`. The batch oracle uses the standard prefix/suffix product method so a nonzero vector is inverted with one field inversion plus linear-time multiplications.
+- Added `.inverse` to `M31VectorOperation` and wired the reusable Metal vector arithmetic plan to compute one inverse per nonzero lane using a fixed Fermat exponentiation schedule over the M31 prime field.
+- Public vector execution rejects zero and non-canonical values before dispatch. The GPU path remains a canonical-field hot path and does not mask malformed field inputs.
+- Added deterministic regression coverage for exact edge inverses of `1`, `2`, `3`, `p - 2`, and `p - 1`, zero rejection, non-canonical rejection, CPU batch-oracle equality, GPU/CPU equality, and plan clear/reuse coverage through the existing vector arithmetic test matrix.
+- Added `zkmetal-bench --m31-inverse`, with schema v1 JSON/text output, CPU digest verification, elements/sec, input bandwidth, and device capability reporting.
+
+Residual risk:
+
+- The first GPU path uses per-lane Fermat exponentiation, not a parallel prefix/suffix batch-inversion kernel. It is correct and benchmarked, but future PCS workloads should compare it against a true resident batch-inversion scan once the surrounding codeword layout is fixed.
+- The vector inverse public API rejects zero. Protocol layers that need zero-preserving inversion masks must implement and verify that policy explicitly instead of relying on this primitive.
+
 ## 2026-04-13: M31 Dot-Product Reduction Primitive
 
 Finding:

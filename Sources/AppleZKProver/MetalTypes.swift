@@ -147,12 +147,13 @@ public enum M31VectorOperation: UInt32, Sendable, CaseIterable {
     case negate = 2
     case multiply = 3
     case square = 4
+    case inverse = 5
 
     public var requiresRightHandSide: Bool {
         switch self {
         case .add, .subtract, .multiply:
             return true
-        case .negate, .square:
+        case .negate, .square, .inverse:
             return false
         }
     }

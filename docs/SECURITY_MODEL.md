@@ -56,7 +56,7 @@ The current package aims to guarantee:
 - CPU Merkle oracle layout failures and one-block hash length failures return typed errors instead of process traps,
 - zero-length one-block messages are handled as valid SHA3 input,
 - CPU and GPU transcript squeeze paths consume the full SHA3-256 rate, advance through additional squeeze blocks with Keccak-F1600, and use rejection sampling for field reduction,
-- M31 vector add, subtract, negate, multiply, and square plans match the independent CPU oracle for tested canonical inputs and edge values,
+- M31 vector add, subtract, negate, multiply, square, and inverse plans match the independent CPU oracle for tested canonical inputs and edge values, with public inverse inputs required to be nonzero,
 - M31 dot-product plans match the independent CPU oracle for tested canonical inputs, edge values, and non-power-of-two vector lengths,
 - the M31 sum-check chunk transcript uses versioned header, round, and challenge frames with stable CPU vectors and GPU differential coverage,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
@@ -109,7 +109,7 @@ The current SHA3/Merkle kernels operate on public lengths and regular memory lay
 - secret-dependent command topology,
 - logging or serializing private intermediate data.
 
-The M31 sum-check and dot-product uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the GPU path; callers that need CPU-side input validation must use the public array API.
+The M31 sum-check and dot-product uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the GPU path; callers that need CPU-side input validation must use the public array API. M31 vector inversion rejects zero through the public array API before dispatch because zero has no field inverse.
 
 When avoiding those patterns is impossible, the API must document the leakage and the code must not be used for private-witness production proving.
 

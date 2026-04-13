@@ -1359,6 +1359,22 @@ inline uint m31_mul_add_mod(uint a, uint b, uint challenge) {
     return m31_reduce_u64(value);
 }
 
+inline uint m31_inverse_mod(uint value) {
+    uint result = 1u;
+    uint power = value;
+    uint exponent = M31_MODULUS_U32 - 2u;
+    while (exponent > 0u) {
+        if ((exponent & 1u) != 0u) {
+            result = m31_mul_mod(result, power);
+        }
+        exponent >>= 1u;
+        if (exponent > 0u) {
+            power = m31_mul_mod(power, power);
+        }
+    }
+    return result;
+}
+
 kernel void m31_vector_arithmetic(
     const device uint *lhs [[buffer(0)]],
     const device uint *rhs [[buffer(1)]],
@@ -1386,6 +1402,9 @@ kernel void m31_vector_arithmetic(
         break;
     case 4u:
         output[gid] = m31_mul_mod(a, a);
+        break;
+    case 5u:
+        output[gid] = m31_inverse_mod(a);
         break;
     default:
         output[gid] = 0u;

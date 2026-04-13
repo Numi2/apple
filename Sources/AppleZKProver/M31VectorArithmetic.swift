@@ -227,6 +227,9 @@ public final class M31VectorArithmeticPlan: @unchecked Sendable {
             throw AppleZKProverError.invalidInputLayout
         }
         try M31Field.validateCanonical(lhs)
+        if operation == .inverse, lhs.contains(0) {
+            throw AppleZKProverError.invalidInputLayout
+        }
         if operation.requiresRightHandSide {
             guard let rhs, rhs.count == count else {
                 throw AppleZKProverError.invalidInputLayout
