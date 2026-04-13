@@ -74,6 +74,13 @@ struct M31VectorParams {
     uint fieldModulus;
 };
 
+struct M31DotProductParams {
+    uint count;
+    uint fieldModulus;
+    uint elementsPerThreadgroup;
+    uint threadsPerThreadgroup;
+};
+
 constant ulong AZK_FC_LEAF_BYTES [[function_constant(1)]];
 constant ulong AZK_FC_PARENT_BYTES [[function_constant(2)]];
 constant ulong AZK_FC_TREE_ARITY [[function_constant(3)]];
@@ -1383,6 +1390,94 @@ kernel void m31_vector_arithmetic(
     default:
         output[gid] = 0u;
         break;
+    }
+}
+
+inline uint m31_threadgroup_sum(threadgroup uint *scratch, uint tid, uint threadCount) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = threadCount >> 1; stride > 0u; stride >>= 1) {
+        if (tid < stride) {
+            scratch[tid] = m31_add_mod(scratch[tid], scratch[tid + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    return scratch[0];
+}
+
+kernel void m31_dot_product_partials(
+    const device uint *lhs [[buffer(0)]],
+    const device uint *rhs [[buffer(1)]],
+    device uint *partials [[buffer(2)]],
+    constant M31DotProductParams &params [[buffer(3)]],
+    threadgroup uint *scratch [[threadgroup(0)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint3 threadgroupPosition [[threadgroup_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.elementsPerThreadgroup == 0u ||
+        params.threadsPerThreadgroup == 0u) {
+        return;
+    }
+
+    const uint groupIndex = threadgroupPosition.x;
+    const uint base = groupIndex * params.elementsPerThreadgroup;
+    uint accumulator = 0u;
+    if (base < params.count) {
+        const uint span = min(params.elementsPerThreadgroup, params.count - base);
+        const uint limit = base + span;
+        uint index = base + tid;
+        while (index < limit) {
+            accumulator = m31_add_mod(accumulator, m31_mul_mod(lhs[index], rhs[index]));
+            const uint next = index + params.threadsPerThreadgroup;
+            if (next <= index) {
+                break;
+            }
+            index = next;
+        }
+    }
+
+    scratch[tid] = accumulator;
+    const uint reduced = m31_threadgroup_sum(scratch, tid, params.threadsPerThreadgroup);
+    if (tid == 0u) {
+        partials[groupIndex] = reduced;
+    }
+}
+
+kernel void m31_sum_partials(
+    const device uint *input [[buffer(0)]],
+    device uint *output [[buffer(1)]],
+    constant M31DotProductParams &params [[buffer(2)]],
+    threadgroup uint *scratch [[threadgroup(0)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint3 threadgroupPosition [[threadgroup_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.elementsPerThreadgroup == 0u ||
+        params.threadsPerThreadgroup == 0u) {
+        return;
+    }
+
+    const uint groupIndex = threadgroupPosition.x;
+    const uint base = groupIndex * params.elementsPerThreadgroup;
+    uint accumulator = 0u;
+    if (base < params.count) {
+        const uint span = min(params.elementsPerThreadgroup, params.count - base);
+        const uint limit = base + span;
+        uint index = base + tid;
+        while (index < limit) {
+            accumulator = m31_add_mod(accumulator, input[index]);
+            const uint next = index + params.threadsPerThreadgroup;
+            if (next <= index) {
+                break;
+            }
+            index = next;
+        }
+    }
+
+    scratch[tid] = accumulator;
+    const uint reduced = m31_threadgroup_sum(scratch, tid, params.threadsPerThreadgroup);
+    if (tid == 0u) {
+        output[groupIndex] = reduced;
     }
 }
 

@@ -2,6 +2,26 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: M31 Dot-Product Reduction Primitive
+
+Finding:
+
+- The M31 field-lane roadmap had elementwise vector operations, but it still lacked a reusable dot-product/reduction primitive. Dot products are a core building block for multilinear evaluations, sum-check reductions, PCS work, and codeword pipelines.
+
+Work completed:
+
+- Added `M31Field.dotProduct(lhs:rhs:)`, an independent CPU oracle that validates canonical inputs and accumulates products through the M31 add/multiply operations.
+- Added `M31DotProductPlan`, a reusable Metal plan that uploads two vectors, computes per-threadgroup dot-product partials, ping-pongs resident partial reductions, and reads back only the final canonical field element.
+- Added `executeVerified`, which compares the GPU result against the CPU oracle before accepting it, plus `executeUploadedVectors` for future GPU-resident composition when the caller already owns canonical private buffers.
+- Added explicit reusable-buffer clearing for upload rings, partial buffers, private vector storage, and the one-word readback buffer.
+- Added deterministic regression coverage for edge values around `0`, `1`, `p - 2`, and `p - 1`, non-power-of-two vector lengths, uploaded-buffer execution, invalid layouts, and CPU/GPU equality.
+- Added `zkmetal-bench --m31-dot-product`, with JSON/text output, CPU verification gating, elements/sec, input bandwidth, threadgroup geometry, and device capability reporting.
+
+Residual risk:
+
+- The initial GPU reduction is a scalar threadgroup-reduction path. It is correct and measured, but it is not yet a simdgroup-specialized or Apple9-atomic accumulation variant.
+- Uploaded-buffer execution assumes the buffer already contains canonical M31 elements. Callers that need canonicality checks must use the public array API or keep an independent CPU copy for verification.
+
 ## 2026-04-13: M31 Vector Arithmetic Foundation
 
 Finding:

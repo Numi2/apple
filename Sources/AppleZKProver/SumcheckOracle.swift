@@ -30,6 +30,20 @@ public enum M31Field {
         multiply(value, value)
     }
 
+    public static func dotProduct(lhs: [UInt32], rhs: [UInt32]) throws -> UInt32 {
+        guard lhs.count == rhs.count, !lhs.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try validateCanonical(lhs)
+        try validateCanonical(rhs)
+
+        var accumulator: UInt32 = 0
+        for (left, right) in zip(lhs, rhs) {
+            accumulator = add(accumulator, multiply(left, right))
+        }
+        return accumulator
+    }
+
     public static func apply(
         _ operation: M31VectorOperation,
         lhs: [UInt32],
@@ -158,8 +172,7 @@ public enum SumcheckOracle {
     }
 
     private static func fold(_ a: UInt32, _ b: UInt32, challenge: UInt32) -> UInt32 {
-        let value = UInt64(a) + UInt64(b) * UInt64(challenge)
-        return UInt32(value % UInt64(M31Field.modulus))
+        M31Field.add(a, M31Field.multiply(b, challenge))
     }
 
     private static func packLittleEndian(_ words: [UInt32]) -> Data {

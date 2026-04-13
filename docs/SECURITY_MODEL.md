@@ -57,11 +57,12 @@ The current package aims to guarantee:
 - zero-length one-block messages are handled as valid SHA3 input,
 - CPU and GPU transcript squeeze paths consume the full SHA3-256 rate, advance through additional squeeze blocks with Keccak-F1600, and use rejection sampling for field reduction,
 - M31 vector add, subtract, negate, multiply, and square plans match the independent CPU oracle for tested canonical inputs and edge values,
+- M31 dot-product plans match the independent CPU oracle for tested canonical inputs, edge values, and non-power-of-two vector lengths,
 - the M31 sum-check chunk transcript uses versioned header, round, and challenge frames with stable CPU vectors and GPU differential coverage,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, M31 vector, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
-- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, raw-leaf Merkle openings, planned Merkle commitments, M31 vector arithmetic, and M31 sum-check chunks,
+- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, raw-leaf Merkle openings, planned Merkle commitments, M31 vector arithmetic, M31 dot products, and M31 sum-check chunks,
 - the M31 GPU fold path uses the `2^31 - 1` Mersenne reduction instead of generic integer remainder for canonical M31 values.
 
 These are correctness guarantees for the implemented slice. They are not a full proof-system security claim.
@@ -108,7 +109,7 @@ The current SHA3/Merkle kernels operate on public lengths and regular memory lay
 - secret-dependent command topology,
 - logging or serializing private intermediate data.
 
-The M31 sum-check uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the round-evaluation path; callers that need CPU-side input validation must use the public array API.
+The M31 sum-check and dot-product uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the GPU path; callers that need CPU-side input validation must use the public array API.
 
 When avoiding those patterns is impossible, the API must document the leakage and the code must not be used for private-witness production proving.
 

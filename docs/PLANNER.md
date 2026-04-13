@@ -18,7 +18,8 @@
 - `MetalSumcheckChunkPlan` executes `round_eval -> coeff_pack -> transcript_absorb -> challenge_squeeze -> fold_halve` inside one command buffer for the supported M31 chunk shape.
 - Sum-check chunk execution reads back only final proof material: the final folded vector, coefficient words, and challenges after the superstep completes.
 - `executeVerified` recomputes the M31 chunk with the independent CPU oracle before accepting GPU proof bytes.
-- `M31VectorArithmeticPlan` is the first standalone field-lane plan. It stages canonical CPU arrays through shared upload rings, keeps working buffers in a private `ResidencyArena`, clears reusable buffers on request, and verifies add/subtract/negate/multiply/square results against `M31Field`.
+- `M31VectorArithmeticPlan` stages canonical CPU arrays through shared upload rings, keeps working buffers in a private `ResidencyArena`, clears reusable buffers on request, and verifies add/subtract/negate/multiply/square results against `M31Field`.
+- `M31DotProductPlan` is the first standalone M31 reduction plan. It stages canonical CPU arrays or caller-owned uploaded buffers, computes resident per-threadgroup partials, ping-pongs partial sums until one canonical field element remains, and verifies public-array execution against `M31Field.dotProduct`.
 - A real simdgroup Keccak-F1600 path exists and is differentially tested against the CPU permutation and fixed-rate SHA3/Keccak oracles on Apple7+ class hardware. It now supports explicit independent-state packing per threadgroup for standalone hash benchmarks. Current Apple M4 / Apple9 measurements are still slower than scalar, so it remains opt-in and is not planner-eligible.
 - Keccak-F1600 permutation-only batch plans exist as benchmarkable runtime primitives. Scalar is the baseline family; simdgroup remains opt-in and planner-ineligible until broader measurements show a durable win.
 

@@ -48,6 +48,7 @@ struct BenchConfig {
     var hashKernelFamily: FixedOneBlockHashKernelFamily = .scalar
     var hashSIMDGroupsPerThreadgroup = 2
     var keccakF1600Permutation = false
+    var m31DotProduct = false
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
@@ -82,6 +83,12 @@ struct BenchConfig {
                 }
             case "--states":
                 keccakF1600Permutation = true
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): leafCount = value
+                case let .failure(error): return error
+                }
+            case "--elements":
+                m31DotProduct = true
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
                 case let .success(value): leafCount = value
                 case let .failure(error): return error
@@ -141,6 +148,8 @@ struct BenchConfig {
                 }
             case "--keccakf-permutation", "--permutation-only":
                 keccakF1600Permutation = true
+            case "--m31-dot-product":
+                m31DotProduct = true
             case "--merkle-opening":
                 merkleOpening = true
             case "--opening-leaf-index":
@@ -232,6 +241,8 @@ struct BenchConfig {
           --hash-simdgroups-per-threadgroup N
                                       SIMD-group hash kernel packing. Default: 2
           --keccakf-permutation      Run Keccak-F1600 permutation-only benchmark instead of hash/Merkle
+          --m31-dot-product          Run M31 vector dot-product benchmark instead of hash/Merkle
+          --elements N               Element count for --m31-dot-product. Alias for --leaves in that mode
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
           --states N                 State count for --keccakf-permutation. Alias for --leaves in that mode
@@ -255,8 +266,9 @@ struct BenchConfig {
         guard leafCount > 0 else {
             return BenchError.invalidArgument(keccakF1600Permutation ? "--states must be greater than zero." : "--leaves must be greater than zero.")
         }
-        guard !(keccakF1600Permutation && merkleOpening) else {
-            return BenchError.invalidArgument("--keccakf-permutation and --merkle-opening are mutually exclusive.")
+        let exclusiveModes = [keccakF1600Permutation, merkleOpening, m31DotProduct].filter { $0 }.count
+        guard exclusiveModes <= 1 else {
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, and --m31-dot-product are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -264,6 +276,15 @@ struct BenchConfig {
             }
             guard !leafCount.multipliedReportingOverflow(by: KeccakF1600PermutationBatchDescriptor.stateByteCount).overflow else {
                 return BenchError.invalidArgument("Requested Keccak-F1600 state buffer is too large for this process.")
+            }
+            return nil
+        }
+        if m31DotProduct {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with --m31-dot-product.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: 2 * MemoryLayout<UInt32>.stride).overflow else {
+                return BenchError.invalidArgument("Requested M31 vector buffers are too large for this process.")
             }
             return nil
         }
@@ -482,6 +503,14 @@ struct MeasurementReport: Codable {
     let inputBytesPerSecond: Double
 }
 
+struct FieldMeasurementReport: Codable {
+    let wallSeconds: SeriesReport
+    let gpuSeconds: SeriesReport?
+    let bestSecondsForThroughput: Double
+    let elementsPerSecond: Double
+    let inputBytesPerSecond: Double
+}
+
 struct VerificationReport: Codable {
     let enabled: Bool
     let matchedCPU: Bool?
@@ -540,6 +569,33 @@ struct KeccakPermutationBenchmarkReport: Codable {
     let verification: KeccakPermutationVerificationReport
 }
 
+struct M31DotProductBenchmarkConfigReport: Codable {
+    let elementCount: Int
+    let threadsPerThreadgroup: Int?
+    let elementsPerThreadgroup: Int?
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct M31DotProductVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let value: UInt32
+    let cpuValue: UInt32?
+}
+
+struct M31DotProductBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: M31DotProductBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let dotProduct: FieldMeasurementReport?
+    let verification: M31DotProductVerificationReport
+}
+
 struct MerkleOpeningBenchmarkConfigReport: Codable {
     let leafCount: Int
     let leafLength: Int
@@ -588,6 +644,16 @@ func makeDeterministicLeaves(count: Int, leafLength: Int) -> Data {
         }
     }
     return Data(bytes)
+}
+
+func makeDeterministicM31Vector(count: Int, salt: UInt32) -> [UInt32] {
+    precondition(count > 0)
+    return (0..<count).map { index in
+        let value = UInt64(index + 1) * 1_048_573
+            + UInt64(salt) * 65_537
+            + UInt64(index) * 17 * UInt64(salt | 1)
+        return UInt32(value % UInt64(M31Field.modulus))
+    }
 }
 
 func makeDeterministicKeccakF1600States(count: Int) -> Data {
@@ -719,6 +785,25 @@ func makeMeasurement(
     )
 }
 
+func makeFieldMeasurement(
+    wallSeconds: [Double],
+    gpuSeconds: [Double?],
+    elements: Int,
+    inputBytes: Double
+) -> FieldMeasurementReport {
+    let gpuSamples = gpuSeconds.compactMap { $0 }
+    let wall = makeSeries(wallSeconds)
+    let gpu = gpuSamples.isEmpty ? nil : makeSeries(gpuSamples)
+    let bestSeconds = gpu?.min ?? wall.min
+    return FieldMeasurementReport(
+        wallSeconds: wall,
+        gpuSeconds: gpu,
+        bestSecondsForThroughput: bestSeconds,
+        elementsPerSecond: Double(elements) / bestSeconds,
+        inputBytesPerSecond: inputBytes / bestSeconds
+    )
+}
+
 func iso8601Now() -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -793,6 +878,14 @@ func emitJSON(_ report: BenchmarkSuiteReport) throws {
 }
 
 func emitJSON(_ report: KeccakPermutationBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+func emitJSON(_ report: M31DotProductBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(report)
@@ -912,6 +1005,50 @@ func emitText(_ report: KeccakPermutationBenchmarkReport) {
     print("  output digest: \(report.verification.outputDigestHex)")
     if let cpuDigest = report.verification.cpuOutputDigestHex {
         print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
+func emitText(_ report: M31DotProductBenchmarkReport) {
+    print("zkmetal-bench m31-dot-product")
+    print("  elements     : \(report.configuration.elementCount)")
+    if let threads = report.configuration.threadsPerThreadgroup {
+        print("  threads/tg   : \(threads)")
+    }
+    if let elements = report.configuration.elementsPerThreadgroup {
+        print("  elements/tg  : \(elements)")
+    }
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  SIMD reduce  : \(device.supportsSIMDReductions)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let dotProduct = report.dotProduct {
+        printSeconds("dot wall", dotProduct.wallSeconds)
+        if let gpu = dotProduct.gpuSeconds {
+            printSeconds("dot gpu ", gpu)
+        }
+        print("  elements/sec : \(String(format: "%.2f", dotProduct.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", dotProduct.inputBytesPerSecond))")
+    }
+
+    print("  value        : \(report.verification.value)")
+    if let cpuValue = report.verification.cpuValue {
+        print("  cpu value    : \(cpuValue)")
     }
     if let matchedCPU = report.verification.matchedCPU {
         print("  match        : \(matchedCPU)")
@@ -1069,6 +1206,19 @@ func verificationFailureMessages(in report: MerkleOpeningBenchmarkReport) -> [St
     return []
 }
 
+func verificationFailureMessages(in report: M31DotProductBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuValue = report.verification.cpuValue.map(String.init) ?? "missing"
+        return [
+            "m31-dot-product elements=\(report.configuration.elementCount) target=\(report.target) value=\(report.verification.value) cpu-value=\(cpuValue)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -1087,6 +1237,21 @@ func makeBenchmarkConfigReport(
     )
 }
 
+func makeM31DotProductConfigReport(
+    config: BenchConfig,
+    threadsPerThreadgroup: Int?,
+    elementsPerThreadgroup: Int?
+) -> M31DotProductBenchmarkConfigReport {
+    M31DotProductBenchmarkConfigReport(
+        elementCount: config.leafCount,
+        threadsPerThreadgroup: threadsPerThreadgroup,
+        elementsPerThreadgroup: elementsPerThreadgroup,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
 func makeMerkleOpeningConfigReport(config: BenchConfig) -> MerkleOpeningBenchmarkConfigReport {
     MerkleOpeningBenchmarkConfigReport(
         leafCount: config.leafCount,
@@ -1098,6 +1263,115 @@ func makeMerkleOpeningConfigReport(config: BenchConfig) -> MerkleOpeningBenchmar
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
     )
+}
+
+@inline(never)
+func runM31DotProductBenchmark(_ config: BenchConfig) throws -> M31DotProductBenchmarkReport {
+    let lhs = makeDeterministicM31Vector(count: config.leafCount, salt: 0x31)
+    let rhs = makeDeterministicM31Vector(count: config.leafCount, salt: 0x71)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuValue = try M31Field.dotProduct(lhs: lhs, rhs: rhs)
+        return M31DotProductBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: makeM31DotProductConfigReport(
+                config: config,
+                threadsPerThreadgroup: nil,
+                elementsPerThreadgroup: nil
+            ),
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            dotProduct: nil,
+            verification: M31DotProductVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                value: cpuValue,
+                cpuValue: cpuValue
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try M31DotProductPlan(context: context, count: config.leafCount)
+    let configReport = makeM31DotProductConfigReport(
+        config: config,
+        threadsPerThreadgroup: plan.threadsPerThreadgroup,
+        elementsPerThreadgroup: plan.elementsPerThreadgroup
+    )
+    try context.serializePipelineArchiveIfNeeded()
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.execute(lhs: lhs, rhs: rhs)
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    var value: UInt32 = 0
+    for _ in 0..<config.iterations {
+        let result = try plan.execute(lhs: lhs, rhs: rhs)
+        wallSeconds.append(result.stats.cpuWallSeconds)
+        gpuSeconds.append(result.stats.gpuSeconds)
+        value = result.value
+    }
+
+    let cpuValue = config.verifyWithCPU ? try M31Field.dotProduct(lhs: lhs, rhs: rhs) : nil
+    let matchedCPU = cpuValue.map { $0 == value }
+    let inputBytes = Double(config.leafCount) * Double(2 * MemoryLayout<UInt32>.stride)
+    return M31DotProductBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        dotProduct: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: config.leafCount,
+            inputBytes: inputBytes
+        ),
+        verification: M31DotProductVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            value: value,
+            cpuValue: cpuValue
+        )
+    )
+    #else
+    let cpuValue = try M31Field.dotProduct(lhs: lhs, rhs: rhs)
+    return M31DotProductBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: makeM31DotProductConfigReport(
+            config: config,
+            threadsPerThreadgroup: nil,
+            elementsPerThreadgroup: nil
+        ),
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        dotProduct: nil,
+        verification: M31DotProductVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            value: cpuValue,
+            cpuValue: cpuValue
+        )
+    )
+    #endif
 }
 
 @inline(never)
@@ -1603,6 +1877,20 @@ func runCLI() -> Int32 {
         }
         if config.keccakF1600Permutation {
             let report = try runKeccakPermutationBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.m31DotProduct {
+            let report = try runM31DotProductBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

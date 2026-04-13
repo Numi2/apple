@@ -140,6 +140,41 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testM31DotProductCPUOracleCoversEdgeValues() throws {
+        let lhs: [UInt32] = [
+            0,
+            1,
+            2,
+            M31Field.modulus - 2,
+            M31Field.modulus - 1,
+        ]
+        let rhs: [UInt32] = [
+            0,
+            M31Field.modulus - 1,
+            M31Field.modulus - 2,
+            2,
+            1,
+        ]
+
+        XCTAssertEqual(try M31Field.dotProduct(lhs: lhs, rhs: rhs), M31Field.modulus - 10)
+        XCTAssertEqual(
+            try M31Field.dotProduct(
+                lhs: [M31Field.modulus - 1, M31Field.modulus - 1, M31Field.modulus - 1],
+                rhs: [M31Field.modulus - 1, M31Field.modulus - 1, M31Field.modulus - 1]
+            ),
+            3
+        )
+        XCTAssertThrowsError(try M31Field.dotProduct(lhs: [], rhs: [])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try M31Field.dotProduct(lhs: [0], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try M31Field.dotProduct(lhs: [M31Field.modulus], rhs: [0])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
         let evaluations = (0..<16).map { UInt32(($0 + 1) * 17) }
         let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
@@ -475,6 +510,77 @@ final class PlannerTests: XCTestCase {
         }
         let unaryPlan = try M31VectorArithmeticPlan(context: context, operation: .square, count: 2)
         XCTAssertThrowsError(try unaryPlan.execute(lhs: [0, 1], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testM31DotProductPlanMatchesCPUOracleAndUploadedHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        var lhs = Self.makeM31Evaluations(count: 4097, salt: 313)
+        var rhs = Self.makeM31Evaluations(count: 4097, salt: 571)
+        lhs.replaceSubrange(0..<5, with: [0, 1, 2, M31Field.modulus - 2, M31Field.modulus - 1])
+        rhs.replaceSubrange(0..<5, with: [0, M31Field.modulus - 1, M31Field.modulus - 2, 2, 1])
+
+        let plan = try M31DotProductPlan(context: context, count: lhs.count)
+        let measured = try plan.executeVerified(lhs: lhs, rhs: rhs)
+        XCTAssertEqual(measured.value, try M31Field.dotProduct(lhs: lhs, rhs: rhs))
+        XCTAssertGreaterThan(plan.threadsPerThreadgroup, 0)
+        XCTAssertGreaterThan(plan.elementsPerThreadgroup, plan.threadsPerThreadgroup - 1)
+
+        try plan.clearReusableBuffers()
+        let reused = try plan.executeVerified(lhs: rhs, rhs: lhs)
+        XCTAssertEqual(reused.value, try M31Field.dotProduct(lhs: rhs, rhs: lhs))
+
+        let lhsUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packUInt32LittleEndian(lhs),
+            declaredLength: lhs.count * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.M31DotProductLHS"
+        )
+        let rhsUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packUInt32LittleEndian(rhs),
+            declaredLength: rhs.count * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.M31DotProductRHS"
+        )
+        let uploaded = try plan.executeUploadedVectors(lhsBuffer: lhsUpload, rhsBuffer: rhsUpload)
+        XCTAssertEqual(uploaded.value, try M31Field.dotProduct(lhs: lhs, rhs: rhs))
+    }
+
+    func testM31DotProductRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try M31DotProductPlan(context: context, count: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try M31DotProductPlan(context: context, count: 2, elementsPerThread: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let plan = try M31DotProductPlan(context: context, count: 2)
+        XCTAssertThrowsError(try plan.execute(lhs: [0, 1], rhs: [0])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try plan.execute(lhs: [0, M31Field.modulus], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let shortUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packUInt32LittleEndian([0]),
+            declaredLength: MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.M31DotProductShortUpload"
+        )
+        XCTAssertThrowsError(
+            try plan.executeUploadedVectors(lhsBuffer: shortUpload, rhsBuffer: shortUpload)
+        ) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
     }

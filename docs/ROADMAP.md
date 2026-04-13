@@ -9,7 +9,7 @@ This project is an Apple-silicon-first backend for hash-heavy transparent provin
 - GPU specialization: exact 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak kernels.
 - GPU Keccak-F: permutation-only batch plans are implemented with a scalar baseline kernel, opt-in Apple7+ simdgroup kernel, CPU differential tests, and standalone JSON benchmark reports.
 - GPU Merkle: raw leaves are uploaded once, parents stay GPU-resident, small upper-tree reductions are fused in threadgroup memory, and only final public material is copied back. Lower-subtree treelet kernels now cover the fixed-rate SHA3 leaf contract (`0...136` bytes), use race-free ping-pong threadgroup scratch, and can be selected by the planner after correctness-gated races. Raw-leaf opening extraction now copies back only the requested sibling path plus the root, emits lower-path nodes during treelet root construction when configured, and has independent CPU verification.
-- GPU M31: canonical CPU oracle operations and reusable Metal vector plans now cover add, subtract, negate, multiply, and square. Inputs are canonicality-checked at the public array boundary and GPU results have CPU-verified execution.
+- GPU M31: canonical CPU oracle operations and reusable Metal vector plans now cover add, subtract, negate, multiply, square, and dot product. Inputs are canonicality-checked at the public array boundary and GPU results have CPU-verified execution.
 - Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans with explicit buffer clearing, CPU-verified accelerator APIs, `KernelSpec`-keyed pipeline cache, optional Metal binary archive persistence, ring-buffered shared upload staging, private residency arenas, and SQLite plan history.
 - Bench: warmups, repeated measurements, CPU verification, text output, and JSON output.
 - Baselines: first optimized Apple M4 / Apple9 suite baseline is checked in under `BenchmarkBaselines/`.
@@ -90,7 +90,7 @@ Required kernels:
 - vector multiply and square. The first canonical M31 reusable vector plan is implemented with CPU oracle tests,
 - extension-field multiply,
 - batch inverse,
-- dot products and reductions,
+- dot products and reductions. The first reusable M31 dot-product plan is implemented with CPU oracle tests, uploaded-buffer execution, explicit clearing, and a benchmark report that records elements/sec plus input bandwidth,
 - layout transforms for FRI/codeword stages.
 
 Exit gate:
