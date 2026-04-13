@@ -1,0 +1,136 @@
+{
+  "configuration" : {
+    "challengeMode" : "circle-v1-merkle-transcript",
+    "domainLogSize" : 14,
+    "inputElementCount" : 16384,
+    "iterations" : 5,
+    "outputElementCount" : 2048,
+    "roundCount" : 3,
+    "storageOrder" : "circle-domain-bit-reversed",
+    "totalInverseDomainElementCount" : 14336,
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1
+  },
+  "device" : {
+    "hasUnifiedMemory" : true,
+    "maxThreadgroupMemoryLength" : 32768,
+    "maxThreadsPerThreadgroup" : 1024,
+    "name" : "Apple M4",
+    "registryID" : 4294968275,
+    "supports64BitAtomics" : true,
+    "supportsApple3" : true,
+    "supportsApple4" : true,
+    "supportsApple7" : true,
+    "supportsApple9" : true,
+    "supportsBinaryArchives" : true,
+    "supportsNonuniformThreadgroups" : true,
+    "supportsSIMDReductions" : true
+  },
+  "foldChain" : {
+    "bestSecondsForThroughput" : 0.004930499999318272,
+    "elementsPerSecond" : 415373.6944089183,
+    "gpuSeconds" : {
+      "max" : 0.0078104999993229285,
+      "mean" : 0.005976483336417005,
+      "median" : 0.005598833333351649,
+      "min" : 0.004930499999318272,
+      "samples" : [
+        0.0078104999993229285,
+        0.005598833333351649,
+        0.004948750007315539,
+        0.006593833342776634,
+        0.004930499999318272
+      ]
+    },
+    "inputBytesPerSecond" : 99709157.30006582,
+    "wallSeconds" : {
+      "max" : 0.008436083,
+      "mean" : 0.006604133600000001,
+      "median" : 0.006196875,
+      "min" : 0.005375709,
+      "samples" : [
+        0.008436083,
+        0.006196875,
+        0.005645459,
+        0.007366542,
+        0.005375709
+      ]
+    }
+  },
+  "generatedAt" : "2026-04-13T23:42:09.879Z",
+  "pipelineArchive" : {
+    "enabled" : false,
+    "mode" : "disabled"
+  },
+  "proofEmission" : {
+    "bestSecondsForThroughput" : 0.008284875002573244,
+    "elementsPerSecond" : 120.7018814030875,
+    "gpuSeconds" : {
+      "max" : 0.008971666626166552,
+      "mean" : 0.008647200011182576,
+      "median" : 0.00873758336820174,
+      "min" : 0.008284875002573244,
+      "samples" : [
+        0.008303291688207537,
+        0.00873758336820174,
+        0.008284875002573244,
+        0.008971666626166552,
+        0.008938583370763808
+      ]
+    },
+    "inputBytesPerSecond" : 5292053.288236968,
+    "wallSeconds" : {
+      "max" : 0.019660708,
+      "mean" : 0.0191917582,
+      "median" : 0.019099166,
+      "min" : 0.01885725,
+      "samples" : [
+        0.019099166,
+        0.018904625,
+        0.01885725,
+        0.019437042,
+        0.019660708
+      ]
+    }
+  },
+  "proofSizeBytes" : 43844,
+  "queryExtraction" : {
+    "bestSecondsForThroughput" : 0.0068381667078938335,
+    "elementsPerSecond" : 3509.712621117428,
+    "gpuSeconds" : {
+      "max" : 0.00703008336131461,
+      "mean" : 0.006931183353299275,
+      "median" : 0.006919708350324072,
+      "min" : 0.0068381667078938335,
+      "samples" : [
+        0.00703008336131461,
+        0.007029708343907259,
+        0.006838250003056601,
+        0.006919708350324072,
+        0.0068381667078938335
+      ]
+    },
+    "inputBytesPerSecond" : 1516195.8523227288,
+    "wallSeconds" : {
+      "max" : 0.018215167,
+      "mean" : 0.016276850199999998,
+      "median" : 0.015220292,
+      "min" : 0.014796792,
+      "samples" : [
+        0.018215167,
+        0.018105375,
+        0.015220292,
+        0.015046625,
+        0.014796792
+      ]
+    }
+  },
+  "schemaVersion" : 1,
+  "target" : "metal",
+  "verification" : {
+    "cpuOutputDigestHex" : "55a8b09536097dba6e3869c69c12787580bf65af2f776dd1e620436708084c7c",
+    "enabled" : true,
+    "matchedCPU" : true,
+    "outputDigestHex" : "55a8b09536097dba6e3869c69c12787580bf65af2f776dd1e620436708084c7c"
+  }
+}

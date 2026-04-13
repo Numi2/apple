@@ -572,7 +572,7 @@ public enum CircleFRITranscriptV1 {
         return (transcript, challenges)
     }
 
-    private static func headerFrame(transcriptVersion: UInt32) -> Data {
+    static func headerFrame(transcriptVersion: UInt32) -> Data {
         var frame = baseFrame(type: 0)
         CanonicalBinary.appendUInt32(CirclePCSFRIProofV1.proofVersion, to: &frame)
         CanonicalBinary.appendUInt32(transcriptVersion, to: &frame)
@@ -582,7 +582,7 @@ public enum CircleFRITranscriptV1 {
         return frame
     }
 
-    private static func securityFrame(_ security: CircleFRISecurityParametersV1) -> Data {
+    static func securityFrame(_ security: CircleFRISecurityParametersV1) -> Data {
         var frame = baseFrame(type: 1)
         CanonicalBinary.appendUInt32(security.logBlowupFactor, to: &frame)
         CanonicalBinary.appendUInt32(security.queryCount, to: &frame)
@@ -592,20 +592,20 @@ public enum CircleFRITranscriptV1 {
         return frame
     }
 
-    private static func publicInputFrame(byteCount: Int) throws -> Data {
+    static func publicInputFrame(byteCount: Int) throws -> Data {
         var frame = baseFrame(type: 2)
         CanonicalBinary.appendUInt32(try checkedUInt32(byteCount), to: &frame)
         return frame
     }
 
-    private static func commitmentFrame(index: Int, byteCount: Int) throws -> Data {
+    static func commitmentFrame(index: Int, byteCount: Int) throws -> Data {
         var frame = baseFrame(type: 3)
         CanonicalBinary.appendUInt32(try checkedUInt32(index), to: &frame)
         CanonicalBinary.appendUInt32(try checkedUInt32(byteCount), to: &frame)
         return frame
     }
 
-    private static func challengeFrame(index: Int) throws -> Data {
+    static func challengeFrame(index: Int) throws -> Data {
         var frame = baseFrame(type: 4)
         CanonicalBinary.appendUInt32(try checkedUInt32(index), to: &frame)
         CanonicalBinary.appendUInt32(QM31Field.modulus, to: &frame)
@@ -613,14 +613,14 @@ public enum CircleFRITranscriptV1 {
         return frame
     }
 
-    private static func finalLayerFrame(elementCount: Int, byteCount: Int) throws -> Data {
+    static func finalLayerFrame(elementCount: Int, byteCount: Int) throws -> Data {
         var frame = baseFrame(type: 5)
         CanonicalBinary.appendUInt64(UInt64(try checkedNonNegative(elementCount)), to: &frame)
         CanonicalBinary.appendUInt64(UInt64(try checkedNonNegative(byteCount)), to: &frame)
         return frame
     }
 
-    private static func queryFrame(queryCount: Int, initialPairCount: Int) throws -> Data {
+    static func queryFrame(queryCount: Int, initialPairCount: Int) throws -> Data {
         var frame = baseFrame(type: 6)
         CanonicalBinary.appendUInt32(try checkedUInt32(queryCount), to: &frame)
         CanonicalBinary.appendUInt64(UInt64(try checkedNonNegative(initialPairCount)), to: &frame)

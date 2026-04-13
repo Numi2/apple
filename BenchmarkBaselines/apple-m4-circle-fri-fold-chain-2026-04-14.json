@@ -1,0 +1,73 @@
+{
+  "configuration" : {
+    "challengeMode" : "explicit",
+    "domainLogSize" : 14,
+    "inputElementCount" : 16384,
+    "iterations" : 5,
+    "outputElementCount" : 2048,
+    "roundCount" : 3,
+    "storageOrder" : "circle-domain-bit-reversed",
+    "totalInverseDomainElementCount" : 14336,
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1
+  },
+  "device" : {
+    "hasUnifiedMemory" : true,
+    "maxThreadgroupMemoryLength" : 32768,
+    "maxThreadsPerThreadgroup" : 1024,
+    "name" : "Apple M4",
+    "registryID" : 4294968275,
+    "supports64BitAtomics" : true,
+    "supportsApple3" : true,
+    "supportsApple4" : true,
+    "supportsApple7" : true,
+    "supportsApple9" : true,
+    "supportsBinaryArchives" : true,
+    "supportsNonuniformThreadgroups" : true,
+    "supportsSIMDReductions" : true
+  },
+  "foldChain" : {
+    "bestSecondsForThroughput" : 6.799999391660094e-05,
+    "elementsPerSecond" : 30117649.75320121,
+    "gpuSeconds" : {
+      "max" : 6.949999078642577e-05,
+      "mean" : 6.888333009555936e-05,
+      "median" : 6.91666646162048e-05,
+      "min" : 6.799999391660094e-05,
+      "samples" : [
+        6.849999772384763e-05,
+        6.91666646162048e-05,
+        6.949999078642577e-05,
+        6.925000343471766e-05,
+        6.799999391660094e-05
+      ]
+    },
+    "inputBytesPerSecond" : 7228235940.76829,
+    "wallSeconds" : {
+      "max" : 0.000484,
+      "mean" : 0.00042320840000000003,
+      "median" : 0.00047275,
+      "min" : 0.000299834,
+      "samples" : [
+        0.000484,
+        0.000480791,
+        0.000378667,
+        0.00047275,
+        0.000299834
+      ]
+    }
+  },
+  "generatedAt" : "2026-04-13T23:42:08.927Z",
+  "pipelineArchive" : {
+    "enabled" : false,
+    "mode" : "disabled"
+  },
+  "schemaVersion" : 1,
+  "target" : "metal",
+  "verification" : {
+    "cpuOutputDigestHex" : "1432e2c12d4197df57d6b5db11027d1ba3537570862b71df48ff62cf998d1781",
+    "enabled" : true,
+    "matchedCPU" : true,
+    "outputDigestHex" : "1432e2c12d4197df57d6b5db11027d1ba3537570862b71df48ff62cf998d1781"
+  }
+}

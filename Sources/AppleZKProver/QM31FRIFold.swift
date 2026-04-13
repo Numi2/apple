@@ -873,6 +873,27 @@ private struct QM31FRIFoldParams {
     var challengeD: UInt32
 }
 
+struct QM31FRIFoldTranscriptFrameData: Sendable {
+    let prefix: [Data]
+    let rounds: [Data]
+    let challenges: [Data]
+    let all: [Data]
+
+    init(prefix: [Data], rounds: [Data], challenges: [Data]) throws {
+        guard !prefix.isEmpty,
+              rounds.count == challenges.count,
+              prefix.allSatisfy({ !$0.isEmpty }),
+              rounds.allSatisfy({ !$0.isEmpty }),
+              challenges.allSatisfy({ !$0.isEmpty }) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.prefix = prefix
+        self.rounds = rounds
+        self.challenges = challenges
+        self.all = prefix + rounds + challenges
+    }
+}
+
 public struct QM31FRIFoldResult: Sendable {
     public let values: [QM31Element]
     public let stats: GPUExecutionStats
@@ -1339,9 +1360,11 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
     private let outputReadback: MTLBuffer
     private let challengeReadback: MTLBuffer
     private let commitmentRootReadback: MTLBuffer
-    private let transcriptHeaderFrame: QM31FRIFoldTranscriptFrameUpload
+    private let transcriptPrefixFrames: [QM31FRIFoldTranscriptFrameUpload]
     private let transcriptRoundFrames: [QM31FRIFoldTranscriptFrameUpload]
     private let transcriptChallengeFrames: [QM31FRIFoldTranscriptFrameUpload]
+    private let roundInputCounts: [Int]
+    private let roundInputElementOffsets: [Int]
     private let roundOutputCounts: [Int]
     private let roundInverseDomainElementOffsets: [Int]
     private let inputByteCount: Int
@@ -1352,11 +1375,26 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
     private let transcriptFrameScratchByteCount: Int
     private let challengeLogByteCount: Int
     private let commitmentRootLogByteCount: Int
+    private let materializedLayerLogByteCount: Int
     private let scratchByteCount: Int
     private let executionLock = NSLock()
     private var merkleCommitPlans: [SHA3RawLeavesMerkleCommitPlan]?
 
-    public init(context: MetalContext, inputCount: Int, roundCount: Int) throws {
+    public convenience init(context: MetalContext, inputCount: Int, roundCount: Int) throws {
+        try self.init(
+            context: context,
+            inputCount: inputCount,
+            roundCount: roundCount,
+            transcriptFrameData: nil
+        )
+    }
+
+    init(
+        context: MetalContext,
+        inputCount: Int,
+        roundCount: Int,
+        transcriptFrameData customTranscriptFrameData: QM31FRIFoldTranscriptFrameData?
+    ) throws {
         guard inputCount > 1,
               roundCount > 0,
               inputCount <= Int(UInt32.max) else {
@@ -1364,13 +1402,19 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         }
 
         var currentCount = inputCount
+        var roundInputCounts: [Int] = []
+        var roundInputElementOffsets: [Int] = []
         var roundOutputCounts: [Int] = []
         var roundInverseDomainElementOffsets: [Int] = []
+        var materializedLayerElementCount = 0
         var inverseDomainCount = 0
         for _ in 0..<roundCount {
             guard currentCount > 1, currentCount.isMultiple(of: 2) else {
                 throw AppleZKProverError.invalidInputLayout
             }
+            roundInputCounts.append(currentCount)
+            roundInputElementOffsets.append(materializedLayerElementCount)
+            materializedLayerElementCount = try Self.checkedAdd(materializedLayerElementCount, currentCount)
             let nextCount = currentCount / 2
             roundOutputCounts.append(nextCount)
             roundInverseDomainElementOffsets.append(inverseDomainCount)
@@ -1383,6 +1427,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         self.roundCount = roundCount
         self.outputCount = currentCount
         self.totalInverseDomainCount = inverseDomainCount
+        self.roundInputCounts = roundInputCounts
+        self.roundInputElementOffsets = roundInputElementOffsets
         self.roundOutputCounts = roundOutputCounts
         self.roundInverseDomainElementOffsets = roundInverseDomainElementOffsets
         self.inputByteCount = try checkedBufferLength(inputCount, Self.elementByteCount)
@@ -1393,10 +1439,18 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         self.roundCommitmentsByteCount = try checkedBufferLength(roundCount, Self.commitmentByteCount)
         self.challengeLogByteCount = try checkedBufferLength(roundCount, Self.elementByteCount)
         self.commitmentRootLogByteCount = try checkedBufferLength(roundCount, Self.commitmentByteCount)
-        let transcriptFrameData = try Self.makeTranscriptFrames(
+        self.materializedLayerLogByteCount = try checkedBufferLength(
+            materializedLayerElementCount,
+            Self.elementByteCount
+        )
+        let transcriptFrameData = try customTranscriptFrameData ?? Self.makeTranscriptFrames(
             inputCount: inputCount,
             roundOutputCounts: roundOutputCounts
         )
+        guard transcriptFrameData.rounds.count == roundCount,
+              transcriptFrameData.challenges.count == roundCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
         self.transcriptFrameScratchByteCount = max(
             Self.commitmentByteCount,
             transcriptFrameData.all.map(\.count).max() ?? 0
@@ -1467,11 +1521,13 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             length: commitmentRootLogByteCount,
             label: "AppleZKProver.QM31FRIFoldChainCommitmentRootReadback"
         )
-        self.transcriptHeaderFrame = try Self.makeFrameUpload(
-            device: context.device,
-            data: transcriptFrameData.header,
-            label: "AppleZKProver.QM31FRIFoldChainTranscriptHeader"
-        )
+        self.transcriptPrefixFrames = try transcriptFrameData.prefix.enumerated().map { index, data in
+            try Self.makeFrameUpload(
+                device: context.device,
+                data: data,
+                label: "AppleZKProver.QM31FRIFoldChainTranscriptPrefix.\(index)"
+            )
+        }
         self.transcriptRoundFrames = try transcriptFrameData.rounds.enumerated().map { index, data in
             try Self.makeFrameUpload(
                 device: context.device,
@@ -1608,6 +1664,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputBuffer: nil,
             commitmentOutputOffset: 0,
             commitmentOutputStride: roundCommitmentByteCount,
+            materializedLayerBuffer: nil,
+            materializedLayerOffset: 0,
             readOutput: true
         )
     }
@@ -1699,6 +1757,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         commitmentOutputBuffer: MTLBuffer,
         commitmentOutputOffset: Int = 0,
         commitmentOutputStride: Int = QM31FRIFoldTranscriptOracle.commitmentByteCount,
+        materializedLayerBuffer: MTLBuffer? = nil,
+        materializedLayerOffset: Int = 0,
         outputBuffer: MTLBuffer,
         outputOffset: Int = 0
     ) throws -> GPUExecutionStats {
@@ -1716,6 +1776,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputBuffer: commitmentOutputBuffer,
             commitmentOutputOffset: commitmentOutputOffset,
             commitmentOutputStride: commitmentOutputStride,
+            materializedLayerBuffer: materializedLayerBuffer,
+            materializedLayerOffset: materializedLayerOffset,
             readOutput: false
         )
         return result.stats
@@ -1954,7 +2016,7 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         }
 
         try transcript.encodeReset(on: commandBuffer)
-        try encodeTranscriptFrame(transcriptHeaderFrame, on: commandBuffer)
+        try encodeTranscriptPrefixFrames(on: commandBuffer)
 
         var currentInputBuffer = firstInputBuffer
         var currentInputOffset = firstInputOffset
@@ -2077,6 +2139,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         commitmentOutputBuffer: MTLBuffer?,
         commitmentOutputOffset: Int,
         commitmentOutputStride: Int,
+        materializedLayerBuffer: MTLBuffer?,
+        materializedLayerOffset: Int,
         readOutput: Bool
     ) throws -> QM31FRIMerkleFoldChainResult {
         let merklePlans = try ensureMerkleCommitPlans()
@@ -2112,6 +2176,30 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             )
         } else {
             commitmentOutputSpan = 0
+        }
+
+        let materializedLayerSpan: Int
+        if let materializedLayerBuffer {
+            materializedLayerSpan = try validateMaterializedLayerBuffer(
+                buffer: materializedLayerBuffer,
+                offset: materializedLayerOffset
+            )
+            try validateNoMaterializedLayerAliasing(
+                materializedLayerBuffer: materializedLayerBuffer,
+                materializedLayerOffset: materializedLayerOffset,
+                materializedLayerSpan: materializedLayerSpan,
+                evaluationsBuffer: evaluationsBuffer,
+                evaluationsOffset: evaluationsOffset,
+                inverseDomainBuffer: inverseDomainBuffer,
+                inverseDomainOffset: inverseDomainOffset,
+                outputBuffer: outputBuffer,
+                outputOffset: outputOffset,
+                commitmentOutputBuffer: commitmentOutputBuffer,
+                commitmentOutputOffset: commitmentOutputOffset,
+                commitmentOutputSpan: commitmentOutputSpan
+            )
+        } else {
+            materializedLayerSpan = 0
         }
 
         let start = DispatchTime.now()
@@ -2166,11 +2254,28 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         }
 
         try transcript.encodeReset(on: commandBuffer)
-        try encodeTranscriptFrame(transcriptHeaderFrame, on: commandBuffer)
+        try encodeTranscriptPrefixFrames(on: commandBuffer)
 
         var currentInputBuffer = firstInputBuffer
         var currentInputOffset = firstInputOffset
         for roundIndex in 0..<roundCount {
+            if let materializedLayerBuffer {
+                guard let materializeBlit = commandBuffer.makeBlitCommandEncoder() else {
+                    throw AppleZKProverError.failedToCreateEncoder
+                }
+                materializeBlit.label = "QM31.FRI.FoldChain.MerkleTranscript.Materialize.\(roundIndex)"
+                materializeBlit.copy(
+                    from: currentInputBuffer,
+                    sourceOffset: currentInputOffset,
+                    to: materializedLayerBuffer,
+                    destinationOffset: materializedLayerOffset
+                        + roundInputElementOffsets[roundIndex] * Self.elementByteCount,
+                    size: roundInputCounts[roundIndex] * Self.elementByteCount
+                )
+                materializeBlit.endEncoding()
+                _ = materializedLayerSpan
+            }
+
             let rootOffset = commitmentRootLog.offset + roundIndex * roundCommitmentByteCount
             try merklePlans[roundIndex].encodeCommitmentRoot(
                 uploadBuffer: currentInputBuffer,
@@ -2425,6 +2530,12 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         )
     }
 
+    private func encodeTranscriptPrefixFrames(on commandBuffer: MTLCommandBuffer) throws {
+        for frame in transcriptPrefixFrames {
+            try encodeTranscriptFrame(frame, on: commandBuffer)
+        }
+    }
+
     private func validateInputs(evaluations: [QM31Element], rounds: [QM31FRIFoldRound]) throws {
         guard evaluations.count == inputCount,
               rounds.count == roundCount else {
@@ -2535,6 +2646,18 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         try validateRoundCommitmentBuffer(buffer: buffer, offset: offset, stride: stride)
     }
 
+    private func validateMaterializedLayerBuffer(
+        buffer: MTLBuffer,
+        offset: Int
+    ) throws -> Int {
+        try validateBufferRange(
+            buffer: buffer,
+            offset: offset,
+            byteCount: materializedLayerLogByteCount
+        )
+        return materializedLayerLogByteCount
+    }
+
     private func roundCommitmentOffset(
         baseOffset: Int,
         stride: Int,
@@ -2619,6 +2742,61 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         }
     }
 
+    private func validateNoMaterializedLayerAliasing(
+        materializedLayerBuffer: MTLBuffer,
+        materializedLayerOffset: Int,
+        materializedLayerSpan: Int,
+        evaluationsBuffer: MTLBuffer,
+        evaluationsOffset: Int,
+        inverseDomainBuffer: MTLBuffer,
+        inverseDomainOffset: Int,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int,
+        commitmentOutputBuffer: MTLBuffer?,
+        commitmentOutputOffset: Int,
+        commitmentOutputSpan: Int
+    ) throws {
+        guard !rangesOverlap(
+            lhsBuffer: materializedLayerBuffer,
+            lhsOffset: materializedLayerOffset,
+            lhsByteCount: materializedLayerSpan,
+            rhsBuffer: evaluationsBuffer,
+            rhsOffset: evaluationsOffset,
+            rhsByteCount: inputByteCount
+        ),
+        !rangesOverlap(
+            lhsBuffer: materializedLayerBuffer,
+            lhsOffset: materializedLayerOffset,
+            lhsByteCount: materializedLayerSpan,
+            rhsBuffer: inverseDomainBuffer,
+            rhsOffset: inverseDomainOffset,
+            rhsByteCount: totalInverseDomainByteCount
+        ),
+        !rangesOverlap(
+            lhsBuffer: materializedLayerBuffer,
+            lhsOffset: materializedLayerOffset,
+            lhsByteCount: materializedLayerSpan,
+            rhsBuffer: outputBuffer,
+            rhsOffset: outputOffset,
+            rhsByteCount: outputByteCount
+        ) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        if let commitmentOutputBuffer {
+            guard !rangesOverlap(
+                lhsBuffer: materializedLayerBuffer,
+                lhsOffset: materializedLayerOffset,
+                lhsByteCount: materializedLayerSpan,
+                rhsBuffer: commitmentOutputBuffer,
+                rhsOffset: commitmentOutputOffset,
+                rhsByteCount: commitmentOutputSpan
+            ) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+        }
+    }
+
     private func rangesOverlap(
         lhsBuffer: MTLBuffer,
         lhsOffset: Int,
@@ -2686,7 +2864,7 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
     private static func makeTranscriptFrames(
         inputCount: Int,
         roundOutputCounts: [Int]
-    ) throws -> (header: Data, rounds: [Data], challenges: [Data], all: [Data]) {
+    ) throws -> QM31FRIFoldTranscriptFrameData {
         let header = try QM31FRIFoldTranscriptFraming.header(
             inputCount: inputCount,
             roundCount: roundOutputCounts.count,
@@ -2710,7 +2888,11 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             activeInputCount = outputCount
         }
 
-        return (header, roundFrames, challengeFrames, [header] + roundFrames + challengeFrames)
+        return try QM31FRIFoldTranscriptFrameData(
+            prefix: [header],
+            rounds: roundFrames,
+            challenges: challengeFrames
+        )
     }
 
     private static func makeFrameUpload(

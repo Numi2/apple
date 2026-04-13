@@ -323,6 +323,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     private let scratchB: ArenaSlice
     private let rootReadback: MTLBuffer
     private let openingReadback: MTLBuffer
+    private let leafReadback: MTLBuffer
     private let leafHashPipeline: MTLComputePipelineState
     private let parentPipeline: MTLComputePipelineState
     private let fusedUpperPipeline: MTLComputePipelineState
@@ -389,6 +390,11 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             device: context.device,
             length: max(1, Self.log2(leafCount) * 32),
             label: "Merkle.OpeningReadback"
+        )
+        self.leafReadback = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            length: max(1, leafLength),
+            label: "Merkle.LeafReadback"
         )
         self.leafHashPipeline = try context.pipeline(for: SHA3OneBlockKernel.spec(forInputLength: leafLength))
         self.parentPipeline = try context.pipeline(for: MerkleKernelSpecs.parent32x32())
@@ -461,6 +467,43 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     public func openRawLeafVerified(leaves: Data, leafIndex: Int) throws -> MerkleOpening {
         let opening = try openRawLeafMeasured(leaves: leaves, leafIndex: leafIndex)
         try verifyOpening(leaves: leaves, opening: opening.proof)
+        return opening
+    }
+
+    public func openRawLeafResident(
+        uploadBuffer: MTLBuffer,
+        uploadOffset: Int = 0,
+        leafIndex: Int
+    ) throws -> MerkleOpening {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        guard leafIndex >= 0, leafIndex < leafCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return try openRawLeafMeasuredLocked(
+            leaves: nil,
+            leafIndex: leafIndex,
+            uploadBuffer: uploadBuffer,
+            uploadOffset: uploadOffset
+        )
+    }
+
+    public func openRawLeafResidentVerified(
+        uploadBuffer: MTLBuffer,
+        uploadOffset: Int = 0,
+        leafIndex: Int
+    ) throws -> MerkleOpening {
+        let opening = try openRawLeafResident(
+            uploadBuffer: uploadBuffer,
+            uploadOffset: uploadOffset,
+            leafIndex: leafIndex
+        )
+        guard try MerkleOracle.verifySHA3_256(opening: opening.proof) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "SHA3 Merkle resident opening did not verify against its root."
+            )
+        }
         return opening
     }
 
@@ -639,7 +682,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     }
 
     private func openRawLeafMeasuredLocked(
-        leaves: Data,
+        leaves: Data?,
         leafIndex: Int,
         uploadBuffer: MTLBuffer,
         uploadOffset: Int = 0
@@ -648,7 +691,16 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         guard uploadOffset >= 0,
               !uploadEnd.overflow,
               uploadBuffer.length >= uploadEnd.partialValue,
-              leaves.count >= declaredLeafBytes else {
+              leaves.map({ $0.count >= declaredLeafBytes }) ?? true else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let leafRelativeOffset = leafIndex.multipliedReportingOverflow(by: leafStride)
+        let leafBufferOffset = uploadOffset.addingReportingOverflow(leafRelativeOffset.partialValue)
+        let leafBufferEnd = leafBufferOffset.partialValue.addingReportingOverflow(leafLength)
+        guard !leafRelativeOffset.overflow,
+              !leafBufferOffset.overflow,
+              !leafBufferEnd.overflow,
+              uploadBuffer.length >= leafBufferEnd.partialValue else {
             throw AppleZKProverError.invalidInputLayout
         }
 
@@ -751,6 +803,15 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         }
         blit.label = "Merkle.Open.RootReadback"
         blit.copy(from: current.buffer, sourceOffset: current.offset, to: rootReadback, destinationOffset: 0, size: 32)
+        if leaves == nil, leafLength > 0 {
+            blit.copy(
+                from: uploadBuffer,
+                sourceOffset: leafBufferOffset.partialValue,
+                to: leafReadback,
+                destinationOffset: 0,
+                size: leafLength
+            )
+        }
         blit.endEncoding()
 
         commandBuffer.commit()
@@ -761,8 +822,13 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         }
 
         let end = DispatchTime.now()
-        let leafStart = leafIndex * leafStride
-        let leaf = leaves.subdata(in: leafStart..<(leafStart + leafLength))
+        let leaf: Data
+        if let leaves {
+            let leafStart = leafRelativeOffset.partialValue
+            leaf = leaves.subdata(in: leafStart..<(leafStart + leafLength))
+        } else {
+            leaf = Data(bytes: leafReadback.contents(), count: leafLength)
+        }
         let proofBytes = Data(bytes: openingReadback.contents(), count: treeDepth * 32)
         var siblings: [Data] = []
         siblings.reserveCapacity(treeDepth)
@@ -819,6 +885,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         uploadRing.clear()
         MetalBufferFactory.zeroSharedBuffer(rootReadback)
         MetalBufferFactory.zeroSharedBuffer(openingReadback)
+        MetalBufferFactory.zeroSharedBuffer(leafReadback)
         try MetalBufferFactory.zeroPrivateBuffers(
             [arena.buffer],
             context: context,

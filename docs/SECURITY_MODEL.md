@@ -62,6 +62,7 @@ The current package aims to guarantee:
 - QM31 FRI fold-chain transcript modes use versioned, domain-separated frames and rejection-sampled secure-field challenge limbs,
 - the Merkle-bound QM31 FRI chain mode commits each current resident QM31 layer before deriving that layer's fold challenge and verifies generated roots against an independent CPU oracle in the public checked path,
 - the linear QM31 FRI proof format uses versioned serialization, binds commitments and final values into query sampling, verifies every queried Merkle decommitment, and checks fold consistency with a CPU-only verifier,
+- the resident Circle PCS/FRI proof emitter returns canonical proof bytes from an already-resident evaluation/codeword buffer and `proveVerified` decodes those bytes before checking them with the independent CPU verifier,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, M31 vector, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,

@@ -498,6 +498,341 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(try Self.readQM31Buffer(outputBuffer, count: domain.halfSize), expected)
     }
 
+    func testCircleFRIFoldChainPlanMatchesCPUOracleAndResidentHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let roundCount = 4
+        var evaluations: [QM31Element] = []
+        evaluations.reserveCapacity(domain.size)
+        for index in 0..<domain.size {
+            evaluations.append(QM31Element(
+                a: UInt32(17 + index * 3),
+                b: UInt32(19 + index * 5),
+                c: UInt32(23 + index * 7),
+                d: UInt32(29 + index * 11)
+            ))
+        }
+        let challenges = [
+            QM31Element(a: 31, b: 37, c: 41, d: 43),
+            QM31Element(a: 47, b: 53, c: 59, d: 61),
+            QM31Element(a: 67, b: 71, c: 73, d: 79),
+            QM31Element(a: 83, b: 89, c: 97, d: 101),
+        ]
+        let expected = try CircleFRILayerOracleV1.fold(
+            evaluations: evaluations,
+            domain: domain,
+            challenges: challenges
+        )
+
+        let plan = try CircleFRIFoldChainPlan(
+            context: context,
+            domain: domain,
+            roundCount: roundCount
+        )
+        XCTAssertEqual(plan.inputCount, domain.size)
+        XCTAssertEqual(plan.roundCount, roundCount)
+        XCTAssertEqual(plan.outputCount, domain.size >> roundCount)
+        XCTAssertEqual(plan.totalInverseDomainCount, domain.size - plan.outputCount)
+        XCTAssertEqual(
+            plan.inverseDomainLayers,
+            try CircleFRILayerOracleV1.inverseDomainLayers(for: domain, roundCount: roundCount)
+        )
+
+        let measured = try plan.executeVerified(evaluations: evaluations, challenges: challenges)
+        XCTAssertEqual(measured.values, expected)
+
+        try plan.clearReusableBuffers()
+        let alternateChallenges = [
+            QM31Element(a: 103, b: 107, c: 109, d: 113),
+            QM31Element(a: 127, b: 131, c: 137, d: 139),
+            QM31Element(a: 149, b: 151, c: 157, d: 163),
+            QM31Element(a: 167, b: 173, c: 179, d: 181),
+        ]
+        let reused = try plan.executeVerified(
+            evaluations: Array(evaluations.reversed()),
+            challenges: alternateChallenges
+        )
+        XCTAssertEqual(
+            reused.values,
+            try CircleFRILayerOracleV1.fold(
+                evaluations: Array(evaluations.reversed()),
+                domain: domain,
+                challenges: alternateChallenges
+            )
+        )
+
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: domain.size * CircleFRIFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIFoldChainEvaluations"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.count * CircleFRIFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIFoldChainOutput"
+        )
+        _ = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            outputBuffer: outputBuffer,
+            challenges: challenges
+        )
+        XCTAssertEqual(try Self.readQM31Buffer(outputBuffer, count: expected.count), expected)
+    }
+
+    func testCircleFRIMerkleTranscriptFoldChainPlanMatchesProofBuilderAndResidentHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let roundCount = 3
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 3,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(
+            publicInputDigest: Data((0..<32).map { UInt8(0x70 + $0) })
+        )
+        let evaluations = Self.makeStableCircleEvaluations(count: domain.size)
+        let proof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        let expectedChallenges = try CircleFRITranscriptV1.deriveChallenges(
+            domain: domain,
+            securityParameters: security,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: proof.commitments
+        )
+
+        let plan = try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        XCTAssertEqual(plan.inputCount, domain.size)
+        XCTAssertEqual(plan.roundCount, roundCount)
+        XCTAssertEqual(plan.outputCount, proof.finalLayer.count)
+        XCTAssertEqual(plan.totalInverseDomainCount, domain.size - proof.finalLayer.count)
+        XCTAssertEqual(
+            plan.inverseDomainLayers,
+            try CircleFRILayerOracleV1.inverseDomainLayers(for: domain, roundCount: roundCount)
+        )
+
+        let measured = try plan.executeVerified(evaluations: evaluations)
+        XCTAssertEqual(measured.values, proof.finalLayer)
+        XCTAssertEqual(measured.commitments, proof.commitments)
+        XCTAssertEqual(measured.challenges, expectedChallenges)
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs))
+
+        try plan.clearReusableBuffers()
+        let reused = try plan.executeVerified(evaluations: evaluations)
+        XCTAssertEqual(reused.values, proof.finalLayer)
+        XCTAssertEqual(reused.commitments, proof.commitments)
+        XCTAssertEqual(reused.challenges, expectedChallenges)
+
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: domain.size * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptEvaluations"
+        )
+        let commitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: roundCount * CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptCommitments"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: proof.finalLayer.count * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptOutput"
+        )
+        _ = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            commitmentOutputBuffer: commitmentBuffer,
+            outputBuffer: outputBuffer
+        )
+        XCTAssertEqual(try Self.readQM31Buffer(outputBuffer, count: proof.finalLayer.count), proof.finalLayer)
+        XCTAssertEqual(Self.readCommitmentBuffer(commitmentBuffer, count: roundCount), proof.commitments)
+    }
+
+    func testCircleFRIResidentQueryExtractorBuildsVerifierCompatibleQueries() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let roundCount = 3
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 3,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(
+            publicInputDigest: Data((0..<32).map { UInt8(0x91 + $0) })
+        )
+        let evaluations = Self.makeStableCircleEvaluations(count: domain.size)
+        let cpuProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+
+        let plan = try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: domain.size * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIResidentQueryEvaluations"
+        )
+        let committedLayerBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: plan.totalCommittedLayerCount * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIResidentCommittedLayers"
+        )
+        let commitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: roundCount * CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount,
+            label: "CircleDomainTests.CircleFRIResidentQueryCommitments"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: cpuProof.finalLayer.count * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIResidentQueryFinalLayer"
+        )
+
+        _ = try plan.executeMaterializedResident(
+            evaluationsBuffer: evaluationBuffer,
+            committedLayerBuffer: committedLayerBuffer,
+            commitmentOutputBuffer: commitmentBuffer,
+            outputBuffer: outputBuffer
+        )
+        let commitments = Self.readCommitmentBuffer(commitmentBuffer, count: roundCount)
+        let finalLayer = try Self.readQM31Buffer(outputBuffer, count: cpuProof.finalLayer.count)
+        XCTAssertEqual(commitments, cpuProof.commitments)
+        XCTAssertEqual(finalLayer, cpuProof.finalLayer)
+
+        let transcript = try CircleFRITranscriptV1.derive(
+            domain: domain,
+            securityParameters: security,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer
+        )
+        let extractor = try CircleFRIResidentQueryExtractorV1(
+            context: context,
+            domain: domain,
+            roundCount: roundCount
+        )
+        let extracted = try extractor.extractQueries(
+            committedLayerBuffer: committedLayerBuffer,
+            commitments: commitments,
+            queryPairIndices: transcript.queryPairIndices
+        )
+        XCTAssertEqual(extracted.openingCount, Int(security.queryCount) * roundCount * 2)
+        XCTAssertEqual(extracted.queries, cpuProof.queries)
+
+        let residentProof = try CirclePCSFRIProofV1(
+            domain: domain,
+            securityParameters: security,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            queries: extracted.queries
+        )
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(
+            proof: residentProof,
+            publicInputs: publicInputs
+        ))
+    }
+
+    func testCirclePCSFRIResidentProverEmitsVerifierCompatibleProof() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let roundCount = 3
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 3,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(
+            publicInputDigest: Data((0..<32).map { UInt8(0xc0 + $0) })
+        )
+        let evaluations = Self.makeStableCircleEvaluations(count: domain.size)
+        let expectedProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+
+        let prover = try CirclePCSFRIResidentProverV1(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        let offset = 64
+        let evaluationBytes = QM31CanonicalEncoding.pack(evaluations)
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: offset + evaluationBytes.count,
+            label: "CircleDomainTests.CirclePCSFRIResidentProverEvaluations"
+        )
+        try MetalBufferFactory.copy(
+            evaluationBytes,
+            into: evaluationBuffer,
+            destinationOffset: offset,
+            byteCount: evaluationBytes.count
+        )
+
+        let result = try prover.proveVerified(
+            evaluationsBuffer: evaluationBuffer,
+            evaluationsOffset: offset
+        )
+        XCTAssertEqual(result.proof, expectedProof)
+        XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(result.encodedProof), expectedProof)
+        XCTAssertEqual(result.proofByteCount, result.encodedProof.count)
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(
+            proof: result.proof,
+            publicInputs: publicInputs
+        ))
+
+        try prover.clearReusableBuffers()
+        let arrayResult = try prover.proveVerified(evaluations: evaluations)
+        XCTAssertEqual(arrayResult.proof, expectedProof)
+    }
+
     func testCircleFRIFoldPlanRejectsInvalidDomainsAndResidentLayouts() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -571,6 +906,266 @@ final class CircleDomainTests: XCTestCase {
                 outputBuffer: fullEvaluationBuffer,
                 challenge: one
             )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testCircleFRIFoldChainPlanRejectsInvalidDomainsAndResidentLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let naturalDomain = try CircleDomainDescriptor.canonical(
+            logSize: 4,
+            storageOrder: .circleDomainNatural
+        )
+        XCTAssertThrowsError(try CircleFRIFoldChainPlan(
+            context: context,
+            domain: naturalDomain,
+            roundCount: 2
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+        XCTAssertThrowsError(try CircleFRIFoldChainPlan(
+            context: context,
+            domain: domain,
+            roundCount: 0
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try CircleFRIFoldChainPlan(
+            context: context,
+            domain: domain,
+            roundCount: Int(domain.logSize) + 1
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let plan = try CircleFRIFoldChainPlan(context: context, domain: domain, roundCount: 2)
+        let one = QM31Element(a: 1, b: 0, c: 0, d: 0)
+        XCTAssertThrowsError(
+            try plan.execute(
+                evaluations: Array(repeating: one, count: domain.size),
+                challenges: [one]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.execute(
+                evaluations: Array(repeating: one, count: domain.size),
+                challenges: [one, QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let fullEvaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(Array(repeating: one, count: domain.size)),
+            declaredLength: domain.size * CircleFRIFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIFoldChainAliasedEvaluations"
+        )
+        let shortOutputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: CircleFRIFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIFoldChainShortOutput"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullEvaluationBuffer,
+                outputBuffer: shortOutputBuffer,
+                challenges: [one, one]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullEvaluationBuffer,
+                outputBuffer: fullEvaluationBuffer,
+                challenges: [one, one]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testCircleFRIMerkleTranscriptFoldChainPlanRejectsInvalidInputsAndResidentLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 2,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let badFoldingSecurity = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 2,
+            foldingStep: 2,
+            grindingBits: 0
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(publicInputDigest: Data(repeating: 0x31, count: 32))
+        let naturalDomain = try CircleDomainDescriptor.canonical(
+            logSize: 4,
+            storageOrder: .circleDomainNatural
+        )
+        XCTAssertThrowsError(try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: naturalDomain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+        XCTAssertThrowsError(try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: badFoldingSecurity,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputDigest: Data(repeating: 0x31, count: 31),
+            roundCount: 2
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 0
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let plan = try CircleFRIMerkleTranscriptFoldChainPlan(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )
+        let one = QM31Element(a: 1, b: 0, c: 0, d: 0)
+        XCTAssertThrowsError(try plan.execute(evaluations: [one])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let fullEvaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(Array(repeating: one, count: domain.size)),
+            declaredLength: domain.size * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptAliasedEvaluations"
+        )
+        let shortCommitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptShortCommitments"
+        )
+        let shortOutputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptShortOutput"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullEvaluationBuffer,
+                commitmentOutputBuffer: shortCommitmentBuffer,
+                outputBuffer: shortOutputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let commitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: 2 * CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptCommitments"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullEvaluationBuffer,
+                commitmentOutputBuffer: commitmentBuffer,
+                outputBuffer: shortOutputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: (domain.size >> 2) * CircleFRIMerkleTranscriptFoldChainPlan.elementByteCount,
+            label: "CircleDomainTests.CircleFRIMerkleTranscriptOutput"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullEvaluationBuffer,
+                commitmentOutputBuffer: fullEvaluationBuffer,
+                outputBuffer: outputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let extractor = try CircleFRIResidentQueryExtractorV1(
+            context: context,
+            domain: domain,
+            roundCount: 2
+        )
+        let dummyCommitments = [
+            Data(repeating: 0x11, count: 32),
+            Data(repeating: 0x22, count: 32),
+        ]
+        XCTAssertThrowsError(
+            try extractor.extractQueries(
+                committedLayerBuffer: fullEvaluationBuffer,
+                commitments: dummyCommitments,
+                queryPairIndices: [0]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let committedLayerBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: extractor.totalCommittedLayerCount * CircleFRIResidentQueryExtractorV1.elementByteCount,
+            label: "CircleDomainTests.CircleFRIExtractorCommittedLayers"
+        )
+        XCTAssertThrowsError(
+            try extractor.extractQueries(
+                committedLayerBuffer: committedLayerBuffer,
+                commitments: dummyCommitments,
+                queryPairIndices: [domain.halfSize]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let prover = try CirclePCSFRIResidentProverV1(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )
+        XCTAssertThrowsError(
+            try prover.proveVerified(evaluationsBuffer: shortOutputBuffer)
         ) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
@@ -683,6 +1278,14 @@ final class CircleDomainTests: XCTestCase {
         let byteCount = count * CircleFRIFoldPlan.elementByteCount
         let data = Data(bytes: buffer.contents(), count: byteCount)
         return try QM31CanonicalEncoding.unpackMany(data, count: count)
+    }
+
+    private static func readCommitmentBuffer(_ buffer: MTLBuffer, count: Int) -> [Data] {
+        let commitmentByteCount = CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount
+        let bytes = buffer.contents().bindMemory(to: UInt8.self, capacity: count * commitmentByteCount)
+        return (0..<count).map { index in
+            Data(bytes: bytes.advanced(by: index * commitmentByteCount), count: commitmentByteCount)
+        }
     }
 #endif
 }
