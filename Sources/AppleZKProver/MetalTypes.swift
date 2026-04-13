@@ -141,6 +141,23 @@ public enum KeccakF1600PermutationKernelFamily: String, Sendable {
     case simdgroup
 }
 
+public enum M31VectorOperation: UInt32, Sendable, CaseIterable {
+    case add = 0
+    case subtract = 1
+    case negate = 2
+    case multiply = 3
+    case square = 4
+
+    public var requiresRightHandSide: Bool {
+        switch self {
+        case .add, .subtract, .multiply:
+            return true
+        case .negate, .square:
+            return false
+        }
+    }
+}
+
 public struct GPUHashBatchResult: Sendable {
     public let digests: Data
     public let stats: GPUExecutionStats

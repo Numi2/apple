@@ -68,6 +68,12 @@ struct SumcheckParams {
     uint fieldModulus;
 };
 
+struct M31VectorParams {
+    uint count;
+    uint operation;
+    uint fieldModulus;
+};
+
 constant ulong AZK_FC_LEAF_BYTES [[function_constant(1)]];
 constant ulong AZK_FC_PARENT_BYTES [[function_constant(2)]];
 constant ulong AZK_FC_TREE_ARITY [[function_constant(3)]];
@@ -1326,9 +1332,58 @@ inline uint m31_add_mod(uint a, uint b) {
     return sum - (M31_MODULUS_U32 & mask);
 }
 
+inline uint m31_sub_mod(uint a, uint b) {
+    const uint difference = a - b;
+    const uint underflowMask = uint(0u) - uint(a < b);
+    return difference + (M31_MODULUS_U32 & underflowMask);
+}
+
+inline uint m31_neg_mod(uint value) {
+    const uint nonzeroMask = uint(0u) - uint(value != 0u);
+    return (M31_MODULUS_U32 - value) & nonzeroMask;
+}
+
+inline uint m31_mul_mod(uint a, uint b) {
+    return m31_reduce_u64(ulong(a) * ulong(b));
+}
+
 inline uint m31_mul_add_mod(uint a, uint b, uint challenge) {
     const ulong value = ulong(a) + ulong(b) * ulong(challenge);
     return m31_reduce_u64(value);
+}
+
+kernel void m31_vector_arithmetic(
+    const device uint *lhs [[buffer(0)]],
+    const device uint *rhs [[buffer(1)]],
+    device uint *output [[buffer(2)]],
+    constant M31VectorParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.count || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint a = lhs[gid];
+    switch (params.operation) {
+    case 0u:
+        output[gid] = m31_add_mod(a, rhs[gid]);
+        break;
+    case 1u:
+        output[gid] = m31_sub_mod(a, rhs[gid]);
+        break;
+    case 2u:
+        output[gid] = m31_neg_mod(a);
+        break;
+    case 3u:
+        output[gid] = m31_mul_mod(a, rhs[gid]);
+        break;
+    case 4u:
+        output[gid] = m31_mul_mod(a, a);
+        break;
+    default:
+        output[gid] = 0u;
+        break;
+    }
 }
 
 kernel void sumcheck_scalar(

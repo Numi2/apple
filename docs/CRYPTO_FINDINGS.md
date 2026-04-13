@@ -2,6 +2,23 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: M31 Vector Arithmetic Foundation
+
+Finding:
+
+- The sum-check chunk used M31 arithmetic internally, but the field lane roadmap still lacked a first-class reusable vector arithmetic surface with explicit CPU oracle coverage.
+
+Work completed:
+
+- Added canonical M31 CPU oracle operations for add, subtract, negate, multiply, and square using the `2^31 - 1` Mersenne reduction.
+- Added `M31VectorArithmeticPlan`, a reusable Metal plan for vector add, subtract, negate, multiply, and square over canonical M31 elements.
+- Public array execution validates canonical input before dispatch; `executeVerified` compares the GPU output against the CPU oracle before accepting it.
+- Regression coverage now checks edge values around `0`, `1`, `p - 2`, and `p - 1`, non-power-of-two vector lengths, invalid canonical layouts, explicit clear/reuse, and CPU/GPU equality for every implemented operation.
+
+Residual risk:
+
+- This is a standalone field-lane primitive. It does not yet compose field vectors directly into FRI/codeword or PCS command plans, and it does not claim constant-time behavior against a hostile GPU driver or physical observer.
+
 ## 2026-04-13: Accelerator Trust And Buffer Hygiene Hardening
 
 Findings:

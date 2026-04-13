@@ -21,6 +21,7 @@ round-trips.
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
+| M31 field lanes | CPU oracle plus reusable GPU vector add, subtract, negate, multiply, and square plans |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
 | Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
@@ -69,6 +70,9 @@ Implemented today:
   the verified API.
 - Reusable hash, permutation, Merkle, and sum-check plans with explicit clearing
   for private buffers.
+- Canonical M31 field arithmetic oracles and reusable GPU vector plans for add,
+  subtract, negate, multiply, and square. Inputs are validated as canonical
+  field elements before CPU-backed APIs accept the result.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan
   history, drift observation, and M31 sum-check plan construction.
 - GPU transcript helpers for canonical packing, Keccak absorb, and challenge

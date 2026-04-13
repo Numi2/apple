@@ -8,6 +8,75 @@ public enum M31Field {
             throw AppleZKProverError.invalidInputLayout
         }
     }
+
+    public static func add(_ lhs: UInt32, _ rhs: UInt32) -> UInt32 {
+        let sum = lhs + rhs
+        return sum >= modulus ? sum - modulus : sum
+    }
+
+    public static func subtract(_ lhs: UInt32, _ rhs: UInt32) -> UInt32 {
+        lhs >= rhs ? lhs - rhs : modulus - (rhs - lhs)
+    }
+
+    public static func negate(_ value: UInt32) -> UInt32 {
+        value == 0 ? 0 : modulus - value
+    }
+
+    public static func multiply(_ lhs: UInt32, _ rhs: UInt32) -> UInt32 {
+        reduce(UInt64(lhs) * UInt64(rhs))
+    }
+
+    public static func square(_ value: UInt32) -> UInt32 {
+        multiply(value, value)
+    }
+
+    public static func apply(
+        _ operation: M31VectorOperation,
+        lhs: [UInt32],
+        rhs: [UInt32]? = nil
+    ) throws -> [UInt32] {
+        try validateCanonical(lhs)
+        if operation.requiresRightHandSide {
+            guard let rhs, rhs.count == lhs.count else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            try validateCanonical(rhs)
+            return zip(lhs, rhs).map { left, right in
+                switch operation {
+                case .add:
+                    return add(left, right)
+                case .subtract:
+                    return subtract(left, right)
+                case .multiply:
+                    return multiply(left, right)
+                case .negate, .square:
+                    preconditionFailure("unary M31 operation reached binary oracle path")
+                }
+            }
+        }
+
+        guard rhs == nil else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return lhs.map { value in
+            switch operation {
+            case .negate:
+                return negate(value)
+            case .square:
+                return square(value)
+            case .add, .subtract, .multiply:
+                preconditionFailure("binary M31 operation reached unary oracle path")
+            }
+        }
+    }
+
+    private static func reduce(_ value: UInt64) -> UInt32 {
+        let modulus64 = UInt64(modulus)
+        var reduced = (value & modulus64) + (value >> 31)
+        reduced = (reduced & modulus64) + (reduced >> 31)
+        reduced = (reduced & modulus64) + (reduced >> 31)
+        return UInt32(reduced >= modulus64 ? reduced - modulus64 : reduced)
+    }
 }
 
 public struct SumcheckChunkOracleResult: Equatable, Sendable {

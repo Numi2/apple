@@ -114,6 +114,32 @@ final class PlannerTests: XCTestCase {
         )
     }
 
+    func testM31VectorCPUOracleCoversEdgeValues() throws {
+        let lhs: [UInt32] = [
+            0,
+            1,
+            2,
+            M31Field.modulus - 2,
+            M31Field.modulus - 1,
+        ]
+        let rhs: [UInt32] = [
+            0,
+            M31Field.modulus - 1,
+            M31Field.modulus - 2,
+            2,
+            1,
+        ]
+
+        XCTAssertEqual(try M31Field.apply(.add, lhs: lhs, rhs: rhs), [0, 0, 0, 0, 0])
+        XCTAssertEqual(try M31Field.apply(.subtract, lhs: lhs, rhs: rhs), [0, 2, 4, M31Field.modulus - 4, M31Field.modulus - 2])
+        XCTAssertEqual(try M31Field.apply(.negate, lhs: lhs), [0, M31Field.modulus - 1, M31Field.modulus - 2, 2, 1])
+        XCTAssertEqual(try M31Field.apply(.multiply, lhs: lhs, rhs: rhs), [0, M31Field.modulus - 1, M31Field.modulus - 4, M31Field.modulus - 4, M31Field.modulus - 1])
+        XCTAssertEqual(try M31Field.apply(.square, lhs: lhs), [0, 1, 4, 4, 1])
+        XCTAssertThrowsError(try M31Field.apply(.add, lhs: [M31Field.modulus], rhs: [0])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
         let evaluations = (0..<16).map { UInt32(($0 + 1) * 17) }
         let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
@@ -385,6 +411,72 @@ final class PlannerTests: XCTestCase {
         XCTAssertEqual(measured.result.finalVector, expected.finalVector)
         XCTAssertEqual(measured.result.coefficients, expected.coefficients)
         XCTAssertEqual(measured.result.challenges, expected.challenges)
+    }
+
+    func testM31VectorArithmeticPlansMatchCPUOracle() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        var lhs = Self.makeM31Evaluations(count: 257, salt: 131)
+        var rhs = Self.makeM31Evaluations(count: 257, salt: 197)
+        lhs.replaceSubrange(0..<5, with: [0, 1, 2, M31Field.modulus - 2, M31Field.modulus - 1])
+        rhs.replaceSubrange(0..<5, with: [0, M31Field.modulus - 1, M31Field.modulus - 2, 2, 1])
+
+        for operation in M31VectorOperation.allCases {
+            let plan = try M31VectorArithmeticPlan(
+                context: context,
+                operation: operation,
+                count: lhs.count
+            )
+            let measured = try plan.executeVerified(
+                lhs: lhs,
+                rhs: operation.requiresRightHandSide ? rhs : nil
+            )
+            let expected = try M31Field.apply(
+                operation,
+                lhs: lhs,
+                rhs: operation.requiresRightHandSide ? rhs : nil
+            )
+
+            XCTAssertEqual(measured.values, expected, "M31 \(operation) mismatch")
+            try plan.clearReusableBuffers()
+
+            let reused = try plan.executeVerified(
+                lhs: rhs,
+                rhs: operation.requiresRightHandSide ? lhs : nil
+            )
+            let reusedExpected = try M31Field.apply(
+                operation,
+                lhs: rhs,
+                rhs: operation.requiresRightHandSide ? lhs : nil
+            )
+            XCTAssertEqual(reused.values, reusedExpected, "M31 \(operation) mismatch after clear/reuse")
+        }
+    }
+
+    func testM31VectorArithmeticRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try M31VectorArithmeticPlan(context: context, operation: .add, count: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let plan = try M31VectorArithmeticPlan(context: context, operation: .add, count: 2)
+        XCTAssertThrowsError(try plan.execute(lhs: [0, 1], rhs: nil)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try plan.execute(lhs: [0, M31Field.modulus], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let unaryPlan = try M31VectorArithmeticPlan(context: context, operation: .square, count: 2)
+        XCTAssertThrowsError(try unaryPlan.execute(lhs: [0, 1], rhs: [0, 1])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
     }
 
     func testSumcheckChunkVerifiedExecutionMatchesCPUOracle() throws {
