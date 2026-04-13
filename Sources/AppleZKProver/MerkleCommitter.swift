@@ -96,7 +96,7 @@ enum MerkleKernelSpecs {
         depth: Int
     ) -> KernelSpec {
         KernelSpec(
-            kernel: "sha3_256_merkle_treelet_opening_leaves_specialized",
+            kernel: "sha3_256_merkle_treelet_roots_opening_leaves_specialized",
             family: .treelet,
             queueMode: .metal3,
             functionConstants: .plannerConstants([
@@ -637,22 +637,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         var currentIndex: Int
         var level: Int
 
-        if let subtreePipeline, let subtreeOpeningPipeline, var subtreeParams, subtreeLeafCount > 1 {
-            guard let subtreeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-                throw AppleZKProverError.failedToCreateEncoder
-            }
-            subtreeEncoder.label = "Merkle.Open.Subtrees.\(subtreeLeafCount)"
-            subtreeEncoder.setComputePipelineState(subtreePipeline)
-            subtreeEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
-            subtreeEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
-            subtreeEncoder.setBytes(&subtreeParams, length: MemoryLayout<MerkleTreeletParams>.stride, index: 2)
-            subtreeEncoder.setThreadgroupMemoryLength(try checkedBufferLength(subtreeLeafCount, 64), index: 0)
-            subtreeEncoder.dispatchThreadgroups(
-                MTLSize(width: leafCount / subtreeLeafCount, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: subtreeLeafCount, height: 1, depth: 1)
-            )
-            subtreeEncoder.endEncoding()
-
+        if let subtreeOpeningPipeline, subtreeLeafCount > 1 {
             let subtreeDepth = Self.log2(subtreeLeafCount)
             let baseLeaf = (leafIndex / subtreeLeafCount) * subtreeLeafCount
             var openParams = MerkleTreeletOpenParams(
@@ -666,14 +651,15 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             guard let treeletOpenEncoder = commandBuffer.makeComputeCommandEncoder() else {
                 throw AppleZKProverError.failedToCreateEncoder
             }
-            treeletOpenEncoder.label = "Merkle.Open.Treelet.\(subtreeLeafCount)"
+            treeletOpenEncoder.label = "Merkle.Open.SubtreesWithPath.\(subtreeLeafCount)"
             treeletOpenEncoder.setComputePipelineState(subtreeOpeningPipeline)
             treeletOpenEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
-            treeletOpenEncoder.setBuffer(openingReadback, offset: 0, index: 1)
-            treeletOpenEncoder.setBytes(&openParams, length: MemoryLayout<MerkleTreeletOpenParams>.stride, index: 2)
+            treeletOpenEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
+            treeletOpenEncoder.setBuffer(openingReadback, offset: 0, index: 2)
+            treeletOpenEncoder.setBytes(&openParams, length: MemoryLayout<MerkleTreeletOpenParams>.stride, index: 3)
             treeletOpenEncoder.setThreadgroupMemoryLength(try checkedBufferLength(subtreeLeafCount, 64), index: 0)
             treeletOpenEncoder.dispatchThreadgroups(
-                MTLSize(width: 1, height: 1, depth: 1),
+                MTLSize(width: leafCount / subtreeLeafCount, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: subtreeLeafCount, height: 1, depth: 1)
             )
             treeletOpenEncoder.endEncoding()

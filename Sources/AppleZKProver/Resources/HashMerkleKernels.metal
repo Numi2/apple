@@ -1123,23 +1123,27 @@ kernel void sha3_256_merkle_treelet_leaves_specialized(
     }
 }
 
-kernel void sha3_256_merkle_treelet_opening_leaves_specialized(
+kernel void sha3_256_merkle_treelet_roots_opening_leaves_specialized(
     const device uchar *leaves [[buffer(0)]],
-    device uchar *proof [[buffer(1)]],
-    constant MerkleTreeletOpenParams &params [[buffer(2)]],
+    device uchar *subtreeRoots [[buffer(1)]],
+    device uchar *proof [[buffer(2)]],
+    constant MerkleTreeletOpenParams &params [[buffer(3)]],
     threadgroup uchar *scratch [[threadgroup(0)]],
     uint tid [[thread_position_in_threadgroup]],
+    uint tgid [[threadgroup_position_in_grid]],
     uint threadsPerThreadgroup [[threads_per_threadgroup]])
 {
-    if (params.localLeafIndex >= params.subtreeLeafCount) {
+    if (params.subtreeLeafCount == 0u || params.localLeafIndex >= params.subtreeLeafCount) {
         return;
     }
 
+    const uint baseLeaf = tgid * params.subtreeLeafCount;
+    const bool writesOpening = (baseLeaf == params.baseLeaf);
     const uint inputLength = uint(AZK_FC_LEAF_BYTES);
     const uint scratchStride = params.subtreeLeafCount * 32u;
 
     if (tid < params.subtreeLeafCount) {
-        const uint leaf = params.baseLeaf + tid;
+        const uint leaf = baseLeaf + tid;
         if (leaf < params.leafCount) {
             thread ulong state[25];
             const device uchar *src = leaves + leaf * params.inputStride;
@@ -1156,10 +1160,12 @@ kernel void sha3_256_merkle_treelet_opening_leaves_specialized(
     uint localIndex = params.localLeafIndex;
     uint localLevel = 0u;
     while (levelCount > 1u) {
-        const uint siblingIndex = localIndex ^ 1u;
-        for (uint byte = tid; byte < 32u; byte += threadsPerThreadgroup) {
-            proof[params.proofOffset + localLevel * 32u + byte] =
-                scratch[readBase + siblingIndex * 32u + byte];
+        if (writesOpening) {
+            const uint siblingIndex = localIndex ^ 1u;
+            for (uint byte = tid; byte < 32u; byte += threadsPerThreadgroup) {
+                proof[params.proofOffset + localLevel * 32u + byte] =
+                    scratch[readBase + siblingIndex * 32u + byte];
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -1179,6 +1185,15 @@ kernel void sha3_256_merkle_treelet_opening_leaves_specialized(
         levelCount = parentCount;
         localIndex >>= 1;
         localLevel += 1u;
+    }
+
+    if (tid == 0u) {
+        device uchar *root = subtreeRoots + tgid * 32;
+        const threadgroup uchar *result = scratch + readBase;
+        store_le64(load_le64_tg(result + 0), root + 0);
+        store_le64(load_le64_tg(result + 8), root + 8);
+        store_le64(load_le64_tg(result + 16), root + 16);
+        store_le64(load_le64_tg(result + 24), root + 24);
     }
 }
 

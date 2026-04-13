@@ -64,8 +64,9 @@ Implemented today:
   only the near-rate shapes supported by local smoke data.
 - GPU raw-leaf Merkle opening extraction for SHA3 commitments. The opening path
   reads back only the requested sibling path plus the root, extracts lower
-  siblings inside selected treelets, and is checked against an independent CPU
-  opening oracle by the verified API.
+  siblings inside selected treelets while producing the subtree roots needed for
+  the upper path, and is checked against an independent CPU opening oracle by
+  the verified API.
 - Reusable hash, permutation, Merkle, and sum-check plans with explicit clearing
   for private buffers.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan

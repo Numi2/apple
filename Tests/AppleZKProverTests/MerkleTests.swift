@@ -408,6 +408,55 @@ final class MerkleTests: XCTestCase {
         }
     }
 
+    func testGPUMerkleTreeletOpeningSupportsFixedRateLeafLengths() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let leafCount = 64
+        let subtreeLeafCount = 8
+        let cases = [
+            (leafLength: 0, leafStride: 5, salt: 17),
+            (leafLength: 32, leafStride: 40, salt: 23),
+            (leafLength: 64, leafStride: 72, salt: 31),
+            (leafLength: 128, leafStride: 136, salt: 47),
+            (leafLength: 135, leafStride: 144, salt: 53),
+            (leafLength: 136, leafStride: 144, salt: 61),
+        ]
+
+        for testCase in cases {
+            let leaves = Self.makeLeaves(
+                count: leafCount,
+                leafStride: testCase.leafStride,
+                leafLength: testCase.leafLength,
+                salt: testCase.salt
+            )
+            let plan = try committer.makeRawLeavesCommitPlan(
+                leafCount: leafCount,
+                leafStride: testCase.leafStride,
+                leafLength: testCase.leafLength,
+                configuration: MerkleCommitPlanConfiguration(leafSubtreeMode: .fixed(subtreeLeafCount))
+            )
+            XCTAssertEqual(plan.subtreeLeafCount, subtreeLeafCount)
+
+            for leafIndex in [0, 7, 8, 37, 63] {
+                let gpu = try plan.openRawLeafVerified(leaves: leaves, leafIndex: leafIndex)
+                let cpu = try MerkleOracle.openingSHA3_256(
+                    rawLeaves: leaves,
+                    leafCount: leafCount,
+                    leafStride: testCase.leafStride,
+                    leafLength: testCase.leafLength,
+                    leafIndex: leafIndex
+                )
+
+                XCTAssertEqual(gpu.proof, cpu, "Treelet opening mismatch for leaf length \(testCase.leafLength), index \(leafIndex)")
+                XCTAssertTrue(try MerkleOracle.verifySHA3_256(opening: gpu.proof))
+            }
+        }
+    }
+
     func testGPUMerkleOpeningSupportsSingleLeafTree() throws {
         guard let _ = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")

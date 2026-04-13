@@ -60,9 +60,9 @@ Work completed:
 - Added `openRawLeafVerified`, which compares the GPU opening against the CPU oracle and also verifies the returned proof against its root before accepting it.
 - Regression coverage now checks CPU tamper detection, invalid leaf indices, single-leaf trees, strided fixed-rate leaves, and GPU/CPU opening equality for several leaf positions.
 
-Residual risk:
+Follow-up:
 
-- The target lower treelet is currently hashed once in the all-subtree root pass and once in the opening-extraction pass. This keeps the implementation simple and fully verified, but leaves a tuning opportunity for a future combined root/opening kernel.
+- The later combined treelet root/opening kernel removed the duplicate target-treelet hash while keeping the same CPU opening oracle gate.
 
 ## 2026-04-13: Race-Free Merkle Treelets
 
@@ -74,7 +74,7 @@ Work completed:
 
 - Reworked `sha3_256_merkle_treelet_leaves_specialized` and `sha3_256_merkle_fuse_upper_32` to use two threadgroup scratch halves and swap read/write bases after each level.
 - Updated Swift feasibility and dispatch sizing so treelet and fused-upper kernels reserve 64 bytes per live node instead of 32 bytes.
-- Added a treelet-aware opening kernel that extracts the lower sibling path from the selected subtree using the same ping-pong reduction discipline.
+- Added a treelet-aware opening kernel that extracts the lower sibling path from the selected subtree using the same ping-pong reduction discipline. Opening mode now uses a combined variant that writes every selected subtree root and emits the requested lower sibling path during the same treelet reduction.
 - Made automatic subtree selection conservative after refreshed Apple M4 / Apple9 smoke data: near-rate 135- and 136-byte SHA3 leaves can select 64-leaf treelets; shorter leaves require explicit fixed mode or planner tuning records.
 
 Residual risk:

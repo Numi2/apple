@@ -26,6 +26,7 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - Added `zkmetal-bench --merkle-opening` for raw-leaf SHA3 opening extraction. It emits a schema v1 opening report with root, proof digest, sibling count, CPU proof match, and opening timing without dumping proof nodes.
 - Reworked threadgroup-local Merkle treelet and fused-upper reductions to use ping-pong scratch halves, eliminating the intra-threadgroup read/write overlap that parent compaction could otherwise create.
 - Added treelet-aware opening extraction: selected lower treelets now write the requested lower sibling path on GPU, then the upper path is extracted from the resident subtree-root tree.
+- Combined the opening-mode lower treelet pass so selected treelets write subtree roots for the upper tree and the target treelet writes its lower sibling path during the same reduction. This removes the previous duplicate target-treelet hash in GPU opening extraction.
 
 ## Verification Commands
 
@@ -45,6 +46,7 @@ swift build -c release -Xswiftc -Osize
 .build/release/zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256 --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --no-merkle-subtree --json > /tmp/applezk-release-scalar-fixedrate-suite.json
 .build/release/zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256 --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --merkle-subtree-auto --json > /tmp/applezk-release-auto-fixedrate-suite.json
 .build/release/zkmetal-bench --merkle-opening --leaves 16384 --leaf-bytes 135 --opening-leaf-index 7777 --merkle-subtree-auto --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-merkle-opening.json
+.build/release/zkmetal-bench --merkle-opening --leaves 16384 --leaf-bytes 135 --opening-leaf-index 7777 --merkle-subtree-auto --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-merkle-opening-combined.json
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --json > BenchmarkBaselines/apple-m4-apple9-suite-2026-04-13.json
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json > BenchmarkBaselines/apple-m4-apple9-suite-simdgroup-2026-04-13.json
 ```
@@ -54,6 +56,8 @@ Observed result: `swift test -c release -Xswiftc -Osize` passed 43 tests at base
 After the fixed-rate Merkle treelet expansion, `swift test` and `swift test -c release -Xswiftc -Osize` passed 60 tests. The fixed-rate treelet smoke suite produced 8 benchmark reports and every report had `verification.matchedCPU == true`.
 
 After Merkle opening extraction was added, `swift test` passed 65 tests. After the race-free treelet scratch and treelet-aware opening work, `swift test` and `swift test -c release -Xswiftc -Osize` passed 66 tests. The debug opening smoke report had `verification.matchedCPU == true`, 10 siblings for 1,024 leaves, and selected a 64-leaf opening treelet. The optimized opening smoke report had `verification.matchedCPU == true`, 14 siblings for 16,384 leaves, and selected a 64-leaf opening treelet.
+
+After the combined treelet root/opening kernel, `swift test` and `swift test -c release -Xswiftc -Osize` passed 67 tests. The updated optimized opening smoke report had `verification.matchedCPU == true`, 14 siblings for 16,384 leaves, selected a 64-leaf opening treelet, and produced matching root/proof digests against the CPU oracle.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 
@@ -93,9 +97,9 @@ The opening smoke used release `-Osize`, 16,384 leaves, 135-byte leaves, leaf in
 
 | Leaf bytes | Leaf index | Selected subtree leaves | Siblings | Opening min wall seconds | Opening min GPU seconds | CPU proof match |
 | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 135 | 7777 | 64 | 14 | 0.001980750 | 0.001435917 | true |
+| 135 | 7777 | 64 | 14 | 0.001612791 | 0.000938375 | true |
 
-Interpretation: this is the first measurement gate for treelet-aware GPU opening extraction. It establishes correctness, JSON reporting, and a baseline for future tuning; the target treelet is currently hashed once for the root batch and once for lower-sibling extraction.
+Interpretation: this is the current measurement gate for treelet-aware GPU opening extraction. The opening-mode treelet kernel now produces subtree roots for the upper tree and the requested lower sibling path in one pass, so the target treelet is no longer hashed twice. The previous race-free opening smoke minimums for the same command shape were 0.001980750 wall seconds and 0.001435917 GPU seconds.
 
 ## Release Baseline
 
