@@ -4,8 +4,8 @@ AppleZKProver is a SwiftPM package for building Apple-silicon-first proving
 primitives on top of Metal. It focuses on the parts of transparent proof systems
 that are naturally GPU-resident: SHA3/Keccak hashing, Merkle commitments,
 Keccak-F1600 permutation batches, transcript work, M31/CM31/QM31 field
-reductions, a first resident QM31 FRI fold layer, and early M31 sum-check
-execution.
+reductions, resident QM31 FRI fold layers, linear QM31 FRI proof
+serialization, and early M31 sum-check execution.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
 a broad cryptography catalog and does not claim production proof-system security
@@ -22,7 +22,7 @@ round-trips.
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
-| M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, and radix-2 FRI fold plans |
+| M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, and a linear QM31 FRI proof/decommitment verifier |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
 | Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
@@ -86,6 +86,23 @@ Implemented today:
   CPU-verified public execution, and a resident `executeResident` path that
   consumes caller-owned field buffers and writes the folded layer without an
   internal readback.
+- A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
+  buffer plus concatenated per-round inverse-domain buffers, encodes every fold
+  round into one command buffer, ping-pongs private scratch between intermediate
+  layers, and writes only the final folded layer to the caller output buffer.
+  The chain can use caller-supplied explicit challenges or absorb 32-byte
+  per-round commitment roots into domain-separated transcript frames, squeeze
+  QM31 challenge limbs on GPU, and feed the resident challenge buffer directly
+  into each fold round without CPU challenge materialization. The Merkle-bound
+  mode commits each current QM31 layer buffer as 16-byte SHA3 raw leaves inside
+  the composed command plan before deriving that round's challenge, so the
+  absorbed roots are produced from the resident layer buffers rather than
+  supplied independently by the caller.
+- A verifier-facing linear QM31 FRI proof object with deterministic sorted-key
+  JSON serialization, transcript-sampled query pairs, SHA3 Merkle decommitments
+  for every queried folded layer, final-layer binding, and an independent
+  CPU-only verifier. This proof format targets the current linear radix-2
+  layout; it is not a Circle-domain PCS proof.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan
   history, drift observation, and M31 sum-check plan construction.
 - GPU transcript helpers for canonical packing, Keccak absorb, and challenge
@@ -168,6 +185,10 @@ computing base:
 - CM31 vector arithmetic `executeVerified`
 - QM31 vector arithmetic `executeVerified`
 - QM31 FRI fold `executeVerified`
+- QM31 FRI fold chain `executeVerified`
+- QM31 transcript-derived FRI fold chain `executeTranscriptDerivedVerified`
+- QM31 Merkle-bound transcript FRI fold chain `executeMerkleTranscriptDerivedVerified`
+- QM31 linear FRI proof `QM31FRIProofVerifier.verify`
 
 These APIs recompute the result with the CPU oracle and throw
 `AppleZKProverError.correctnessValidationFailed` if the GPU result diverges.
@@ -187,6 +208,9 @@ swift run zkmetal-bench --cm31-multiply --elements 16384 --iterations 5 --json
 swift run zkmetal-bench --qm31-multiply --elements 16384 --iterations 5 --json
 swift run zkmetal-bench --qm31-inverse --elements 16384 --iterations 5 --json
 swift run zkmetal-bench --qm31-fri-fold --elements 16384 --iterations 5 --json
+swift run zkmetal-bench --qm31-fri-fold-chain --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
+swift run zkmetal-bench --qm31-fri-fold-chain-transcript --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
+swift run zkmetal-bench --qm31-fri-fold-chain-merkle --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
 ```
 
 Useful benchmark variants:

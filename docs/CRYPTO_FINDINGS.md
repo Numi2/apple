@@ -2,6 +2,111 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: Linear QM31 FRI Query Proof Format And Verifier
+
+Finding:
+
+- The Merkle-bound QM31 FRI chain now generated roots from each folded layer before deriving challenges, but it still had no verifier-facing proof object. A caller could benchmark or CPU-check the folded roots, but there was no serialized artifact containing sampled query positions, Merkle decommitments, folded-value consistency checks, or a deterministic verifier contract.
+
+Work completed:
+
+- Added `QM31FRIProof`, `QM31FRIQueryProof`, and `QM31FRILayerQueryProof` as versioned `Codable` proof types. `QM31FRIProof.serialized()` emits deterministic sorted-key JSON, and `QM31FRIProof.deserialize(_:)` fails closed with the package's typed layout error for malformed input.
+- Added `QM31FRIProofBuilder.prove`, which commits every current QM31 radix-2 layer as 16-byte little-endian SHA3 Merkle leaves, replays the domain-separated fold-chain transcript, absorbs the serialized final layer, samples query pair indices from the Fiat-Shamir state, and extracts left/right Merkle openings along the queried fold path.
+- Added `QM31FRIProofVerifier.verify`, an independent CPU verifier that re-derives fold challenges and query indices from the proof transcript, verifies every Merkle opening against the committed roots, decodes canonical QM31 leaves, checks each folded value appears in the next opened layer, and checks the last folded value against the serialized final layer.
+- Made QM31/CM31 field elements and `MerkleOpeningProof` codable so proof objects can be serialized without ad hoc byte munging.
+- Added regression coverage for deterministic serialization/deserialization, successful proof verification, final-layer tamper rejection, Merkle leaf tamper rejection, malformed proof shape rejection, and malformed JSON rejection.
+
+Residual risk:
+
+- This is a linear radix-2 QM31 FRI proof format for the layer order consumed by the current fold scheduler. It is not a Circle-domain FRI/PCS proof: Circle twiddle generation, coset/bit-reversal layout, and Circle-specific query mapping remain open protocol work.
+- The verifier takes inverse-domain layers as public verifier parameters. A full PCS format still needs a stable domain descriptor that commits to those parameters and to the codeword layout.
+- Query count is caller-selected, and this change does not claim a production soundness parameter set. It establishes the typed proof/decommitment surface that future protocol configurations can bind.
+- The proof format uses JSON for deterministic developer-facing serialization. A compact binary PCS format remains future work once the Circle-domain layout is fixed.
+
+References:
+
+- S-two Book, FRI prover commitment flow, where each inner layer is folded, committed, and appended to the Fiat-Shamir channel: https://docs.starknet.io/learn/S-two-book/how-it-works/circle-fri/fri_prover
+- S-two Book, FRI verifier flow, where commitments are mixed before folding randomness and query positions are sampled afterward: https://docs.starknet.io/learn/S-two-book/how-it-works/circle-fri/fri_verifier
+- Stwo core FRI verifier/config source, including secure-field challenges, query count configuration, and fold-step structure: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fri.rs
+
+## 2026-04-13: Merkle-Bound QM31 FRI Fold Chain Roots
+
+Finding:
+
+- The transcript-derived QM31 FRI chain bound challenges to 32-byte commitment roots, but those roots were supplied by the caller. That still left a protocol composition gap: the implementation did not prove that the absorbed roots were produced from the resident evaluation layer being folded in that round.
+
+Work completed:
+
+- Added `QM31FRIMerkleFoldChainOracle`, an independent CPU oracle that serializes each current QM31 layer as 16-byte little-endian raw SHA3 Merkle leaves, commits that layer, absorbs the resulting root into the same domain-separated fold-chain transcript, derives the QM31 challenge, and then folds to the next layer.
+- Exposed an internal `SHA3RawLeavesMerkleCommitPlan.encodeCommitmentRoot` encoder so higher-level command plans can write Merkle roots into caller-owned GPU buffers inside an existing command buffer instead of forcing a standalone Merkle command submission.
+- Extended `QM31FRIFoldChainPlan` with `executeMerkleTranscriptDerived`, `executeMerkleTranscriptDerivedVerified`, and `executeMerkleTranscriptDerivedResident`. The resident path commits the current layer buffer, absorbs the generated root, squeezes the challenge on GPU, folds into the next resident layer, and repeats. The public verified path checks final values, commitments, and challenges against the CPU oracle.
+- Added resident commitment-root output for the Merkle-bound path, so verifier-facing proof construction can consume the generated roots without trusting detached caller-supplied commitment bytes.
+- Added CPU and GPU tests for current-layer root binding, root/challenge mutation sensitivity, padded resident root output, malformed layouts, and alias rejection. Added `zkmetal-bench --qm31-fri-fold-chain-merkle` with `challengeMode: "merkle-transcript"` and CPU verification that checks both final folded values and generated roots.
+
+Residual risk:
+
+- The Merkle-bound mode commits the linearly ordered QM31 layer buffers that the current radix-2 fold scheduler consumes. It is not yet a full Circle-domain layout: Circle FFT twiddles, bit-reversal/coset ordering, and domain-specific query mapping remain separate work.
+- A linear verifier-facing proof format now samples query positions, extracts Merkle decommitments, serializes proof data, and verifies fold consistency independently. Circle-domain query mapping and a full PCS proof remain separate work.
+- The resident path assumes the input and inverse-domain buffers are canonical and protocol-correct by construction. Public array APIs still CPU-check canonicality; private composition must preserve those invariants before this becomes a production proof system.
+
+References:
+
+- S-two Book, FRI prover commitment flow, where each inner layer is folded, committed, and appended to the Fiat-Shamir channel: https://docs.starknet.io/learn/S-two-book/how-it-works/circle-fri/fri_prover
+- S-two Book, FRI verifier flow, where roots are mixed before folding randomness and query positions are sampled afterward: https://docs.starknet.io/learn/S-two-book/how-it-works/circle-fri/fri_verifier
+- Stwo core FRI verifier/config source, including secure-field challenges and fold-step structure: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fri.rs
+
+## 2026-04-13: Transcript-Derived QM31 FRI Chain Challenges
+
+Finding:
+
+- The chained QM31 FRI fold executor accepted caller-supplied challenges. That was useful for resident composition, but in a FRI protocol each folded-layer commitment must be mixed into the Fiat-Shamir transcript before deriving the next secure-field challenge. Leaving challenge arrays as host material was a composition risk and did not prove that transcript squeeze output could feed the fold kernel without CPU materialization.
+
+Work completed:
+
+- Added `QM31FRIFoldTranscriptOracle`, an independent CPU oracle with a domain-separated framing contract for the QM31 FRI fold chain. The transcript absorbs a versioned header, per-round metadata, the caller-provided 32-byte round commitment root, and a per-round challenge request before squeezing four M31 limbs into one canonical QM31 challenge by rejection sampling.
+- Extended `QM31FRIFoldChainPlan` with transcript frame uploads, a commitment-root upload ring, private transcript state, challenge scratch/log buffers, and public `executeTranscriptDerived` / `executeTranscriptDerivedVerified` APIs.
+- Added a resident transcript-derived execution path that accepts caller-owned evaluation, inverse-domain, commitment-root, and output buffers. Each round absorbs the current commitment root, squeezes the QM31 challenge on GPU, and passes the challenge buffer directly into the fold kernel before moving to the next layer.
+- Added the `qm31_fri_fold_challenge_buffer` Metal kernel so folded layers can consume transcript-derived resident challenge words instead of CPU-supplied challenge structs.
+- Added CPU/GPU differential tests covering transcript challenge derivation, commitment mutation sensitivity, malformed roots, resident padded commitment strides, final-output correctness, and alias rejection. Added `zkmetal-bench --qm31-fri-fold-chain-transcript` with JSON reporting that records `challengeMode: "transcript"`.
+
+Residual risk:
+
+- A Merkle-bound mode now builds roots from the resident folded buffers before deriving challenges. The detached-root transcript mode remains useful for integration with an external commitment system, but callers must not treat detached roots as proof that the current buffer was committed unless the higher-level protocol enforces that binding.
+- Linear query sampling, decommitment extraction, proof serialization, and an independent verifier now exist for the QM31 radix-2 FRI proof surface. Circle-domain twiddle/layout generation and full PCS binding remain separate protocol work.
+- The resident path assumes evaluation, inverse-domain, and commitment-root buffers are protocol-correct and canonical by construction. Public APIs retain CPU oracle checks; private-buffer protocol composition must enforce those invariants at the layer that constructs the roots and layouts.
+
+References:
+
+- S-two Book, FRI verifier flow, where layer commitments are mixed into the channel before drawing secure-field folding randomness: https://docs.starknet.io/learn/S-two-book/how-it-works/circle-fri/fri_verifier
+- Stwo core FRI verifier/config source, including secure-field challenges and fold-step structure: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fri.rs
+- Stwo CPU FRI folding source, using inverse butterflies and `f0 + alpha * f1` for line and circle-to-line folds: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/prover/backend/cpu/fri.rs
+
+## 2026-04-13: QM31 Multi-Round Resident FRI Fold Chain
+
+Finding:
+
+- The single-layer QM31 FRI fold primitive removed one CPU round-trip, but a real FRI reduction performs repeated folds. Without a chained resident plan, higher-level code would still need to resubmit and synchronize each intermediate layer from the host, or each caller would need to hand-roll scratch-buffer choreography around the field kernel.
+
+Work completed:
+
+- Added `QM31FRIFoldRound` and `QM31FRIFoldChainOracle`, an independent CPU oracle that applies the audited single-layer fold formula repeatedly and preserves the same canonicality, even-input, nonzero inverse-domain, and challenge validation rules.
+- Added `QM31FRIFoldChainPlan`, a reusable Metal plan that accepts an input layer size and round count, precomputes every output-layer size and inverse-domain offset, allocates private scratch for intermediate layers, and encodes every fold round into a single command buffer.
+- Added a resident `executeResident` API that consumes caller-owned evaluation and concatenated inverse-domain buffers plus per-round QM31 challenges, rejects final-output aliasing with the full input and inverse-domain ranges, and writes only the final folded layer to the caller output buffer. Intermediate layers never leave the private residency arena.
+- Added CPU-verified public execution, explicit reusable-buffer clearing, checked sizing for chained inverse-domain buffers, CLI validation for `--fri-fold-rounds`, and benchmark reporting via `zkmetal-bench --qm31-fri-fold-chain`.
+- Added deterministic tests for CPU chain equivalence to repeated single-layer folds, malformed round layouts, zero inverse-domain points, noncanonical challenges, GPU/CPU equality, plan reuse after clearing, resident hot-path execution, invalid resident buffer sizes, challenge-count mismatch, and output/input alias rejection.
+
+Residual risk:
+
+- The explicit-challenge chain remains a fold executor for caller-supplied per-round inverse-domain points and Fiat-Shamir challenges. A separate transcript-derived challenge mode now absorbs caller-supplied commitment roots and derives challenges on GPU, but the project still does not compute Circle-domain twiddles, commit folded layers into Merkle trees inside the same plan, choose/query positions, or emit a verifier-facing FRI/PCS proof.
+- Resident buffers are treated as already canonical. The public array path validates canonical QM31 limbs and nonzero inverse-domain points; the resident path intentionally avoids CPU readback, so protocol layers using private buffers must maintain those invariants by construction.
+- The scratch schedule is linear radix-2 folding over adjacent pairs. Any Circle FFT bit-reversal, coset ordering, or batched codeword layout policy must be introduced as a separately tested layer before this is used in a complete prover.
+
+References:
+
+- Stwo CPU FRI folding source, using inverse butterflies and `f0 + alpha * f1` for line and circle-to-line folds: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/prover/backend/cpu/fri.rs
+- Stwo core FRI verifier/config source, including secure-field challenges and fold-step structure: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fri.rs
+- Stwo QM31 source, defining `SECURE_EXTENSION_DEGREE = 2`, `R = 2 + i`, and `CM31[x] / (x^2 - R)`: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fields/qm31.rs
+
 ## 2026-04-13: QM31 Resident FRI Fold Composition Primitive
 
 Finding:
@@ -18,7 +123,7 @@ Work completed:
 
 Residual risk:
 
-- This is one radix-2 fold layer, not a complete Circle FFT, full multi-round FRI protocol, PCS commitment scheme, query/decommitment flow, or verifier-facing proof format.
+- This is one radix-2 fold layer. A separate chained command plan now composes repeated radix-2 folds, but the project still does not implement a complete Circle FFT, transcript-bound FRI protocol, PCS commitment scheme, query/decommitment flow, or verifier-facing proof format.
 - `executeResident` assumes the caller already owns canonical QM31 buffers and supplies inverse-domain points in the exact pair order expected by the surrounding domain layout. It rejects output ranges that overlap either input range, but it does not validate canonical limbs inside resident buffers. Callers that cannot prove those invariants must use the public array API or an independent CPU witness during integration.
 - The primitive currently accepts precomputed inverse-domain points. A full Circle FFT/FRI composition plan still needs audited domain/twiddle generation, bit-reversal policy, transcript framing, Merkle commitment chaining, and query opening integration.
 

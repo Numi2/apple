@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CM31Element: Equatable, Sendable {
+public struct CM31Element: Equatable, Codable, Sendable {
     public let real: UInt32
     public let imaginary: UInt32
 

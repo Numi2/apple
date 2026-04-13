@@ -408,6 +408,302 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testQM31FRIFoldChainCPUOracleMatchesRepeatedFoldsAndRejectsInvalidRounds() throws {
+        let evaluations = Self.makeQM31Evaluations(count: 8, aSalt: 43, bSalt: 47, cSalt: 53, dSalt: 59)
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: evaluations.count, roundCount: 3)
+
+        let first = try QM31FRIFoldOracle.fold(
+            evaluations: evaluations,
+            inverseDomainPoints: rounds[0].inverseDomainPoints,
+            challenge: rounds[0].challenge
+        )
+        let second = try QM31FRIFoldOracle.fold(
+            evaluations: first,
+            inverseDomainPoints: rounds[1].inverseDomainPoints,
+            challenge: rounds[1].challenge
+        )
+        let expected = try QM31FRIFoldOracle.fold(
+            evaluations: second,
+            inverseDomainPoints: rounds[2].inverseDomainPoints,
+            challenge: rounds[2].challenge
+        )
+
+        XCTAssertEqual(
+            try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: rounds),
+            expected
+        )
+
+        XCTAssertThrowsError(try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: [])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldChainOracle.fold(
+                evaluations: evaluations,
+                rounds: [
+                    QM31FRIFoldRound(
+                        inverseDomainPoints: [QM31Element(a: 1, b: 0, c: 0, d: 0)],
+                        challenge: rounds[0].challenge
+                    ),
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldChainOracle.fold(
+                evaluations: evaluations,
+                rounds: [
+                    QM31FRIFoldRound(
+                        inverseDomainPoints: [
+                            QM31Element(a: 0, b: 0, c: 0, d: 0),
+                            QM31Element(a: 1, b: 0, c: 0, d: 0),
+                            QM31Element(a: 1, b: 0, c: 0, d: 0),
+                            QM31Element(a: 1, b: 0, c: 0, d: 0),
+                        ],
+                        challenge: rounds[0].challenge
+                    ),
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldChainOracle.fold(
+                evaluations: evaluations,
+                rounds: [
+                    QM31FRIFoldRound(
+                        inverseDomainPoints: rounds[0].inverseDomainPoints,
+                        challenge: QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)
+                    ),
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31FRIFoldTranscriptOracleDerivesChallengesAndRejectsInvalidCommitments() throws {
+        let evaluations = Self.makeQM31Evaluations(count: 8, aSalt: 83, bSalt: 89, cSalt: 97, dSalt: 101)
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: evaluations.count, roundCount: 3, saltBase: 103)
+        let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+        let commitments = Self.makeQM31FRICommitments(count: 3, salt: 109)
+
+        let result = try QM31FRIFoldTranscriptOracle.fold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            roundCommitments: commitments
+        )
+        let expectedRounds = zip(inverseDomainLayers, result.challenges).map {
+            QM31FRIFoldRound(inverseDomainPoints: $0.0, challenge: $0.1)
+        }
+        XCTAssertEqual(
+            result.values,
+            try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: expectedRounds)
+        )
+        XCTAssertEqual(result.challenges.count, commitments.count)
+        try QM31Field.validateCanonical(result.challenges)
+
+        var changedCommitments = commitments
+        changedCommitments[1][0] ^= 0x80
+        XCTAssertNotEqual(
+            try QM31FRIFoldTranscriptOracle.deriveChallenges(
+                inputCount: evaluations.count,
+                roundCommitments: commitments
+            ),
+            try QM31FRIFoldTranscriptOracle.deriveChallenges(
+                inputCount: evaluations.count,
+                roundCommitments: changedCommitments
+            )
+        )
+
+        XCTAssertThrowsError(
+            try QM31FRIFoldTranscriptOracle.deriveChallenges(inputCount: evaluations.count, roundCommitments: [])
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldTranscriptOracle.deriveChallenges(
+                inputCount: evaluations.count,
+                roundCommitments: [Data(repeating: 0x42, count: 31)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldTranscriptOracle.fold(
+                evaluations: evaluations,
+                inverseDomainLayers: [inverseDomainLayers[0]],
+                roundCommitments: commitments
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31FRIMerkleFoldChainOracleCommitsCurrentLayersBeforeChallenges() throws {
+        let evaluations = Self.makeQM31Evaluations(count: 8, aSalt: 113, bSalt: 127, cSalt: 131, dSalt: 137)
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: evaluations.count, roundCount: 3, saltBase: 139)
+        let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+
+        let result = try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        XCTAssertEqual(result.commitments.count, inverseDomainLayers.count)
+        XCTAssertEqual(result.challenges.count, inverseDomainLayers.count)
+        XCTAssertEqual(
+            result.commitments[0],
+            try MerkleOracle.rootSHA3_256(
+                rawLeaves: Self.packQM31LittleEndian(evaluations),
+                leafCount: evaluations.count,
+                leafStride: QM31FRIMerkleFoldChainOracle.leafByteCount,
+                leafLength: QM31FRIMerkleFoldChainOracle.leafByteCount
+            )
+        )
+        XCTAssertEqual(
+            result.challenges,
+            try QM31FRIFoldTranscriptOracle.deriveChallenges(
+                inputCount: evaluations.count,
+                roundCommitments: result.commitments
+            )
+        )
+        XCTAssertEqual(
+            result.values,
+            try QM31FRIFoldChainOracle.fold(
+                evaluations: evaluations,
+                rounds: zip(inverseDomainLayers, result.challenges).map {
+                    QM31FRIFoldRound(inverseDomainPoints: $0.0, challenge: $0.1)
+                }
+            )
+        )
+
+        var changedEvaluations = evaluations
+        changedEvaluations[0] = QM31Field.add(changedEvaluations[0], QM31Element(a: 1, b: 0, c: 0, d: 0))
+        let changed = try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: changedEvaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        XCTAssertNotEqual(changed.commitments[0], result.commitments[0])
+        XCTAssertNotEqual(changed.challenges[0], result.challenges[0])
+
+        XCTAssertThrowsError(
+            try QM31FRIMerkleFoldChainOracle.commitAndFold(
+                evaluations: Array(evaluations.prefix(6)),
+                inverseDomainLayers: [Array(inverseDomainLayers[0].prefix(3))]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        var badLayers = inverseDomainLayers
+        badLayers[0][0] = QM31Element(a: 0, b: 0, c: 0, d: 0)
+        XCTAssertThrowsError(
+            try QM31FRIMerkleFoldChainOracle.commitAndFold(
+                evaluations: evaluations,
+                inverseDomainLayers: badLayers
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31FRIProofSerializesAndVerifiesLinearQueries() throws {
+        let evaluations = Self.makeQM31Evaluations(count: 64, aSalt: 149, bSalt: 151, cSalt: 157, dSalt: 163)
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: evaluations.count, roundCount: 3, saltBase: 167)
+        let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+        let proof = try QM31FRIProofBuilder.prove(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            queryCount: 5
+        )
+        let committed = try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+
+        XCTAssertEqual(proof.version, QM31FRIProof.currentVersion)
+        XCTAssertEqual(proof.commitments, committed.commitments)
+        XCTAssertEqual(proof.finalValues, committed.values)
+        XCTAssertEqual(proof.queries.count, proof.queryCount)
+        XCTAssertTrue(try QM31FRIProofVerifier.verify(proof: proof, inverseDomainLayers: inverseDomainLayers))
+
+        let encoded = try proof.serialized()
+        XCTAssertEqual(encoded, try proof.serialized())
+        let decoded = try QM31FRIProof.deserialize(encoded)
+        XCTAssertEqual(decoded, proof)
+        XCTAssertTrue(try QM31FRIProofVerifier.verify(proof: decoded, inverseDomainLayers: inverseDomainLayers))
+
+        var tamperedFinalValues = proof.finalValues
+        let checkedFinalIndex = proof.queries[0].layers.last!.pairIndex
+        tamperedFinalValues[checkedFinalIndex] = QM31Field.add(
+            tamperedFinalValues[checkedFinalIndex],
+            QM31Element(a: 1, b: 0, c: 0, d: 0)
+        )
+        let tamperedFinalProof = QM31FRIProof(
+            inputCount: proof.inputCount,
+            roundCount: proof.roundCount,
+            queryCount: proof.queryCount,
+            commitments: proof.commitments,
+            finalValues: tamperedFinalValues,
+            queries: proof.queries
+        )
+        XCTAssertFalse(try QM31FRIProofVerifier.verify(
+            proof: tamperedFinalProof,
+            inverseDomainLayers: inverseDomainLayers
+        ))
+
+        var tamperedLeaf = proof.queries[0].layers[0].leftOpening.leaf
+        tamperedLeaf[0] ^= 0x01
+        let originalLayer = proof.queries[0].layers[0]
+        let badOpening = MerkleOpeningProof(
+            leafIndex: originalLayer.leftOpening.leafIndex,
+            leaf: tamperedLeaf,
+            siblingHashes: originalLayer.leftOpening.siblingHashes,
+            root: originalLayer.leftOpening.root
+        )
+        let badLayer = QM31FRILayerQueryProof(
+            layerIndex: originalLayer.layerIndex,
+            pairIndex: originalLayer.pairIndex,
+            leftOpening: badOpening,
+            rightOpening: originalLayer.rightOpening
+        )
+        var badLayers = proof.queries[0].layers
+        badLayers[0] = badLayer
+        var badQueries = proof.queries
+        badQueries[0] = QM31FRIQueryProof(
+            initialPairIndex: proof.queries[0].initialPairIndex,
+            layers: badLayers
+        )
+        let tamperedOpeningProof = QM31FRIProof(
+            inputCount: proof.inputCount,
+            roundCount: proof.roundCount,
+            queryCount: proof.queryCount,
+            commitments: proof.commitments,
+            finalValues: proof.finalValues,
+            queries: badQueries
+        )
+        XCTAssertFalse(try QM31FRIProofVerifier.verify(
+            proof: tamperedOpeningProof,
+            inverseDomainLayers: inverseDomainLayers
+        ))
+
+        let malformedProof = QM31FRIProof(
+            inputCount: proof.inputCount,
+            roundCount: proof.roundCount,
+            queryCount: proof.queryCount + 1,
+            commitments: proof.commitments,
+            finalValues: proof.finalValues,
+            queries: proof.queries
+        )
+        XCTAssertThrowsError(
+            try QM31FRIProofVerifier.verify(proof: malformedProof, inverseDomainLayers: inverseDomainLayers)
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31FRIProof.deserialize(Data("not-json".utf8))) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
         let evaluations = (0..<16).map { UInt32(($0 + 1) * 17) }
         let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
@@ -1144,6 +1440,418 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testQM31FRIFoldChainPlanMatchesCPUOracleAndResidentHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let inputCount = 512
+        let roundCount = 3
+        let evaluations = Self.makeQM31Evaluations(
+            count: inputCount,
+            aSalt: 757,
+            bSalt: 761,
+            cSalt: 769,
+            dSalt: 773
+        )
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: inputCount, roundCount: roundCount, saltBase: 787)
+        let expected = try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: rounds)
+
+        let plan = try QM31FRIFoldChainPlan(context: context, inputCount: inputCount, roundCount: roundCount)
+        XCTAssertEqual(plan.outputCount, inputCount >> roundCount)
+        XCTAssertEqual(plan.totalInverseDomainCount, inputCount - plan.outputCount)
+        let measured = try plan.executeVerified(evaluations: evaluations, rounds: rounds)
+        XCTAssertEqual(measured.values, expected)
+
+        try plan.clearReusableBuffers()
+        let reversedEvaluations = Array(evaluations.reversed())
+        let reused = try plan.executeVerified(evaluations: reversedEvaluations, rounds: rounds)
+        XCTAssertEqual(
+            reused.values,
+            try QM31FRIFoldChainOracle.fold(evaluations: reversedEvaluations, rounds: rounds)
+        )
+
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(evaluations),
+            declaredLength: inputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainEvaluations"
+        )
+        let inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRIFoldInverseDomains(rounds),
+            declaredLength: plan.totalInverseDomainCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainInverseDomain"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainOutput"
+        )
+        _ = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: inverseDomainBuffer,
+            outputBuffer: outputBuffer,
+            challenges: rounds.map(\.challenge)
+        )
+        XCTAssertEqual(Self.readQM31Buffer(outputBuffer, count: expected.count), expected)
+    }
+
+    func testQM31FRIFoldChainPlanDerivesTranscriptChallengesOnGPU() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let inputCount = 512
+        let roundCount = 3
+        let evaluations = Self.makeQM31Evaluations(
+            count: inputCount,
+            aSalt: 857,
+            bSalt: 859,
+            cSalt: 863,
+            dSalt: 877
+        )
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: inputCount, roundCount: roundCount, saltBase: 881)
+        let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+        let commitments = Self.makeQM31FRICommitments(count: roundCount, salt: 883)
+        let expected = try QM31FRIFoldTranscriptOracle.fold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            roundCommitments: commitments
+        )
+
+        let plan = try QM31FRIFoldChainPlan(context: context, inputCount: inputCount, roundCount: roundCount)
+        let measured = try plan.executeTranscriptDerivedVerified(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            roundCommitments: commitments
+        )
+        XCTAssertEqual(measured.values, expected.values)
+        XCTAssertEqual(measured.challenges, expected.challenges)
+
+        let commitmentStride = 40
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(evaluations),
+            declaredLength: inputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldTranscriptEvaluations"
+        )
+        let inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRIFoldInverseDomains(rounds),
+            declaredLength: plan.totalInverseDomainCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldTranscriptInverseDomain"
+        )
+        let commitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRICommitments(commitments, stride: commitmentStride),
+            declaredLength: commitmentStride * commitments.count,
+            label: "PlannerTests.QM31FRIFoldTranscriptCommitments"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.values.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldTranscriptOutput"
+        )
+        _ = try plan.executeTranscriptDerivedResident(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: inverseDomainBuffer,
+            roundCommitmentsBuffer: commitmentBuffer,
+            roundCommitmentStride: commitmentStride,
+            outputBuffer: outputBuffer
+        )
+        XCTAssertEqual(Self.readQM31Buffer(outputBuffer, count: expected.values.count), expected.values)
+    }
+
+    func testQM31FRIFoldChainPlanCommitsCurrentLayersBeforeTranscriptChallenges() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let inputCount = 512
+        let roundCount = 3
+        let evaluations = Self.makeQM31Evaluations(
+            count: inputCount,
+            aSalt: 887,
+            bSalt: 907,
+            cSalt: 911,
+            dSalt: 919
+        )
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: inputCount, roundCount: roundCount, saltBase: 929)
+        let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+        let expected = try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+
+        let plan = try QM31FRIFoldChainPlan(context: context, inputCount: inputCount, roundCount: roundCount)
+        let measured = try plan.executeMerkleTranscriptDerivedVerified(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        XCTAssertEqual(measured.values, expected.values)
+        XCTAssertEqual(measured.commitments, expected.commitments)
+        XCTAssertEqual(measured.challenges, expected.challenges)
+
+        let commitmentStride = 40
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(evaluations),
+            declaredLength: inputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIMerkleFoldEvaluations"
+        )
+        let inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRIFoldInverseDomains(rounds),
+            declaredLength: plan.totalInverseDomainCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIMerkleFoldInverseDomain"
+        )
+        let commitmentOutput = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: commitmentStride * roundCount,
+            label: "PlannerTests.QM31FRIMerkleFoldCommitments"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.values.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIMerkleFoldOutput"
+        )
+        _ = try plan.executeMerkleTranscriptDerivedResident(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: inverseDomainBuffer,
+            commitmentOutputBuffer: commitmentOutput,
+            commitmentOutputStride: commitmentStride,
+            outputBuffer: outputBuffer
+        )
+        XCTAssertEqual(Self.readQM31Buffer(outputBuffer, count: expected.values.count), expected.values)
+        for roundIndex in 0..<roundCount {
+            XCTAssertEqual(
+                Data(Self.readBytes(
+                    commitmentOutput,
+                    offset: roundIndex * commitmentStride,
+                    count: QM31FRIFoldTranscriptOracle.commitmentByteCount
+                )),
+                expected.commitments[roundIndex]
+            )
+        }
+
+        var changedEvaluations = evaluations
+        changedEvaluations[0] = QM31Field.add(changedEvaluations[0], QM31Element(a: 1, b: 0, c: 0, d: 0))
+        let changed = try plan.executeMerkleTranscriptDerivedVerified(
+            evaluations: changedEvaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        XCTAssertNotEqual(changed.commitments[0], measured.commitments[0])
+        XCTAssertNotEqual(changed.challenges[0], measured.challenges[0])
+    }
+
+    func testQM31FRIFoldChainRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try QM31FRIFoldChainPlan(context: context, inputCount: 8, roundCount: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31FRIFoldChainPlan(context: context, inputCount: 3, roundCount: 1)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31FRIFoldChainPlan(context: context, inputCount: 4, roundCount: 3)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let inputCount = 8
+        let plan = try QM31FRIFoldChainPlan(context: context, inputCount: inputCount, roundCount: 2)
+        let evaluations = Self.makeQM31Evaluations(count: inputCount, aSalt: 809, bSalt: 811, cSalt: 821, dSalt: 823)
+        let rounds = Self.makeQM31FRIFoldRounds(inputCount: inputCount, roundCount: 2, saltBase: 827)
+        let commitments = Self.makeQM31FRICommitments(count: 2, salt: 829)
+        XCTAssertThrowsError(try plan.execute(evaluations: evaluations, rounds: [rounds[0]])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.execute(
+                evaluations: evaluations,
+                rounds: [
+                    rounds[0],
+                    QM31FRIFoldRound(inverseDomainPoints: [QM31Element(a: 1, b: 0, c: 0, d: 0)], challenge: rounds[1].challenge),
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeTranscriptDerived(
+                evaluations: evaluations,
+                inverseDomainLayers: rounds.map(\.inverseDomainPoints),
+                roundCommitments: [commitments[0]]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeTranscriptDerived(
+                evaluations: evaluations,
+                inverseDomainLayers: rounds.map(\.inverseDomainPoints),
+                roundCommitments: [commitments[0], Data(repeating: 0x21, count: 31)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(evaluations),
+            declaredLength: inputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainInvalidEvaluations"
+        )
+        let shortInverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian([QM31Element(a: 1, b: 0, c: 0, d: 0)]),
+            declaredLength: 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainShortInverseDomain"
+        )
+        let inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRIFoldInverseDomains(rounds),
+            declaredLength: plan.totalInverseDomainCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainInvalidInverseDomain"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: plan.outputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldChainInvalidOutput"
+        )
+        let commitmentBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31FRICommitments(commitments),
+            declaredLength: QM31FRIFoldTranscriptOracle.commitmentByteCount * commitments.count,
+            label: "PlannerTests.QM31FRIFoldChainInvalidCommitments"
+        )
+
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: outputBuffer,
+                challenges: [rounds[0].challenge]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: shortInverseDomainBuffer,
+                outputBuffer: outputBuffer,
+                challenges: rounds.map(\.challenge)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: evaluationBuffer,
+                challenges: rounds.map(\.challenge)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: inverseDomainBuffer,
+                challenges: rounds.map(\.challenge)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: outputBuffer,
+                challenges: [rounds[0].challenge, QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                roundCommitmentsBuffer: commitmentBuffer,
+                roundCommitmentStride: QM31FRIFoldTranscriptOracle.commitmentByteCount - 1,
+                outputBuffer: outputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                roundCommitmentsBuffer: shortInverseDomainBuffer,
+                outputBuffer: outputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                roundCommitmentsBuffer: commitmentBuffer,
+                outputBuffer: commitmentBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeMerkleTranscriptDerived(
+                evaluations: Array(evaluations.prefix(6)),
+                inverseDomainLayers: [rounds[0].inverseDomainPoints]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeMerkleTranscriptDerived(
+                evaluations: evaluations,
+                inverseDomainLayers: [rounds[0].inverseDomainPoints]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeMerkleTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                commitmentOutputBuffer: commitmentBuffer,
+                commitmentOutputStride: QM31FRIFoldTranscriptOracle.commitmentByteCount - 1,
+                outputBuffer: outputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeMerkleTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                commitmentOutputBuffer: evaluationBuffer,
+                outputBuffer: outputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31DotProductPlanMatchesCPUOracleAndUploadedHotPath() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -1507,6 +2215,42 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    private static func makeQM31FRIFoldRounds(
+        inputCount: Int,
+        roundCount: Int,
+        saltBase: UInt32 = 607
+    ) -> [QM31FRIFoldRound] {
+        var rounds: [QM31FRIFoldRound] = []
+        var currentCount = inputCount
+        for roundIndex in 0..<roundCount {
+            let roundSalt = saltBase + UInt32(roundIndex) * 29
+            let inverseDomainPoints = makeQM31Evaluations(
+                count: currentCount / 2,
+                aSalt: roundSalt,
+                bSalt: roundSalt + 2,
+                cSalt: roundSalt + 6,
+                dSalt: roundSalt + 12
+            ).map { QM31Field.isZero($0) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : $0 }
+            let challenge = QM31Element(
+                a: 9 + UInt32(roundIndex) * 4,
+                b: 7 + UInt32(roundIndex) * 6,
+                c: 5 + UInt32(roundIndex) * 8,
+                d: 3 + UInt32(roundIndex) * 10
+            )
+            rounds.append(QM31FRIFoldRound(inverseDomainPoints: inverseDomainPoints, challenge: challenge))
+            currentCount /= 2
+        }
+        return rounds
+    }
+
+    private static func makeQM31FRICommitments(count: Int, salt: UInt32) -> [Data] {
+        (0..<count).map { roundIndex in
+            Data((0..<QM31FRIFoldTranscriptOracle.commitmentByteCount).map { byteIndex in
+                UInt8(truncatingIfNeeded: Int(salt) &+ roundIndex &* 31 &+ byteIndex &* 17)
+            })
+        }
+    }
+
     private static func packUInt32LittleEndian(_ values: [UInt32]) -> Data {
         var data = Data()
         data.reserveCapacity(values.count * MemoryLayout<UInt32>.stride)
@@ -1539,6 +2283,24 @@ final class PlannerTests: XCTestCase {
             data.append(UInt8((value.uCoefficient.imaginary >> 8) & 0xff))
             data.append(UInt8((value.uCoefficient.imaginary >> 16) & 0xff))
             data.append(UInt8((value.uCoefficient.imaginary >> 24) & 0xff))
+        }
+        return data
+    }
+
+    private static func packQM31FRIFoldInverseDomains(_ rounds: [QM31FRIFoldRound]) -> Data {
+        packQM31LittleEndian(rounds.flatMap { $0.inverseDomainPoints })
+    }
+
+    private static func packQM31FRICommitments(
+        _ commitments: [Data],
+        stride: Int = QM31FRIFoldTranscriptOracle.commitmentByteCount
+    ) -> Data {
+        var data = Data(count: stride * commitments.count)
+        for (commitmentIndex, commitment) in commitments.enumerated() {
+            data.replaceSubrange(
+                (commitmentIndex * stride)..<(commitmentIndex * stride + commitment.count),
+                with: commitment
+            )
         }
         return data
     }

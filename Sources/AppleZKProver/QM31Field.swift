@@ -1,6 +1,6 @@
 import Foundation
 
-public struct QM31Element: Equatable, Sendable {
+public struct QM31Element: Equatable, Codable, Sendable {
     public let constant: CM31Element
     public let uCoefficient: CM31Element
 

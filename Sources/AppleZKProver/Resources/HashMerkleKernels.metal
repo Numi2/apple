@@ -1631,6 +1631,27 @@ kernel void qm31_fri_fold(
     output[gid] = qm31_mul_m31_mod(mixed, 1073741824u);
 }
 
+kernel void qm31_fri_fold_challenge_buffer(
+    const device uint4 *evaluations [[buffer(0)]],
+    const device uint4 *inverseDomainPoints [[buffer(1)]],
+    device uint4 *output [[buffer(2)]],
+    const device uint4 *challengeWords [[buffer(3)]],
+    constant QM31FRIFoldParams &params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.pairCount || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint4 positive = evaluations[gid * 2u];
+    const uint4 negative = evaluations[gid * 2u + 1u];
+    const uint4 evenNumerator = qm31_add_mod(positive, negative);
+    const uint4 oddNumerator = qm31_sub_mod(positive, negative);
+    const uint4 oddAtSquare = qm31_mul_mod(oddNumerator, inverseDomainPoints[gid]);
+    const uint4 mixed = qm31_add_mod(evenNumerator, qm31_mul_mod(challengeWords[0], oddAtSquare));
+    output[gid] = qm31_mul_m31_mod(mixed, 1073741824u);
+}
+
 inline uint m31_threadgroup_sum(threadgroup uint *scratch, uint tid, uint threadCount) {
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint stride = threadCount >> 1; stride > 0u; stride >>= 1) {

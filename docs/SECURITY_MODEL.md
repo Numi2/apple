@@ -59,10 +59,13 @@ The current package aims to guarantee:
 - M31 vector add, subtract, negate, multiply, square, and inverse plans match the independent CPU oracle for tested canonical inputs and edge values, with public inverse inputs required to be nonzero,
 - M31 dot-product plans match the independent CPU oracle for tested canonical inputs, edge values, and non-power-of-two vector lengths,
 - the M31 sum-check chunk transcript uses versioned header, round, and challenge frames with stable CPU vectors and GPU differential coverage,
+- QM31 FRI fold-chain transcript modes use versioned, domain-separated frames and rejection-sampled secure-field challenge limbs,
+- the Merkle-bound QM31 FRI chain mode commits each current resident QM31 layer before deriving that layer's fold challenge and verifies generated roots against an independent CPU oracle in the public checked path,
+- the linear QM31 FRI proof format uses versioned serialization, binds commitments and final values into query sampling, verifies every queried Merkle decommitment, and checks fold consistency with a CPU-only verifier,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, M31 vector, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
-- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, raw-leaf Merkle openings, planned Merkle commitments, M31 vector arithmetic, M31 dot products, and M31 sum-check chunks,
+- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, raw-leaf Merkle openings, planned Merkle commitments, M31 vector arithmetic, M31 dot products, M31 sum-check chunks, QM31 vector arithmetic, QM31 FRI folds, and QM31 FRI fold chains,
 - the M31 GPU fold path uses the `2^31 - 1` Mersenne reduction instead of generic integer remainder for canonical M31 values.
 
 These are correctness guarantees for the implemented slice. They are not a full proof-system security claim.

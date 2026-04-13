@@ -88,7 +88,7 @@ public struct MerkleCommitment: Sendable {
     }
 }
 
-public struct MerkleOpeningProof: Equatable, Sendable {
+public struct MerkleOpeningProof: Equatable, Codable, Sendable {
     public let leafIndex: Int
     public let leaf: Data
     public let siblingHashes: [Data]

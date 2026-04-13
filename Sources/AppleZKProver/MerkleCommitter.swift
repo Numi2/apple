@@ -516,6 +516,51 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         }
         commandBuffer.label = "Merkle.Commit"
 
+        try encodeCommitmentRoot(
+            uploadBuffer: uploadBuffer,
+            uploadOffset: uploadOffset,
+            rootBuffer: rootReadback,
+            rootOffset: 0,
+            on: commandBuffer
+        )
+
+        let submitStart = DispatchTime.now()
+        commandBuffer.commit()
+        let submitEnd = DispatchTime.now()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        let wall = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
+        let gpu = gpuDuration(commandBuffer)
+        let root = Data(bytes: rootReadback.contents(), count: 32)
+        return MerkleCommitMeasurement(
+            commitment: MerkleCommitment(root: root, stats: GPUExecutionStats(cpuWallSeconds: wall, gpuSeconds: gpu)),
+            cpuSubmitNS: Double(submitEnd.uptimeNanoseconds - submitStart.uptimeNanoseconds)
+        )
+    }
+
+    func encodeCommitmentRoot(
+        uploadBuffer: MTLBuffer,
+        uploadOffset: Int = 0,
+        rootBuffer: MTLBuffer,
+        rootOffset: Int,
+        on commandBuffer: MTLCommandBuffer
+    ) throws {
+        let uploadEnd = uploadOffset.addingReportingOverflow(max(1, declaredLeafBytes))
+        let rootEnd = rootOffset.addingReportingOverflow(32)
+        guard uploadOffset >= 0,
+              !uploadEnd.overflow,
+              uploadBuffer.length >= uploadEnd.partialValue,
+              rootOffset >= 0,
+              !rootEnd.overflow,
+              rootBuffer.length >= rootEnd.partialValue else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
         var current = scratchA
         var alternate = scratchB
         var currentCount: Int
@@ -575,7 +620,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             fusedEncoder.label = "Merkle.FuseUpper.\(currentCount)"
             fusedEncoder.setComputePipelineState(fusedUpperPipeline)
             fusedEncoder.setBuffer(current.buffer, offset: current.offset, index: 0)
-            fusedEncoder.setBuffer(rootReadback, offset: 0, index: 1)
+            fusedEncoder.setBuffer(rootBuffer, offset: rootOffset, index: 1)
             fusedEncoder.setBytes(&fuseParams, length: MemoryLayout<MerkleFuseParams>.stride, index: 2)
             fusedEncoder.setThreadgroupMemoryLength(try checkedBufferLength(currentCount, 64), index: 0)
             fusedEncoder.dispatchThreadgroups(
@@ -587,28 +632,10 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             guard let blit = commandBuffer.makeBlitCommandEncoder() else {
                 throw AppleZKProverError.failedToCreateEncoder
             }
-            blit.label = "Merkle.RootReadback"
-            blit.copy(from: current.buffer, sourceOffset: current.offset, to: rootReadback, destinationOffset: 0, size: 32)
+            blit.label = "Merkle.Root"
+            blit.copy(from: current.buffer, sourceOffset: current.offset, to: rootBuffer, destinationOffset: rootOffset, size: 32)
             blit.endEncoding()
         }
-
-        let submitStart = DispatchTime.now()
-        commandBuffer.commit()
-        let submitEnd = DispatchTime.now()
-        commandBuffer.waitUntilCompleted()
-
-        if let error = commandBuffer.error {
-            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
-        }
-
-        let end = DispatchTime.now()
-        let wall = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
-        let gpu = gpuDuration(commandBuffer)
-        let root = Data(bytes: rootReadback.contents(), count: 32)
-        return MerkleCommitMeasurement(
-            commitment: MerkleCommitment(root: root, stats: GPUExecutionStats(cpuWallSeconds: wall, gpuSeconds: gpu)),
-            cpuSubmitNS: Double(submitEnd.uptimeNanoseconds - submitStart.uptimeNanoseconds)
-        )
     }
 
     private func openRawLeafMeasuredLocked(

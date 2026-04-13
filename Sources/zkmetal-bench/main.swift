@@ -54,6 +54,10 @@ struct BenchConfig {
     var qm31VectorMultiply = false
     var qm31VectorInverse = false
     var qm31FRIFold = false
+    var qm31FRIFoldChain = false
+    var qm31FRIFoldChainTranscript = false
+    var qm31FRIFoldChainMerkleTranscript = false
+    var friFoldRounds = 3
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
@@ -93,7 +97,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -172,6 +176,20 @@ struct BenchConfig {
             case "--qm31-fri-fold":
                 qm31FRIFold = true
                 m31DotProduct = false
+            case "--qm31-fri-fold-chain":
+                qm31FRIFoldChain = true
+                m31DotProduct = false
+            case "--qm31-fri-fold-chain-transcript":
+                qm31FRIFoldChainTranscript = true
+                m31DotProduct = false
+            case "--qm31-fri-fold-chain-merkle", "--qm31-fri-fold-chain-merkle-transcript":
+                qm31FRIFoldChainMerkleTranscript = true
+                m31DotProduct = false
+            case "--fri-fold-rounds":
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): friFoldRounds = value
+                case let .failure(error): return error
+                }
             case "--merkle-opening":
                 merkleOpening = true
             case "--opening-leaf-index":
@@ -269,6 +287,12 @@ struct BenchConfig {
           --qm31-multiply            Run QM31 vector multiplication benchmark instead of hash/Merkle
           --qm31-inverse             Run QM31 vector inverse benchmark instead of hash/Merkle
           --qm31-fri-fold            Run QM31 radix-2 FRI fold benchmark instead of hash/Merkle
+          --qm31-fri-fold-chain      Run chained QM31 radix-2 FRI folds instead of hash/Merkle
+          --qm31-fri-fold-chain-transcript
+                                      Run chained QM31 FRI folds with GPU transcript-derived challenges
+          --qm31-fri-fold-chain-merkle
+                                      Commit each current QM31 FRI layer on GPU before deriving the next challenge
+          --fri-fold-rounds N        Fold rounds for QM31 FRI chain modes. Default: 3
           --elements N               Element count for field-vector benchmarks. Alias for --leaves in those modes
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
@@ -302,9 +326,12 @@ struct BenchConfig {
             qm31VectorMultiply,
             qm31VectorInverse,
             qm31FRIFold,
+            qm31FRIFoldChain,
+            qm31FRIFoldChainTranscript,
+            qm31FRIFoldChainMerkleTranscript,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, and --qm31-fri-fold are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -351,6 +378,21 @@ struct BenchConfig {
             }
             guard !leafCount.multipliedReportingOverflow(by: 6 * MemoryLayout<UInt32>.stride).overflow else {
                 return BenchError.invalidArgument("Requested QM31 FRI fold buffers are too large for this process.")
+            }
+            return nil
+        }
+        if qm31FRIFoldChain || qm31FRIFoldChainTranscript || qm31FRIFoldChainMerkleTranscript {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with QM31 FRI fold chain benchmarks.")
+            }
+            if qm31FRIFoldChainMerkleTranscript, leafCount.nonzeroBitCount != 1 {
+                return BenchError.invalidArgument("--elements must be a power of two for --qm31-fri-fold-chain-merkle.")
+            }
+            guard let outputCount = Self.friFoldChainOutputCount(inputCount: leafCount, roundCount: friFoldRounds) else {
+                return BenchError.invalidArgument("--elements must be divisible by 2^--fri-fold-rounds and leave at least one output element.")
+            }
+            guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
+                return BenchError.invalidArgument("Requested QM31 FRI fold chain buffers are too large for this process.")
             }
             return nil
         }
@@ -414,6 +456,38 @@ struct BenchConfig {
             return BenchError.invalidArgument("\(flag) must be in 0...136 for the current fixed-rate SHA3 path.")
         }
         return nil
+    }
+
+    private static func friFoldChainOutputCount(inputCount: Int, roundCount: Int) -> Int? {
+        guard inputCount > 1, roundCount > 0 else {
+            return nil
+        }
+        var current = inputCount
+        for _ in 0..<roundCount {
+            guard current > 1, current.isMultiple(of: 2) else {
+                return nil
+            }
+            current /= 2
+        }
+        return current
+    }
+
+    private static func fieldBufferByteOverflow(elementCount: Int) -> Bool {
+        elementCount.multipliedReportingOverflow(by: 4 * MemoryLayout<UInt32>.stride).overflow
+    }
+
+    private static func qm31FRIFoldChainFieldBufferByteOverflow(inputCount: Int, outputCount: Int) -> Bool {
+        let inverseDomainCount = inputCount.subtractingReportingOverflow(outputCount)
+        guard outputCount >= 0,
+              !inverseDomainCount.overflow,
+              inverseDomainCount.partialValue >= 0 else {
+            return true
+        }
+        let totalResidentInputCount = inputCount.addingReportingOverflow(inverseDomainCount.partialValue)
+        guard !totalResidentInputCount.overflow else {
+            return true
+        }
+        return fieldBufferByteOverflow(elementCount: totalResidentInputCount.partialValue)
     }
 
     private static func parsePositiveInt(flag: String, value: String?) -> Result<Int, BenchError> {
@@ -766,6 +840,35 @@ struct QM31FRIFoldBenchmarkReport: Codable {
     let verification: QM31FRIFoldVerificationReport
 }
 
+struct QM31FRIFoldChainBenchmarkConfigReport: Codable {
+    let inputElementCount: Int
+    let outputElementCount: Int
+    let roundCount: Int
+    let challengeMode: String
+    let totalInverseDomainElementCount: Int
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct QM31FRIFoldChainVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct QM31FRIFoldChainBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: QM31FRIFoldChainBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let foldChain: FieldMeasurementReport?
+    let verification: QM31FRIFoldChainVerificationReport
+}
+
 struct MerkleOpeningBenchmarkConfigReport: Codable {
     let leafCount: Int
     let leafLength: Int
@@ -876,6 +979,42 @@ func makeDeterministicNonzeroQM31Vector(
     }
 }
 
+func makeDeterministicQM31FRIFoldRounds(
+    inputCount: Int,
+    roundCount: Int,
+    saltBase: UInt32 = 0xf80
+) -> [QM31FRIFoldRound] {
+    var rounds: [QM31FRIFoldRound] = []
+    var currentCount = inputCount
+    for roundIndex in 0..<roundCount {
+        let roundSalt = saltBase + UInt32(roundIndex) * 37
+        let inverseDomainPoints = makeDeterministicNonzeroQM31Vector(
+            count: currentCount / 2,
+            aSalt: roundSalt,
+            bSalt: roundSalt + 2,
+            cSalt: roundSalt + 6,
+            dSalt: roundSalt + 12
+        )
+        let challenge = QM31Element(
+            a: 9 + UInt32(roundIndex) * 4,
+            b: 7 + UInt32(roundIndex) * 6,
+            c: 5 + UInt32(roundIndex) * 8,
+            d: 3 + UInt32(roundIndex) * 10
+        )
+        rounds.append(QM31FRIFoldRound(inverseDomainPoints: inverseDomainPoints, challenge: challenge))
+        currentCount /= 2
+    }
+    return rounds
+}
+
+func makeDeterministicQM31FRICommitments(count: Int, salt: UInt32 = 0xfd1) -> [Data] {
+    (0..<count).map { roundIndex in
+        Data((0..<QM31FRIFoldTranscriptOracle.commitmentByteCount).map { byteIndex in
+            UInt8(truncatingIfNeeded: Int(salt) &+ roundIndex &* 31 &+ byteIndex &* 17)
+        })
+    }
+}
+
 func packUInt32LittleEndian(_ values: [UInt32]) -> Data {
     var data = Data()
     data.reserveCapacity(values.count * MemoryLayout<UInt32>.stride)
@@ -903,6 +1042,19 @@ func packQM31LittleEndian(_ values: [QM31Element]) -> Data {
         appendUInt32LittleEndian(value.constant.imaginary, to: &data)
         appendUInt32LittleEndian(value.uCoefficient.real, to: &data)
         appendUInt32LittleEndian(value.uCoefficient.imaginary, to: &data)
+    }
+    return data
+}
+
+func packQM31FRIFoldInverseDomains(_ rounds: [QM31FRIFoldRound]) -> Data {
+    packQM31LittleEndian(rounds.flatMap { $0.inverseDomainPoints })
+}
+
+func packQM31FRICommitments(_ commitments: [Data]) -> Data {
+    var data = Data()
+    data.reserveCapacity(commitments.count * QM31FRIFoldTranscriptOracle.commitmentByteCount)
+    for commitment in commitments {
+        data.append(commitment)
     }
     return data
 }
@@ -1154,6 +1306,14 @@ func readQM31Buffer(_ buffer: MTLBuffer, count: Int) -> [QM31Element] {
     }
 }
 
+func readQM31FRICommitments(_ buffer: MTLBuffer, count: Int) -> [Data] {
+    let byteCount = QM31FRIFoldTranscriptOracle.commitmentByteCount
+    let bytes = buffer.contents().bindMemory(to: UInt8.self, capacity: count * byteCount)
+    return (0..<count).map { index in
+        Data(bytes: bytes.advanced(by: index * byteCount), count: byteCount)
+    }
+}
+
 func makeMerkleCommitPlanConfiguration(_ mode: BenchMerkleSubtreeMode) -> MerkleCommitPlanConfiguration {
     switch mode {
     case .disabled:
@@ -1223,6 +1383,14 @@ func emitJSON(_ report: QM31VectorBenchmarkReport) throws {
 }
 
 func emitJSON(_ report: QM31FRIFoldBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+func emitJSON(_ report: QM31FRIFoldChainBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(report)
@@ -1544,6 +1712,47 @@ func emitText(_ report: QM31FRIFoldBenchmarkReport) {
     }
 }
 
+func emitText(_ report: QM31FRIFoldChainBenchmarkReport) {
+    print("zkmetal-bench qm31-fri-fold-chain")
+    print("  input elems  : \(report.configuration.inputElementCount)")
+    print("  output elems : \(report.configuration.outputElementCount)")
+    print("  rounds       : \(report.configuration.roundCount)")
+    print("  challenge    : \(report.configuration.challengeMode)")
+    print("  inv elems    : \(report.configuration.totalInverseDomainElementCount)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let foldChain = report.foldChain {
+        printSeconds("chain wall", foldChain.wallSeconds)
+        if let gpu = foldChain.gpuSeconds {
+            printSeconds("chain gpu ", gpu)
+        }
+        print("  output/sec   : \(String(format: "%.2f", foldChain.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", foldChain.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ report: MerkleOpeningBenchmarkReport) {
     print("zkmetal-bench merkle-opening")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -1760,6 +1969,19 @@ func verificationFailureMessages(in report: QM31FRIFoldBenchmarkReport) -> [Stri
     return []
 }
 
+func verificationFailureMessages(in report: QM31FRIFoldChainBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        return [
+            "qm31-fri-fold-chain mode=\(report.configuration.challengeMode) input-elements=\(report.configuration.inputElementCount) rounds=\(report.configuration.roundCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -1870,6 +2092,31 @@ func makeQM31FRIFoldConfigReport(config: BenchConfig) -> QM31FRIFoldBenchmarkCon
     QM31FRIFoldBenchmarkConfigReport(
         inputElementCount: config.leafCount,
         outputElementCount: config.leafCount / 2,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeQM31FRIFoldChainConfigReport(
+    config: BenchConfig,
+    outputElementCount: Int,
+    totalInverseDomainElementCount: Int
+) -> QM31FRIFoldChainBenchmarkConfigReport {
+    let challengeMode: String
+    if config.qm31FRIFoldChainMerkleTranscript {
+        challengeMode = "merkle-transcript"
+    } else if config.qm31FRIFoldChainTranscript {
+        challengeMode = "transcript"
+    } else {
+        challengeMode = "explicit"
+    }
+    return QM31FRIFoldChainBenchmarkConfigReport(
+        inputElementCount: config.leafCount,
+        outputElementCount: outputElementCount,
+        roundCount: config.friFoldRounds,
+        challengeMode: challengeMode,
+        totalInverseDomainElementCount: totalInverseDomainElementCount,
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
@@ -2359,6 +2606,260 @@ func runQM31FRIFoldBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldBenchma
         pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
         fold: nil,
         verification: QM31FRIFoldVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+@inline(never)
+func runQM31FRIFoldChainBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldChainBenchmarkReport {
+    let outputCount = config.leafCount >> config.friFoldRounds
+    let totalInverseDomainCount = config.leafCount - outputCount
+    let transcriptDerived = config.qm31FRIFoldChainTranscript
+    let merkleTranscriptDerived = config.qm31FRIFoldChainMerkleTranscript
+    let evaluations = makeDeterministicQM31Vector(
+        count: config.leafCount,
+        aSalt: 0xfa1,
+        bSalt: 0xfa7,
+        cSalt: 0xfad,
+        dSalt: 0xfb3
+    )
+    let rounds = makeDeterministicQM31FRIFoldRounds(
+        inputCount: config.leafCount,
+        roundCount: config.friFoldRounds,
+        saltBase: 0xfc1
+    )
+    let challenges = rounds.map(\.challenge)
+    let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+    let roundCommitments = transcriptDerived
+        ? makeDeterministicQM31FRICommitments(count: config.friFoldRounds, salt: 0xfd1)
+        : []
+    let configReport = makeQM31FRIFoldChainConfigReport(
+        config: config,
+        outputElementCount: outputCount,
+        totalInverseDomainElementCount: totalInverseDomainCount
+    )
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = merkleTranscriptDerived
+            ? try QM31FRIMerkleFoldChainOracle.commitAndFold(
+                evaluations: evaluations,
+                inverseDomainLayers: inverseDomainLayers
+            ).values
+            : transcriptDerived
+            ? try QM31FRIFoldTranscriptOracle.fold(
+                evaluations: evaluations,
+                inverseDomainLayers: inverseDomainLayers,
+                roundCommitments: roundCommitments
+            ).values
+            : try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: rounds)
+        let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+        return QM31FRIFoldChainBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            foldChain: nil,
+            verification: QM31FRIFoldChainVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try QM31FRIFoldChainPlan(
+        context: context,
+        inputCount: config.leafCount,
+        roundCount: config.friFoldRounds
+    )
+    try context.serializePipelineArchiveIfNeeded()
+
+    let evaluationBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: packQM31LittleEndian(evaluations),
+        label: "zkmetal-bench.QM31FRIFoldChain.Evaluations"
+    )
+    let inverseDomainBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: packQM31FRIFoldInverseDomains(rounds),
+        label: "zkmetal-bench.QM31FRIFoldChain.InverseDomain"
+    )
+    let commitmentBuffer = transcriptDerived
+        ? try makeSharedMetalBuffer(
+            device: device,
+            bytes: packQM31FRICommitments(roundCommitments),
+            label: "zkmetal-bench.QM31FRIFoldChain.Commitments"
+        )
+        : nil
+    let commitmentOutputBuffer = merkleTranscriptDerived
+        ? try makeSharedMetalBuffer(
+            device: device,
+            length: config.friFoldRounds * QM31FRIFoldTranscriptOracle.commitmentByteCount,
+            label: "zkmetal-bench.QM31FRIFoldChain.MerkleCommitments"
+        )
+        : nil
+    let outputBuffer = try makeSharedMetalBuffer(
+        device: device,
+        length: outputCount * 4 * MemoryLayout<UInt32>.stride,
+        label: "zkmetal-bench.QM31FRIFoldChain.Output"
+    )
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            if merkleTranscriptDerived, let commitmentOutputBuffer {
+                _ = try plan.executeMerkleTranscriptDerivedResident(
+                    evaluationsBuffer: evaluationBuffer,
+                    inverseDomainBuffer: inverseDomainBuffer,
+                    commitmentOutputBuffer: commitmentOutputBuffer,
+                    outputBuffer: outputBuffer
+                )
+            } else if transcriptDerived, let commitmentBuffer {
+                _ = try plan.executeTranscriptDerivedResident(
+                    evaluationsBuffer: evaluationBuffer,
+                    inverseDomainBuffer: inverseDomainBuffer,
+                    roundCommitmentsBuffer: commitmentBuffer,
+                    outputBuffer: outputBuffer
+                )
+            } else {
+                _ = try plan.executeResident(
+                    evaluationsBuffer: evaluationBuffer,
+                    inverseDomainBuffer: inverseDomainBuffer,
+                    outputBuffer: outputBuffer,
+                    challenges: challenges
+                )
+            }
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    for _ in 0..<config.iterations {
+        let stats: GPUExecutionStats
+        if merkleTranscriptDerived, let commitmentOutputBuffer {
+            stats = try plan.executeMerkleTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                commitmentOutputBuffer: commitmentOutputBuffer,
+                outputBuffer: outputBuffer
+            )
+        } else if transcriptDerived, let commitmentBuffer {
+            stats = try plan.executeTranscriptDerivedResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                roundCommitmentsBuffer: commitmentBuffer,
+                outputBuffer: outputBuffer
+            )
+        } else {
+            stats = try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: outputBuffer,
+                challenges: challenges
+            )
+        }
+        wallSeconds.append(stats.cpuWallSeconds)
+        gpuSeconds.append(stats.gpuSeconds)
+    }
+
+    let output = readQM31Buffer(outputBuffer, count: outputCount)
+    let cpuResult: QM31FRIMerkleFoldChainOracleResult?
+    let cpuOutput: [QM31Element]?
+    if config.verifyWithCPU {
+        if merkleTranscriptDerived {
+            let expected = try QM31FRIMerkleFoldChainOracle.commitAndFold(
+                evaluations: evaluations,
+                inverseDomainLayers: inverseDomainLayers
+            )
+            cpuResult = expected
+            cpuOutput = expected.values
+        } else {
+            cpuResult = nil
+            cpuOutput = transcriptDerived
+            ? try QM31FRIFoldTranscriptOracle.fold(
+                evaluations: evaluations,
+                inverseDomainLayers: inverseDomainLayers,
+                roundCommitments: roundCommitments
+            ).values
+            : try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: rounds)
+        }
+    } else {
+        cpuResult = nil
+        cpuOutput = nil
+    }
+    let gpuCommitments = commitmentOutputBuffer.map { readQM31FRICommitments($0, count: config.friFoldRounds) }
+    let matchedCPU: Bool?
+    if let cpuResult {
+        matchedCPU = cpuResult.values == output && cpuResult.commitments == gpuCommitments
+    } else {
+        matchedCPU = cpuOutput.map { $0 == output }
+    }
+    let outputDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(output)).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
+    let inputBytes = Double(config.leafCount + totalInverseDomainCount)
+        * Double(4 * MemoryLayout<UInt32>.stride)
+        + Double(transcriptDerived ? roundCommitments.count * QM31FRIFoldTranscriptOracle.commitmentByteCount : 0)
+        + Double(merkleTranscriptDerived ? config.friFoldRounds * QM31FRIFoldTranscriptOracle.commitmentByteCount : 0)
+    return QM31FRIFoldChainBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        foldChain: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: outputCount,
+            inputBytes: inputBytes
+        ),
+        verification: QM31FRIFoldChainVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = merkleTranscriptDerived
+        ? try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        ).values
+        : transcriptDerived
+        ? try QM31FRIFoldTranscriptOracle.fold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            roundCommitments: roundCommitments
+        ).values
+        : try QM31FRIFoldChainOracle.fold(evaluations: evaluations, rounds: rounds)
+    let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+    return QM31FRIFoldChainBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        foldChain: nil,
+        verification: QM31FRIFoldChainVerificationReport(
             enabled: true,
             matchedCPU: true,
             outputDigestHex: digest,
@@ -3051,6 +3552,20 @@ func runCLI() -> Int32 {
             }
         } else if config.qm31FRIFold {
             let report = try runQM31FRIFoldBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.qm31FRIFoldChain || config.qm31FRIFoldChainTranscript || config.qm31FRIFoldChainMerkleTranscript {
+            let report = try runQM31FRIFoldChainBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {
