@@ -54,6 +54,7 @@ struct BenchConfig {
     var qm31VectorMultiply = false
     var qm31VectorInverse = false
     var qm31FRIFold = false
+    var circleFRIFold = false
     var qm31FRIFoldChain = false
     var qm31FRIFoldChainTranscript = false
     var qm31FRIFoldChainMerkleTranscript = false
@@ -97,7 +98,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -175,6 +176,9 @@ struct BenchConfig {
                 m31DotProduct = false
             case "--qm31-fri-fold":
                 qm31FRIFold = true
+                m31DotProduct = false
+            case "--circle-fri-fold":
+                circleFRIFold = true
                 m31DotProduct = false
             case "--qm31-fri-fold-chain":
                 qm31FRIFoldChain = true
@@ -287,6 +291,7 @@ struct BenchConfig {
           --qm31-multiply            Run QM31 vector multiplication benchmark instead of hash/Merkle
           --qm31-inverse             Run QM31 vector inverse benchmark instead of hash/Merkle
           --qm31-fri-fold            Run QM31 radix-2 FRI fold benchmark instead of hash/Merkle
+          --circle-fri-fold          Run canonical Circle first FRI fold benchmark instead of hash/Merkle
           --qm31-fri-fold-chain      Run chained QM31 radix-2 FRI folds instead of hash/Merkle
           --qm31-fri-fold-chain-transcript
                                       Run chained QM31 FRI folds with GPU transcript-derived challenges
@@ -326,12 +331,13 @@ struct BenchConfig {
             qm31VectorMultiply,
             qm31VectorInverse,
             qm31FRIFold,
+            circleFRIFold,
             qm31FRIFoldChain,
             qm31FRIFoldChainTranscript,
             qm31FRIFoldChainMerkleTranscript,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -378,6 +384,24 @@ struct BenchConfig {
             }
             guard !leafCount.multipliedReportingOverflow(by: 6 * MemoryLayout<UInt32>.stride).overflow else {
                 return BenchError.invalidArgument("Requested QM31 FRI fold buffers are too large for this process.")
+            }
+            return nil
+        }
+        if circleFRIFold {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with Circle FRI fold benchmarks.")
+            }
+            guard leafCount > 1,
+                  leafCount.nonzeroBitCount == 1 else {
+                return BenchError.invalidArgument("--elements must be a power-of-two count greater than one for --circle-fri-fold.")
+            }
+            let logSize = leafCount.trailingZeroBitCount
+            guard logSize >= Int(CircleDomainDescriptor.minimumLogSize),
+                  logSize <= Int(CircleDomainDescriptor.maximumLogSize) else {
+                return BenchError.invalidArgument("--elements is outside the supported canonical Circle-domain range.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: 8 * MemoryLayout<UInt32>.stride).overflow else {
+                return BenchError.invalidArgument("Requested Circle FRI fold buffers are too large for this process.")
             }
             return nil
         }
@@ -838,6 +862,34 @@ struct QM31FRIFoldBenchmarkReport: Codable {
     let pipelineArchive: PipelineArchiveReport
     let fold: FieldMeasurementReport?
     let verification: QM31FRIFoldVerificationReport
+}
+
+struct CircleFRIFoldBenchmarkConfigReport: Codable {
+    let domainLogSize: Int
+    let inputElementCount: Int
+    let outputElementCount: Int
+    let storageOrder: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct CircleFRIFoldVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct CircleFRIFoldBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: CircleFRIFoldBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let fold: FieldMeasurementReport?
+    let verification: CircleFRIFoldVerificationReport
 }
 
 struct QM31FRIFoldChainBenchmarkConfigReport: Codable {
@@ -1390,6 +1442,14 @@ func emitJSON(_ report: QM31FRIFoldBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: CircleFRIFoldBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitJSON(_ report: QM31FRIFoldChainBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1712,6 +1772,46 @@ func emitText(_ report: QM31FRIFoldBenchmarkReport) {
     }
 }
 
+func emitText(_ report: CircleFRIFoldBenchmarkReport) {
+    print("zkmetal-bench circle-fri-fold")
+    print("  domain log   : \(report.configuration.domainLogSize)")
+    print("  input elems  : \(report.configuration.inputElementCount)")
+    print("  output elems : \(report.configuration.outputElementCount)")
+    print("  storage      : \(report.configuration.storageOrder)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let fold = report.fold {
+        printSeconds("fold wall", fold.wallSeconds)
+        if let gpu = fold.gpuSeconds {
+            printSeconds("fold gpu ", gpu)
+        }
+        print("  folds/sec    : \(String(format: "%.2f", fold.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", fold.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ report: QM31FRIFoldChainBenchmarkReport) {
     print("zkmetal-bench qm31-fri-fold-chain")
     print("  input elems  : \(report.configuration.inputElementCount)")
@@ -1969,6 +2069,19 @@ func verificationFailureMessages(in report: QM31FRIFoldBenchmarkReport) -> [Stri
     return []
 }
 
+func verificationFailureMessages(in report: CircleFRIFoldBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        return [
+            "circle-fri-fold log-size=\(report.configuration.domainLogSize) input-elements=\(report.configuration.inputElementCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
 func verificationFailureMessages(in report: QM31FRIFoldChainBenchmarkReport) -> [String] {
     guard report.verification.enabled else {
         return []
@@ -2092,6 +2205,18 @@ func makeQM31FRIFoldConfigReport(config: BenchConfig) -> QM31FRIFoldBenchmarkCon
     QM31FRIFoldBenchmarkConfigReport(
         inputElementCount: config.leafCount,
         outputElementCount: config.leafCount / 2,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeCircleFRIFoldConfigReport(config: BenchConfig) -> CircleFRIFoldBenchmarkConfigReport {
+    CircleFRIFoldBenchmarkConfigReport(
+        domainLogSize: config.leafCount.trailingZeroBitCount,
+        inputElementCount: config.leafCount,
+        outputElementCount: config.leafCount / 2,
+        storageOrder: "circle-domain-bit-reversed",
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
@@ -2606,6 +2731,147 @@ func runQM31FRIFoldBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldBenchma
         pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
         fold: nil,
         verification: QM31FRIFoldVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+@inline(never)
+func runCircleFRIFoldBenchmark(_ config: BenchConfig) throws -> CircleFRIFoldBenchmarkReport {
+    let domain = try CircleDomainDescriptor.canonical(logSize: UInt32(config.leafCount.trailingZeroBitCount))
+    let outputCount = domain.halfSize
+    let evaluations = makeDeterministicQM31Vector(
+        count: domain.size,
+        aSalt: 0xc31,
+        bSalt: 0xc37,
+        cSalt: 0xc3d,
+        dSalt: 0xc43
+    )
+    let challenge = QM31Element(a: 41, b: 43, c: 47, d: 53)
+    let configReport = makeCircleFRIFoldConfigReport(config: config)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = try CircleFRIFoldOracle.foldCircleIntoLine(
+            evaluations: evaluations,
+            domain: domain,
+            challenge: challenge
+        )
+        let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+        return CircleFRIFoldBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            fold: nil,
+            verification: CircleFRIFoldVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try CircleFRIFoldPlan(context: context, domain: domain)
+    try context.serializePipelineArchiveIfNeeded()
+
+    let evaluationBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: packQM31LittleEndian(evaluations),
+        label: "zkmetal-bench.CircleFRIFold.Evaluations"
+    )
+    let outputBuffer = try makeSharedMetalBuffer(
+        device: device,
+        length: outputCount * CircleFRIFoldPlan.elementByteCount,
+        label: "zkmetal-bench.CircleFRIFold.Output"
+    )
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                outputBuffer: outputBuffer,
+                challenge: challenge
+            )
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    for _ in 0..<config.iterations {
+        let stats = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            outputBuffer: outputBuffer,
+            challenge: challenge
+        )
+        wallSeconds.append(stats.cpuWallSeconds)
+        gpuSeconds.append(stats.gpuSeconds)
+    }
+
+    let output = readQM31Buffer(outputBuffer, count: outputCount)
+    let cpuOutput = config.verifyWithCPU
+        ? try CircleFRIFoldOracle.foldCircleIntoLine(
+            evaluations: evaluations,
+            domain: domain,
+            challenge: challenge
+        )
+        : nil
+    let matchedCPU = cpuOutput.map { $0 == output }
+    let outputDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(output)).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
+    let inputBytes = Double(domain.size + domain.halfSize) * Double(CircleFRIFoldPlan.elementByteCount)
+    return CircleFRIFoldBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        fold: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: outputCount,
+            inputBytes: inputBytes
+        ),
+        verification: CircleFRIFoldVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = try CircleFRIFoldOracle.foldCircleIntoLine(
+        evaluations: evaluations,
+        domain: domain,
+        challenge: challenge
+    )
+    let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+    return CircleFRIFoldBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        fold: nil,
+        verification: CircleFRIFoldVerificationReport(
             enabled: true,
             matchedCPU: true,
             outputDigestHex: digest,
@@ -3552,6 +3818,20 @@ func runCLI() -> Int32 {
             }
         } else if config.qm31FRIFold {
             let report = try runQM31FRIFoldBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.circleFRIFold {
+            let report = try runCircleFRIFoldBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

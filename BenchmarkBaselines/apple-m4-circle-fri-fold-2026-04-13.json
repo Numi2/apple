@@ -1,0 +1,70 @@
+{
+  "configuration" : {
+    "domainLogSize" : 14,
+    "inputElementCount" : 16384,
+    "iterations" : 5,
+    "outputElementCount" : 8192,
+    "storageOrder" : "circle-domain-bit-reversed",
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1
+  },
+  "device" : {
+    "hasUnifiedMemory" : true,
+    "maxThreadgroupMemoryLength" : 32768,
+    "maxThreadsPerThreadgroup" : 1024,
+    "name" : "Apple M4",
+    "registryID" : 4294968275,
+    "supports64BitAtomics" : true,
+    "supportsApple3" : true,
+    "supportsApple4" : true,
+    "supportsApple7" : true,
+    "supportsApple9" : true,
+    "supportsBinaryArchives" : true,
+    "supportsNonuniformThreadgroups" : true,
+    "supportsSIMDReductions" : true
+  },
+  "fold" : {
+    "bestSecondsForThroughput" : 3.6375000490807e-05,
+    "elementsPerSecond" : 225209618.9543792,
+    "gpuSeconds" : {
+      "max" : 0.0006623333320021629,
+      "mean" : 0.0002029416660661809,
+      "median" : 3.970833495259285e-05,
+      "min" : 3.6375000490807e-05,
+      "samples" : [
+        0.00023833333398215473,
+        0.0006623333320021629,
+        3.970833495259285e-05,
+        3.7958328903187066e-05,
+        3.6375000490807e-05
+      ]
+    },
+    "inputBytesPerSecond" : 10810061709.810202,
+    "wallSeconds" : {
+      "max" : 0.001286333,
+      "mean" : 0.0007280083999999999,
+      "median" : 0.000725875,
+      "min" : 0.000325083,
+      "samples" : [
+        0.000725875,
+        0.001286333,
+        0.000772584,
+        0.000530167,
+        0.000325083
+      ]
+    }
+  },
+  "generatedAt" : "2026-04-13T21:54:54.859Z",
+  "pipelineArchive" : {
+    "enabled" : false,
+    "mode" : "disabled"
+  },
+  "schemaVersion" : 1,
+  "target" : "metal",
+  "verification" : {
+    "cpuOutputDigestHex" : "af0ed49469b7cc9e6cddbcbabfd1ee80cb8328c5262f197038f4e576520f99f9",
+    "enabled" : true,
+    "matchedCPU" : true,
+    "outputDigestHex" : "af0ed49469b7cc9e6cddbcbabfd1ee80cb8328c5262f197038f4e576520f99f9"
+  }
+}
