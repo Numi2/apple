@@ -6,9 +6,10 @@ The implemented vertical slice is intentionally narrow and throughput-oriented:
 
 - CPU oracle: full SHA3-256, Keccak-256, and SHA3 Merkle root computation.
 - GPU batch hash: SHA3-256 and Keccak-256 for fixed-size rate-bounded messages of length `0...136` bytes, with exact-width kernels for common `32`, `64`, `128`, and full-rate `136` byte prover inputs.
+- GPU Keccak-F1600: permutation-only batch plans with scalar and opt-in simdgroup kernels for Plonky3-style hash-permutation benchmarking.
 - GPU Merkle commit: hash leaves on GPU, reduce internal layers on GPU, fuse small upper-tree reductions in threadgroup memory, and read back only the final 32-byte root. A 32-byte lower-subtree kernel is available as an explicit benchmark option while autotuning data is collected.
 - GPU sum-check chunk: canonical M31 lane chunks execute round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer, with only final proof material read back.
-- Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans, in-process pipeline caching, and optional Metal binary archive persistence.
+- Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans, ring-buffered shared upload staging, in-process pipeline caching, and optional Metal binary archive persistence.
 - Bench harness: repeated warmup/measurement runs with text or JSON output.
 
 ## Why this exact slice
@@ -41,6 +42,7 @@ These constraints are deliberate for the first high-value commit path.
 - `Sources/AppleZKProver/MetalContext.swift`: device discovery, shader compilation, dispatch helpers.
 - `Sources/AppleZKProver/SHA3BatchHasher.swift`: fixed-size one-block SHA3 batch hashing, fixed-width kernel selection, and reusable hash plans.
 - `Sources/AppleZKProver/Keccak256BatchHasher.swift`: fixed-size one-block Keccak-256 batch hashing with the same reusable-plan discipline.
+- `Sources/AppleZKProver/KeccakF1600PermutationBatcher.swift`: reusable Keccak-F1600 permutation-only batch plans with scalar and opt-in simdgroup kernels.
 - `Sources/AppleZKProver/MerkleCommitter.swift`: GPU leaf hashing + GPU tree reduction with reusable raw-leaf commit plans, benchmark-selectable 32-byte leaf subtree fusion, and upper-tree fusion.
 - `Sources/AppleZKProver/SumcheckOracle.swift`: CPU M31 sum-check chunk oracle used for deterministic differential checks.
 - `Sources/AppleZKProver/Planner/`: `MetalProofPlanner`, specialization keys, SQLite plan history, residency arena, execution-plan records, and GPU transcript engine.
@@ -49,6 +51,7 @@ These constraints are deliberate for the first high-value commit path.
 - `docs/ROADMAP.md`: phased development plan and exit gates.
 - `docs/SECURITY_MODEL.md`: current guarantees, threat model, and required security gates.
 - `docs/CRYPTO_FINDINGS.md`: security-relevant engineering findings and completed remediation work.
+- `docs/LATTICE_ESTIMATOR_REPRODUCTION.md`: required process for independent lattice-estimator reproduction when lattice parameters enter this repo.
 
 ## Quick start
 
@@ -84,6 +87,7 @@ swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash keccak-256 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --merkle-subtree-leaves 64 --json
 swift run zkmetal-bench --suite --leaves 16384 --iterations 5 --json
+swift run zkmetal-bench --keccakf-permutation --states 16384 --iterations 5 --json
 ```
 
 `zkmetal-bench` uses a device-scoped Metal binary archive under `.build/applezkprover-pipeline-archives/` by default. Pass `--no-pipeline-archive` to disable it, or `--pipeline-archive PATH` to choose an explicit archive path.
@@ -96,7 +100,11 @@ The benchmark constructs reusable hash and Merkle plans before warmup so timed i
 
 When CPU verification is enabled, any root mismatch is a benchmark failure. The CLI emits the requested text or JSON report first, writes the mismatch summary to stderr, and exits with status `2`.
 
-Reusable plans retain their Metal buffers by design. Call `clearReusableBuffers()` after private-witness workloads when the plan will be reused or released across a security boundary.
+Use the CPU-verified APIs when accelerator correctness is not part of the trusted computing base: `hashVerified`, `permuteVerified`, `commitRawLeavesVerified`, planned Merkle `commitVerified`, and M31 sum-check `executeVerified`. These recompute the corresponding CPU oracle and throw `AppleZKProverError.correctnessValidationFailed` on mismatch.
+
+Reusable plans retain their Metal buffers by design, including shared upload ring slots and private scratch arenas. Call `clearReusableBuffers()` after private-witness workloads when the plan will be reused or released across a security boundary.
+
+Strided GPU result buffers zero unwritten padding bytes before returning `Data`, and shared upload ring copies clear unused slot tails before reuse.
 
 CPU Merkle oracle entry points and one-block hash shortcuts throw `AppleZKProverError` for malformed public layout parameters. Internal invariants may still use Swift preconditions, but caller-controlled cryptographic input validation is typed.
 
@@ -106,6 +114,8 @@ Benchmark JSON includes the selected Merkle subtree leaf count, upper-fusion nod
 
 `--hash-kernel simdgroup` selects the Apple7+ simdgroup fixed-rate hash path for the standalone hash benchmark only. `--hash-simdgroups-per-threadgroup N` controls how many independent Keccak states are packed into each threadgroup for that path. It does not change Merkle commitment kernels or planner eligibility.
 
+`--keccakf-permutation` benchmarks raw Keccak-F1600 state permutations, not SHA3/Keccak sponge hashing or Merkle commitments. It emits a dedicated schema v1 report with CPU output-digest verification. Use `--permutation-kernel simdgroup` and `--permutation-simdgroups-per-threadgroup N` to select the opt-in Apple7+ cooperative path.
+
 `MetalProofPlanner` can run a correctness-gated Merkle short race, persist every Merkle candidate in SQLite, and construct the current GPU-resident M31 sum-check chunk plan. See `docs/PLANNER.md` for the current planner contract and eligibility rules.
 
 Release benchmark baselines are stored under `BenchmarkBaselines/`. The current Apple M4 / Apple9 baseline was produced with `swift build -c release -Xswiftc -Osize`; see `docs/BENCHMARK_FINDINGS.md` for the exact measurement constraint and command.
@@ -114,7 +124,7 @@ Release benchmark baselines are stored under `BenchmarkBaselines/`. The current 
 
 The next step is not another protocol wrapper. The next step is a better kernel set:
 
-- a simdgroup-cooperative Keccak path for the fixed-width hash and fused Merkle kernels on Apple7+,
+- the next simdgroup-cooperative Keccak iteration for fused Merkle kernels and faster fixed-width hash/permutation kernels on Apple7+,
 - function-constant-specialized or generated leaf hash kernels for larger common widths beyond the hand-specialized `32`, `64`, `128`, and `136` byte paths,
 - a multi-block SHA3 absorb path,
 - tuned scalar, simdgroup, and fused sum-check families after the resident scalar chunk has broader randomized test coverage,

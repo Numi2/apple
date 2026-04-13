@@ -7,8 +7,9 @@ This project is an Apple-silicon-first backend for hash-heavy transparent provin
 - CPU oracle: full SHA3-256, Keccak-256, and SHA3 Merkle roots.
 - GPU hash: rate-bounded SHA3-256 and Keccak-256 for `0...136` byte messages.
 - GPU specialization: exact 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak kernels.
+- GPU Keccak-F: permutation-only batch plans are implemented with a scalar baseline kernel, opt-in Apple7+ simdgroup kernel, CPU differential tests, and standalone JSON benchmark reports.
 - GPU Merkle: raw leaves are uploaded once, parents stay GPU-resident, small upper-tree reductions are fused in threadgroup memory, only the 32-byte root is copied back. A 32-byte lower-subtree treelet kernel is implemented and can be selected by the planner after a correctness-gated short race.
-- Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans with explicit buffer clearing, `KernelSpec`-keyed pipeline cache, optional Metal binary archive persistence, private residency arenas, and SQLite plan history.
+- Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans with explicit buffer clearing, CPU-verified accelerator APIs, `KernelSpec`-keyed pipeline cache, optional Metal binary archive persistence, ring-buffered shared upload staging, private residency arenas, and SQLite plan history.
 - Bench: warmups, repeated measurements, CPU verification, text output, and JSON output.
 - Baselines: first optimized Apple M4 / Apple9 suite baseline is checked in under `BenchmarkBaselines/`.
 
@@ -40,7 +41,7 @@ The runtime must make expensive host work explicit and controllable.
 - Keep all pipeline creation outside timed benchmark regions.
 - Use binary archives when configured, but keep library default side-effect-free.
 - Add a GPU scratch arena for long-lived private buffers beyond the current hash/Merkle plans. The first `ResidencyArena` is implemented for Merkle and transcript state.
-- Add a ring-buffered upload path for shared staging buffers.
+- Add a ring-buffered upload path for shared staging buffers. The first `SharedUploadRing` is implemented and used by reusable Merkle and M31 sum-check plans.
 - Extend command-plan objects from hash and Merkle construction into future PCS passes.
 - Add kernel autotuning records keyed by device registry ID, OS build, shader hash, protocol hash, workload shape, and threadgroup geometry. SQLite plan history is implemented for Merkle races.
 - Promote the lower Merkle subtree path from explicit benchmark mode to automatic selection only after correctness-gated records show a net win for a given device and tree shape.
@@ -59,7 +60,7 @@ This is the first performance battlefield.
 - Implement Apple7+ simdgroup-cooperative Keccak-F1600. The first path is implemented, CPU-differential-tested, wired into selectable fixed-width SHA3/Keccak batch kernels, and benchmarked with explicit independent-state packing per threadgroup; current Apple M4 / Apple9 measurements are slower than scalar, so it remains opt-in and planner-ineligible.
 - Specialize SHA3 paths for 32-byte, 64-byte, 128-byte, and full-rate 136-byte absorbs. The 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak paths are implemented.
 - Keep Keccak-256 domain handling separate from SHA3-256 and add Keccak-domain Merkle only as a distinct commitment API.
-- Add Keccak-F permutation-only batch kernels for Plonky3-style benchmark relevance.
+- Add Keccak-F permutation-only batch kernels for Plonky3-style benchmark relevance. Scalar and opt-in simdgroup batch plans are implemented with CPU verification and a dedicated `zkmetal-bench --keccakf-permutation` JSON report.
 - Extend fused threadgroup-local Merkle subtree kernels beyond 32-byte leaves where measurements justify it.
 - Extend fused multi-level parent reduction into more tree shapes where measurements justify it.
 - Add proof-node extraction kernels so Merkle openings can remain mostly GPU-resident.
@@ -153,4 +154,5 @@ Exit gate:
 - No GPU kernel without deterministic tests.
 - No secret-bearing buffer reuse without an explicit clearing policy.
 - No protocol shortcut without domain separation and transcript tests.
+- No lattice parameter claim without a pinned independent lattice-estimator reproduction artifact.
 - No roadmap item is complete until it has correctness tests and measurement.

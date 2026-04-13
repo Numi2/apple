@@ -69,9 +69,14 @@ public struct MerkleCommitPlanConfiguration: Sendable {
     }
 
     public var leafSubtreeMode: LeafSubtreeMode
+    public var uploadRingSlotCount: Int
 
-    public init(leafSubtreeMode: LeafSubtreeMode = .disabled) {
+    public init(
+        leafSubtreeMode: LeafSubtreeMode = .disabled,
+        uploadRingSlotCount: Int = 3
+    ) {
         self.leafSubtreeMode = leafSubtreeMode
+        self.uploadRingSlotCount = uploadRingSlotCount
     }
 
     public static let `default` = MerkleCommitPlanConfiguration()
@@ -111,6 +116,20 @@ public final class SHA3MerkleCommitter: @unchecked Sendable {
             leafLength: leafLength
         )
         return try plan.commit(leaves: leaves)
+    }
+
+    public func commitRawLeavesVerified(
+        leaves: Data,
+        leafCount: Int,
+        leafStride: Int,
+        leafLength: Int
+    ) throws -> MerkleCommitment {
+        let plan = try makeRawLeavesCommitPlan(
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength
+        )
+        return try plan.commitVerified(leaves: leaves)
     }
 
     public func commitPrehashedLeaves(_ leafHashes: Data) throws -> MerkleCommitment {
@@ -205,8 +224,10 @@ public final class SHA3MerkleCommitter: @unchecked Sendable {
 public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     private let context: MetalContext
     private let leafCount: Int
+    private let leafStride: Int
+    private let leafLength: Int
     private let declaredLeafBytes: Int
-    private let upload: MTLBuffer
+    private let uploadRing: SharedUploadRing
     private let arena: ResidencyArena
     private let scratchA: ArenaSlice
     private let scratchB: ArenaSlice
@@ -237,6 +258,9 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         guard leafStride >= leafLength else {
             throw AppleZKProverError.invalidInputLayout
         }
+        guard configuration.uploadRingSlotCount > 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
         let leafCount32 = try checkedUInt32(leafCount)
         let leafStride32 = try checkedUInt32(leafStride)
         let leafLength32 = try checkedUInt32(leafLength)
@@ -245,11 +269,14 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         let scratchLength = max(32, try checkedBufferLength(leafCount, 32))
         self.context = context
         self.leafCount = leafCount
+        self.leafStride = leafStride
+        self.leafLength = leafLength
         self.declaredLeafBytes = declaredLeafBytes
-        self.upload = try MetalBufferFactory.makeSharedBuffer(
+        self.uploadRing = try SharedUploadRing(
             device: context.device,
-            length: declaredLeafBytes,
-            label: "Merkle.Upload"
+            slotCapacity: declaredLeafBytes,
+            slotCount: configuration.uploadRingSlotCount,
+            label: "Merkle.UploadRing"
         )
         self.arena = try ResidencyArena(
             device: context.device,
@@ -310,12 +337,16 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         try commitMeasured(leaves: leaves).commitment
     }
 
+    public func commitVerified(leaves: Data) throws -> MerkleCommitment {
+        try commitMeasuredVerified(leaves: leaves).commitment
+    }
+
     func commitMeasured(leaves: Data) throws -> MerkleCommitMeasurement {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        try MetalBufferFactory.copy(leaves, into: upload, byteCount: declaredLeafBytes)
-        return try commitMeasuredLocked(uploadBuffer: upload)
+        let slot = try uploadRing.copy(leaves, byteCount: declaredLeafBytes)
+        return try commitMeasuredLocked(uploadBuffer: slot.buffer, uploadOffset: slot.offset)
     }
 
     func commitMeasured(uploadBuffer: MTLBuffer, uploadOffset: Int = 0) throws -> MerkleCommitMeasurement {
@@ -325,10 +356,18 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         return try commitMeasuredLocked(uploadBuffer: uploadBuffer, uploadOffset: uploadOffset)
     }
 
+    func commitMeasuredVerified(leaves: Data) throws -> MerkleCommitMeasurement {
+        let measured = try commitMeasured(leaves: leaves)
+        try verifyCommitment(leaves: leaves, root: measured.commitment.root)
+        return measured
+    }
+
     private func commitMeasuredLocked(uploadBuffer: MTLBuffer, uploadOffset: Int = 0) throws -> MerkleCommitMeasurement {
 
+        let uploadEnd = uploadOffset.addingReportingOverflow(max(1, declaredLeafBytes))
         guard uploadOffset >= 0,
-              uploadBuffer.length >= uploadOffset + max(1, declaredLeafBytes) else {
+              !uploadEnd.overflow,
+              uploadBuffer.length >= uploadEnd.partialValue else {
             throw AppleZKProverError.invalidInputLayout
         }
 
@@ -433,11 +472,23 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         )
     }
 
+    private func verifyCommitment(leaves: Data, root: Data) throws {
+        let cpuRoot = try MerkleOracle.rootSHA3_256(
+            rawLeaves: leaves,
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength
+        )
+        guard root == cpuRoot else {
+            throw AppleZKProverError.correctnessValidationFailed("SHA3 Merkle GPU root did not match the CPU oracle.")
+        }
+    }
+
     public func clearReusableBuffers() throws {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        MetalBufferFactory.zeroSharedBuffer(upload)
+        uploadRing.clear()
         MetalBufferFactory.zeroSharedBuffer(rootReadback)
         try MetalBufferFactory.zeroPrivateBuffers(
             [arena.buffer],

@@ -1,6 +1,9 @@
 #if canImport(Metal)
 import Foundation
 import Metal
+#if canImport(Darwin)
+import Darwin
+#endif
 
 enum MetalBufferFactory {
     static func makeSharedBuffer(
@@ -44,9 +47,21 @@ enum MetalBufferFactory {
     }
 
     static func copy(_ bytes: Data, into buffer: MTLBuffer, byteCount: Int) throws {
+        try copy(bytes, into: buffer, destinationOffset: 0, byteCount: byteCount)
+    }
+
+    static func copy(
+        _ bytes: Data,
+        into buffer: MTLBuffer,
+        destinationOffset: Int,
+        byteCount: Int
+    ) throws {
+        let requiredLength = destinationOffset.addingReportingOverflow(max(1, byteCount))
         guard byteCount >= 0,
+              destinationOffset >= 0,
               bytes.count >= byteCount,
-              buffer.length >= max(1, byteCount) else {
+              !requiredLength.overflow,
+              buffer.length >= requiredLength.partialValue else {
             throw AppleZKProverError.invalidInputLayout
         }
         guard byteCount > 0 else {
@@ -57,13 +72,29 @@ enum MetalBufferFactory {
             guard let source = rawBuffer.baseAddress else {
                 return
             }
-            buffer.contents().copyMemory(from: source, byteCount: byteCount)
+            buffer.contents()
+                .advanced(by: destinationOffset)
+                .copyMemory(from: source, byteCount: byteCount)
         }
     }
 
     static func zeroSharedBuffer(_ buffer: MTLBuffer) {
-        UnsafeMutableRawBufferPointer(start: buffer.contents(), count: buffer.length)
-            .initializeMemory(as: UInt8.self, repeating: 0)
+        zeroSharedBufferUnchecked(buffer, offset: 0, byteCount: buffer.length)
+    }
+
+    static func zeroSharedBuffer(
+        _ buffer: MTLBuffer,
+        offset: Int,
+        byteCount: Int
+    ) throws {
+        let end = offset.addingReportingOverflow(byteCount)
+        guard offset >= 0,
+              byteCount >= 0,
+              !end.overflow,
+              end.partialValue <= buffer.length else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        zeroSharedBufferUnchecked(buffer, offset: offset, byteCount: byteCount)
     }
 
     static func zeroPrivateBuffers(
@@ -94,6 +125,22 @@ enum MetalBufferFactory {
         if let error = commandBuffer.error {
             throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
         }
+    }
+
+    private static func zeroSharedBufferUnchecked(
+        _ buffer: MTLBuffer,
+        offset: Int,
+        byteCount: Int
+    ) {
+        guard byteCount > 0 else {
+            return
+        }
+        let destination = buffer.contents().advanced(by: offset)
+        #if canImport(Darwin)
+        _ = memset_s(destination, byteCount, 0, byteCount)
+        #else
+        memset(destination, 0, byteCount)
+        #endif
     }
 }
 #endif

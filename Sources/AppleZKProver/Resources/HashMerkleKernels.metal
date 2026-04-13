@@ -61,6 +61,8 @@ constant ulong AZK_FC_FIXED_WIDTH_CASE [[function_constant(5)]];
 constant ulong AZK_FC_BARRIER_CADENCE [[function_constant(7)]];
 constant ulong AZK_FC_DOMAIN_SUFFIX [[function_constant(8)]];
 constant uint SHA3_256_RATE_U32_WORDS = 34u;
+constant uint M31_MODULUS_U32 = 2147483647u;
+constant ulong M31_MODULUS_U64 = 2147483647UL;
 
 constant ulong KECCAKF_ROUND_CONSTANTS[24] = {
     0x0000000000000001UL,
@@ -321,6 +323,30 @@ inline uint2 keccak_f1600_simdgroup_pair(uint2 word, uint lane) {
         }
     }
     return word;
+}
+
+kernel void keccak_f1600_permutation_scalar(
+    const device ulong *inputs [[buffer(0)]],
+    device ulong *outputs [[buffer(1)]],
+    constant KeccakPermutationParams &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.count) {
+        return;
+    }
+
+    const uint inputBase = gid * (params.inputStride / 8u);
+    const uint outputBase = gid * (params.outputStride / 8u);
+    thread ulong state[25];
+    for (uint lane = 0; lane < 25u; ++lane) {
+        state[lane] = inputs[inputBase + lane];
+    }
+
+    keccak_f1600(state);
+
+    for (uint lane = 0; lane < 25u; ++lane) {
+        outputs[outputBase + lane] = state[lane];
+    }
 }
 
 kernel void keccak_f1600_permutation_simdgroup(
@@ -1167,14 +1193,26 @@ kernel void transcript_squeeze_challenges(
     }
 }
 
-inline uint add_mod(uint a, uint b, uint modulus) {
-    const ulong sum = ulong(a) + ulong(b);
-    return uint(sum % ulong(modulus));
+inline uint m31_subtract_modulus_mask(ulong value) {
+    return uint(0u) - uint(value >= M31_MODULUS_U64);
 }
 
-inline uint mul_add_mod(uint a, uint b, uint challenge, uint modulus) {
+inline uint m31_reduce_u64(ulong value) {
+    ulong reduced = (value & M31_MODULUS_U64) + (value >> 31);
+    reduced = (reduced & M31_MODULUS_U64) + (reduced >> 31);
+    reduced = (reduced & M31_MODULUS_U64) + (reduced >> 31);
+    return uint(reduced - (M31_MODULUS_U64 & ulong(m31_subtract_modulus_mask(reduced))));
+}
+
+inline uint m31_add_mod(uint a, uint b) {
+    const uint sum = a + b;
+    const uint mask = uint(0u) - uint(sum >= M31_MODULUS_U32);
+    return sum - (M31_MODULUS_U32 & mask);
+}
+
+inline uint m31_mul_add_mod(uint a, uint b, uint challenge) {
     const ulong value = ulong(a) + ulong(b) * ulong(challenge);
-    return uint(value % ulong(modulus));
+    return m31_reduce_u64(value);
 }
 
 kernel void sumcheck_scalar(
@@ -1189,11 +1227,13 @@ kernel void sumcheck_scalar(
         return;
     }
 
-    const uint modulus = max(params.fieldModulus, 1u);
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
     const uint a = current[gid * 2];
     const uint b = current[gid * 2 + 1];
-    coefficients[gid] = add_mod(a, b, modulus);
-    next[gid] = mul_add_mod(a, b, params.challenge, modulus);
+    coefficients[gid] = m31_add_mod(a, b);
+    next[gid] = m31_mul_add_mod(a, b, params.challenge);
 }
 
 kernel void sumcheck_simdgroup(
@@ -1208,11 +1248,13 @@ kernel void sumcheck_simdgroup(
         return;
     }
 
-    const uint modulus = max(params.fieldModulus, 1u);
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
     const uint a = current[gid * 2];
     const uint b = current[gid * 2 + 1];
-    coefficients[gid] = add_mod(a, b, modulus);
-    next[gid] = mul_add_mod(a, b, params.challenge, modulus);
+    coefficients[gid] = m31_add_mod(a, b);
+    next[gid] = m31_mul_add_mod(a, b, params.challenge);
 }
 
 kernel void sumcheck_fused(
@@ -1227,11 +1269,13 @@ kernel void sumcheck_fused(
         return;
     }
 
-    const uint modulus = max(params.fieldModulus, 1u);
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
     const uint a = current[gid * 2];
     const uint b = current[gid * 2 + 1];
-    coefficients[gid] = add_mod(a, b, modulus);
-    next[gid] = mul_add_mod(a, b, params.challenge, modulus);
+    coefficients[gid] = m31_add_mod(a, b);
+    next[gid] = m31_mul_add_mod(a, b, params.challenge);
 }
 
 kernel void sumcheck_round_eval_u32(
@@ -1245,9 +1289,11 @@ kernel void sumcheck_round_eval_u32(
         return;
     }
 
-    const uint modulus = max(params.fieldModulus, 1u);
-    const uint a = current[gid * 2] % modulus;
-    const uint b = current[gid * 2 + 1] % modulus;
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+    const uint a = current[gid * 2];
+    const uint b = current[gid * 2 + 1];
     coefficients[gid * 2] = a;
     coefficients[gid * 2 + 1] = b;
 }
@@ -1264,8 +1310,10 @@ kernel void sumcheck_fold_halve_u32(
         return;
     }
 
-    const uint modulus = max(params.fieldModulus, 1u);
-    const uint a = current[gid * 2] % modulus;
-    const uint b = current[gid * 2 + 1] % modulus;
-    next[gid] = mul_add_mod(a, b, challenge[0] % modulus, modulus);
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+    const uint a = current[gid * 2];
+    const uint b = current[gid * 2 + 1];
+    next[gid] = m31_mul_add_mod(a, b, challenge[0]);
 }

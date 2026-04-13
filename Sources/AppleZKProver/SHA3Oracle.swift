@@ -116,7 +116,7 @@ public enum SHA3Oracle {
         return sha3_256(data)
     }
 
-    static func keccakF1600Permutation(_ lanes: [UInt64]) throws -> [UInt64] {
+    public static func keccakF1600Permutation(_ lanes: [UInt64]) throws -> [UInt64] {
         guard lanes.count == 25 else {
             throw AppleZKProverError.invalidInputLayout
         }

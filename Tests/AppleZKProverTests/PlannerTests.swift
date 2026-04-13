@@ -164,6 +164,65 @@ final class PlannerTests: XCTestCase {
     }
 
     #if canImport(Metal)
+    func testSharedUploadRingCyclesCopiesAndClearsSlots() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let ring = try SharedUploadRing(
+            device: device,
+            slotCapacity: 3,
+            slotCount: 2,
+            label: "PlannerTests.UploadRing"
+        )
+
+        let first = try ring.copy(Data([1, 2, 3]), byteCount: 3)
+        let second = try ring.copy(Data([4, 5]), byteCount: 2)
+        let wrapped = try ring.copy(Data([6]), byteCount: 1)
+
+        XCTAssertEqual(first.index, 0)
+        XCTAssertEqual(second.index, 1)
+        XCTAssertEqual(wrapped.index, 0)
+        XCTAssertEqual(wrapped.offset, first.offset)
+        XCTAssertNotEqual(second.offset, first.offset)
+        XCTAssertGreaterThanOrEqual(ring.slotStride, ring.slotCapacity)
+        XCTAssertEqual(Self.readBytes(ring.buffer, offset: wrapped.offset, count: 3), [6, 0, 0])
+        XCTAssertEqual(Self.readBytes(ring.buffer, offset: second.offset, count: 3), [4, 5, 0])
+        XCTAssertEqual(
+            Self.readBytes(ring.buffer, offset: wrapped.offset + 3, count: ring.slotStride - 3),
+            Array(repeating: UInt8(0), count: ring.slotStride - 3)
+        )
+        XCTAssertEqual(
+            Self.readBytes(ring.buffer, offset: second.offset + 3, count: ring.slotStride - 3),
+            Array(repeating: UInt8(0), count: ring.slotStride - 3)
+        )
+
+        XCTAssertThrowsError(try ring.reserve(byteCount: 4)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try ring.copy(Data([9]), byteCount: 2)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let afterRejectedCopy = try ring.reserve(byteCount: 0)
+        XCTAssertEqual(afterRejectedCopy.index, 1)
+        XCTAssertThrowsError(
+            try SharedUploadRing(
+                device: device,
+                slotCapacity: Int.max,
+                slotCount: 2,
+                label: "PlannerTests.UploadRingOverflow"
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        ring.clear()
+        XCTAssertEqual(
+            Self.readBytes(ring.buffer, offset: 0, count: ring.buffer.length),
+            Array(repeating: UInt8(0), count: ring.buffer.length)
+        )
+    }
+
     func testMerkleTunerDifferentialChecksAndPersistsWinner() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -302,6 +361,20 @@ final class PlannerTests: XCTestCase {
         XCTAssertEqual(measured.result.finalVector, expected.finalVector)
         XCTAssertEqual(measured.result.coefficients, expected.coefficients)
         XCTAssertEqual(measured.result.challenges, expected.challenges)
+    }
+
+    func testSumcheckChunkVerifiedExecutionMatchesCPUOracle() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let evaluations = Self.makeM31Evaluations(count: 64, salt: 79)
+        let planner = MetalProofPlanner(context: try MetalContext(device: device))
+        let plan = try planner.makeSumcheckChunkPlan(laneCount: evaluations.count, roundsPerSuperstep: 3)
+        let measured = try plan.executeVerified(evaluations: evaluations)
+        let expected = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
+
+        XCTAssertEqual(measured.result, expected)
     }
 
     func testSumcheckChunkAcceptsUploadedVectorHotPath() throws {
@@ -567,4 +640,13 @@ final class PlannerTests: XCTestCase {
         }
         return data
     }
+
+    #if canImport(Metal)
+    private static func readBytes(_ buffer: MTLBuffer, offset: Int, count: Int) -> [UInt8] {
+        let bytes = buffer.contents()
+            .advanced(by: offset)
+            .bindMemory(to: UInt8.self, capacity: count)
+        return (0..<count).map { bytes[$0] }
+    }
+    #endif
 }

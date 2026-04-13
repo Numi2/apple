@@ -107,12 +107,45 @@ public enum FixedOneBlockHashKernelFamily: String, Sendable {
     case simdgroup
 }
 
+public enum KeccakF1600PermutationKernelFamily: String, Sendable {
+    case scalar
+    case simdgroup
+}
+
 public struct GPUHashBatchResult: Sendable {
     public let digests: Data
     public let stats: GPUExecutionStats
 
     public init(digests: Data, stats: GPUExecutionStats) {
         self.digests = digests
+        self.stats = stats
+    }
+}
+
+public struct KeccakF1600PermutationBatchDescriptor: Sendable {
+    public static let stateByteCount = 25 * MemoryLayout<UInt64>.stride
+
+    public let count: Int
+    public let inputStride: Int
+    public let outputStride: Int
+
+    public init(
+        count: Int,
+        inputStride: Int = Self.stateByteCount,
+        outputStride: Int = Self.stateByteCount
+    ) {
+        self.count = count
+        self.inputStride = inputStride
+        self.outputStride = outputStride
+    }
+}
+
+public struct KeccakF1600PermutationBatchResult: Sendable {
+    public let states: Data
+    public let stats: GPUExecutionStats
+
+    public init(states: Data, stats: GPUExecutionStats) {
+        self.states = states
         self.stats = stats
     }
 }

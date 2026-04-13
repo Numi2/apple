@@ -54,9 +54,19 @@ The current package aims to guarantee:
 - zero-length one-block messages are handled as valid SHA3 input,
 - CPU and GPU transcript squeeze paths consume the full SHA3-256 rate, advance through additional squeeze blocks with Keccak-F1600, and use rejection sampling for field reduction,
 - the M31 sum-check chunk transcript uses versioned header, round, and challenge frames with stable CPU vectors and GPU differential coverage,
-- reusable hash and Merkle plans expose explicit buffer clearing methods.
+- Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
+- reusable hash, Keccak-F permutation, Merkle, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 sum-check clearing includes shared upload ring slots and private scratch buffers,
+- shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
+- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, planned Merkle commitments, and M31 sum-check chunks,
+- the M31 GPU fold path uses the `2^31 - 1` Mersenne reduction instead of generic integer remainder for canonical M31 values.
 
 These are correctness guarantees for the implemented slice. They are not a full proof-system security claim.
+
+## Malicious Accelerator Handling
+
+The GPU is not a cryptographic verifier. A production verifier must be CPU-only and deterministic. When a caller does not trust accelerator execution, it must use the verified APIs so the CPU oracle independently recomputes the GPU result before accepting it.
+
+The verified APIs defend against incorrect accelerator results for CPU-visible inputs. They do not defend against a compromised OS, malicious kernel driver, or a caller that supplies only GPU-resident private buffers without a CPU copy or independently known expected result.
 
 ## Required Cryptographic Rules
 
@@ -78,7 +88,9 @@ GPU buffers can contain private witness data. Runtime code must therefore make b
 Required rules:
 
 - public APIs must document whether each input is public, private, or derived,
-- reusable plans and future arenas must support clearing private regions before reuse,
+- reusable plans and arenas must support clearing private regions before reuse, including shared upload ring slots,
+- shared upload staging must clear stale tail bytes when a shorter copy reuses a larger slot,
+- result buffers with public strides must clear unwritten padding before returning host-visible bytes,
 - benchmarks must not log witness-derived buffers,
 - only final public commitments and requested openings should be copied back by default,
 - debug paths that read intermediate buffers must be opt-in and clearly marked.
@@ -91,6 +103,8 @@ The current SHA3/Merkle kernels operate on public lengths and regular memory lay
 - secret-dependent memory addressing,
 - secret-dependent command topology,
 - logging or serializing private intermediate data.
+
+The M31 sum-check uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the round-evaluation path; callers that need CPU-side input validation must use the public array API.
 
 When avoiding those patterns is impossible, the API must document the leakage and the code must not be used for private-witness production proving.
 
@@ -115,4 +129,5 @@ Before this project claims production security:
 - fuzzing must cover public deserialization and verifier inputs,
 - GPU/CPU differential tests must run over randomized workloads,
 - cryptographic parameter choices must be documented,
+- lattice-based parameter choices, if added later, must include an independent lattice-estimator reproduction artifact,
 - an external cryptography review must be completed.

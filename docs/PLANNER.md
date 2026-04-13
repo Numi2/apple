@@ -13,10 +13,12 @@
 - The tuner stores every race candidate in SQLite and marks the measured winner.
 - Live observations can update an EMA for a persisted winner and mark the plan stale after sustained relative drift.
 - `MetalPlannedMerkleCommitPlan` records live observations automatically when it was built from a persisted winner.
-- Upload and final root readback may use shared buffers. Intermediate Merkle state lives in reusable private buffers through `ResidencyArena`.
+- Upload and final root readback may use shared buffers. Reusable Merkle and M31 sum-check plans stage public array inputs through `SharedUploadRing`; intermediate Merkle and sum-check state lives in reusable private buffers through `ResidencyArena`.
 - `MetalSumcheckChunkPlan` executes `round_eval -> coeff_pack -> transcript_absorb -> challenge_squeeze -> fold_halve` inside one command buffer for the supported M31 chunk shape.
 - Sum-check chunk execution reads back only final proof material: the final folded vector, coefficient words, and challenges after the superstep completes.
+- `executeVerified` recomputes the M31 chunk with the independent CPU oracle before accepting GPU proof bytes.
 - A real simdgroup Keccak-F1600 path exists and is differentially tested against the CPU permutation and fixed-rate SHA3/Keccak oracles on Apple7+ class hardware. It now supports explicit independent-state packing per threadgroup for standalone hash benchmarks. Current Apple M4 / Apple9 measurements are still slower than scalar, so it remains opt-in and is not planner-eligible.
+- Keccak-F1600 permutation-only batch plans exist as benchmarkable runtime primitives. Scalar is the baseline family; simdgroup remains opt-in and planner-ineligible until broader measurements show a durable win.
 
 ## Current Merkle Race
 
@@ -107,7 +109,7 @@ The current M31 sum-check chunk uses explicit transcript frames:
 - public array convenience APIs reject non-canonical M31 input,
 - uploaded-buffer APIs assume the caller already populated canonical field elements.
 
-For each round, the GPU writes canonical pair coefficients, packs those `UInt32` words in little-endian transcript order, absorbs the framed transcript data into the private Keccak state, squeezes the next challenge, and folds the vector in private memory. The tests compare final vectors, coefficient logs, and challenges against the independent CPU oracle, including a stable framed transcript vector.
+For each round, the GPU writes canonical pair coefficients, packs those `UInt32` words in little-endian transcript order, absorbs the framed transcript data into the private Keccak state, squeezes the next challenge, and folds the vector in private memory with the M31 Mersenne reduction. The tests compare final vectors, coefficient logs, and challenges against the independent CPU oracle, including a stable framed transcript vector.
 
 ## Research Notes
 

@@ -117,6 +117,15 @@ final class SHA3OracleTests: XCTestCase {
         }
     }
 
+    func testKeccakF1600CPUOracleRejectsInvalidStateWidth() {
+        XCTAssertThrowsError(try SHA3Oracle.keccakF1600Permutation(Array(repeating: UInt64(0), count: 24))) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try SHA3Oracle.keccakF1600Permutation(Array(repeating: UInt64(0), count: 26))) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     #if canImport(Metal)
     func testGPUOneBlockBatchHasherMatchesCPU() throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
@@ -184,6 +193,46 @@ final class SHA3OracleTests: XCTestCase {
                 let digestStart = i * outputStride
                 let digest = result.digests.subdata(in: digestStart..<(digestStart + 32))
                 XCTAssertEqual(digest, KeccakOracle.keccak_256(message))
+            }
+        }
+    }
+
+    func testGPUVerifiedHashPlansMatchCPUAndClearOutputStridePadding() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let count = 4
+        let messageLength = 32
+        let messageStride = 37
+        let outputStride = 40
+        let messages = Self.makeBatchMessages(
+            count: count,
+            messageStride: messageStride,
+            messageLength: messageLength,
+            salt: 17
+        )
+        let descriptor = FixedMessageBatchDescriptor(
+            count: count,
+            messageStride: messageStride,
+            messageLength: messageLength,
+            outputStride: outputStride
+        )
+        let context = try MetalContext()
+
+        let sha3Result = try SHA3BatchHasher(context: context)
+            .hashFixedOneBlockVerified(messages: messages, descriptor: descriptor)
+        let keccakResult = try Keccak256BatchHasher(context: context)
+            .hashFixedOneBlockVerified(messages: messages, descriptor: descriptor)
+
+        for result in [sha3Result, keccakResult] {
+            for index in 0..<count {
+                let paddingStart = index * outputStride + 32
+                let paddingEnd = (index + 1) * outputStride
+                XCTAssertEqual(
+                    result.digests.subdata(in: paddingStart..<paddingEnd),
+                    Data(repeating: 0, count: outputStride - 32)
+                )
             }
         }
     }
@@ -267,6 +316,131 @@ final class SHA3OracleTests: XCTestCase {
             let expected = try SHA3Oracle.keccakF1600Permutation(Array(inputWords[start..<(start + wordsPerState)]))
             let actual = (0..<wordsPerState).map { outputWords[start + $0] }
             XCTAssertEqual(actual, expected, "state \(state)")
+        }
+    }
+
+    func testGPUKeccakF1600PermutationPlanScalarMatchesCPUWithStrides() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let count = 6
+        let inputStride = KeccakF1600PermutationBatchDescriptor.stateByteCount + 16
+        let outputStride = KeccakF1600PermutationBatchDescriptor.stateByteCount + 24
+        let descriptor = KeccakF1600PermutationBatchDescriptor(
+            count: count,
+            inputStride: inputStride,
+            outputStride: outputStride
+        )
+        let states = Self.makePermutationStates(count: count, inputStride: inputStride, salt: 0x91)
+        let context = try MetalContext()
+        let batcher = KeccakF1600PermutationBatcher(context: context)
+        let result = try batcher.permuteVerified(states: states, descriptor: descriptor, kernelFamily: .scalar)
+
+        try Self.assertPermutationBatch(result.states, matchesCPUFor: states, descriptor: descriptor)
+        for index in 0..<count {
+            let paddingStart = index * outputStride + KeccakF1600PermutationBatchDescriptor.stateByteCount
+            let paddingEnd = (index + 1) * outputStride
+            XCTAssertEqual(
+                result.states.subdata(in: paddingStart..<paddingEnd),
+                Data(repeating: 0, count: outputStride - KeccakF1600PermutationBatchDescriptor.stateByteCount)
+            )
+        }
+    }
+
+    func testGPUKeccakF1600PermutationPlanCanBeReusedAndCleared() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let count = 5
+        let descriptor = KeccakF1600PermutationBatchDescriptor(count: count)
+        let context = try MetalContext()
+        let plan = try KeccakF1600PermutationBatcher(context: context).makePermutationPlan(
+            descriptor: descriptor,
+            kernelFamily: .scalar
+        )
+
+        for salt in [0x11, 0x203] {
+            let states = Self.makePermutationStates(
+                count: count,
+                inputStride: descriptor.inputStride,
+                salt: salt
+            )
+            let result = try plan.permute(states: states)
+            try Self.assertPermutationBatch(result.states, matchesCPUFor: states, descriptor: descriptor)
+            plan.clearReusableBuffers()
+        }
+    }
+
+    func testGPUKeccakF1600PermutationPlanSIMDGroupMatchesCPU() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
+            throw XCTSkip("SIMD-group permutation path requires Apple7 or equivalent SIMD-group support")
+        }
+
+        let count = 7
+        let descriptor = KeccakF1600PermutationBatchDescriptor(count: count)
+        let states = Self.makePermutationStates(
+            count: count,
+            inputStride: descriptor.inputStride,
+            salt: 0x55
+        )
+        let plan = try KeccakF1600PermutationBatcher(context: context).makePermutationPlan(
+            descriptor: descriptor,
+            kernelFamily: .simdgroup
+        )
+        XCTAssertGreaterThanOrEqual(plan.simdgroupsPerThreadgroup, 1)
+
+        let result = try plan.permute(states: states)
+        try Self.assertPermutationBatch(result.states, matchesCPUFor: states, descriptor: descriptor)
+    }
+
+    func testGPUKeccakF1600PermutationPlanRejectsInvalidLayoutsAndPacking() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let batcher = KeccakF1600PermutationBatcher(context: context)
+        let invalidDescriptors = [
+            KeccakF1600PermutationBatchDescriptor(count: 0),
+            KeccakF1600PermutationBatchDescriptor(count: 1, inputStride: 199),
+            KeccakF1600PermutationBatchDescriptor(count: 1, outputStride: 201),
+            KeccakF1600PermutationBatchDescriptor(count: Int(UInt32.max) + 1),
+        ]
+
+        for descriptor in invalidDescriptors {
+            XCTAssertThrowsError(try batcher.makePermutationPlan(descriptor: descriptor)) { error in
+                XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+            }
+        }
+
+        XCTAssertThrowsError(try batcher.makePermutationPlan(
+            descriptor: KeccakF1600PermutationBatchDescriptor(count: 1),
+            kernelFamily: .scalar,
+            simdgroupsPerThreadgroup: 2
+        )) { error in
+            guard case .invalidKernelConfiguration = error as? AppleZKProverError else {
+                return XCTFail("expected invalidKernelConfiguration, got \(error)")
+            }
+        }
+
+        guard context.capabilities.supportsApple7 || context.capabilities.supportsSIMDReductions else {
+            return
+        }
+        XCTAssertThrowsError(try batcher.makePermutationPlan(
+            descriptor: KeccakF1600PermutationBatchDescriptor(count: 1),
+            kernelFamily: .simdgroup,
+            simdgroupsPerThreadgroup: 0
+        )) { error in
+            guard case .invalidKernelConfiguration = error as? AppleZKProverError else {
+                return XCTFail("expected invalidKernelConfiguration, got \(error)")
+            }
         }
     }
 
@@ -598,5 +772,68 @@ final class SHA3OracleTests: XCTestCase {
             }
         }
         return Data(bytes)
+    }
+
+    private static func makePermutationStates(
+        count: Int,
+        inputStride: Int,
+        salt: Int
+    ) -> Data {
+        var bytes = [UInt8](repeating: 0xa5, count: count * inputStride)
+        for state in 0..<count {
+            for lane in 0..<25 {
+                let value = UInt64(truncatingIfNeeded: state &* 0x1f1f_0101)
+                    ^ UInt64(truncatingIfNeeded: lane &* 0x0102_0305)
+                    ^ UInt64(truncatingIfNeeded: salt &* 0x10001)
+                    ^ (UInt64(lane) << 40)
+                    ^ (UInt64(state) << 56)
+                storeUInt64LittleEndian(
+                    value,
+                    into: &bytes,
+                    offset: state * inputStride + lane * MemoryLayout<UInt64>.stride
+                )
+            }
+        }
+        return Data(bytes)
+    }
+
+    private static func assertPermutationBatch(
+        _ output: Data,
+        matchesCPUFor input: Data,
+        descriptor: KeccakF1600PermutationBatchDescriptor,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        XCTAssertGreaterThanOrEqual(output.count, descriptor.count * descriptor.outputStride, file: file, line: line)
+        for state in 0..<descriptor.count {
+            let inputLanes = readPermutationState(input, state: state, stride: descriptor.inputStride)
+            let expected = try SHA3Oracle.keccakF1600Permutation(inputLanes)
+            let actual = readPermutationState(output, state: state, stride: descriptor.outputStride)
+            XCTAssertEqual(actual, expected, "state \(state)", file: file, line: line)
+        }
+    }
+
+    private static func readPermutationState(_ data: Data, state: Int, stride: Int) -> [UInt64] {
+        data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self).baseAddress!
+            let base = bytes.advanced(by: state * stride)
+            return (0..<25).map { lane in
+                readUInt64LittleEndian(base.advanced(by: lane * MemoryLayout<UInt64>.stride))
+            }
+        }
+    }
+
+    private static func readUInt64LittleEndian(_ source: UnsafePointer<UInt8>) -> UInt64 {
+        var value: UInt64 = 0
+        for byteIndex in 0..<MemoryLayout<UInt64>.stride {
+            value |= UInt64(source[byteIndex]) << UInt64(byteIndex * 8)
+        }
+        return value
+    }
+
+    private static func storeUInt64LittleEndian(_ value: UInt64, into bytes: inout [UInt8], offset: Int) {
+        for byteIndex in 0..<MemoryLayout<UInt64>.stride {
+            bytes[offset + byteIndex] = UInt8((value >> UInt64(byteIndex * 8)) & 0xff)
+        }
     }
 }

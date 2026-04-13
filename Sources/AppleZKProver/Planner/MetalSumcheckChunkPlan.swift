@@ -40,6 +40,8 @@ public struct SumcheckChunkMeasurement: Sendable {
 }
 
 public final class MetalSumcheckChunkPlan: @unchecked Sendable {
+    private static let defaultUploadRingSlotCount = 3
+
     public let descriptor: SumcheckChunkDescriptor
     public let executionPlan: ExecutionPlan
 
@@ -49,7 +51,7 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
     private let roundEvalPipeline: MTLComputePipelineState
     private let packWordsPipeline: MTLComputePipelineState
     private let foldPipeline: MTLComputePipelineState
-    private let upload: MTLBuffer
+    private let uploadRing: SharedUploadRing
     private let finalReadback: MTLBuffer
     private let coefficientReadback: MTLBuffer
     private let challengeReadback: MTLBuffer
@@ -157,10 +159,11 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
             )
         )
 
-        self.upload = try MetalBufferFactory.makeSharedBuffer(
+        self.uploadRing = try SharedUploadRing(
             device: context.device,
-            length: inputByteCount,
-            label: "AppleZKProver.SumcheckUpload"
+            slotCapacity: inputByteCount,
+            slotCount: Self.defaultUploadRingSlotCount,
+            label: "AppleZKProver.SumcheckUploadRing"
         )
         self.finalReadback = try MetalBufferFactory.makeSharedBuffer(
             device: context.device,
@@ -213,8 +216,20 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        try MetalBufferFactory.copy(bytes, into: upload, byteCount: inputByteCount)
-        return try executeLocked(inputBuffer: upload, inputOffset: 0)
+        let slot = try uploadRing.copy(bytes, byteCount: inputByteCount)
+        return try executeLocked(inputBuffer: slot.buffer, inputOffset: slot.offset)
+    }
+
+    public func executeVerified(evaluations: [UInt32]) throws -> SumcheckChunkMeasurement {
+        let expected = try SumcheckOracle.m31Chunk(
+            evaluations: evaluations,
+            rounds: descriptor.roundsPerSuperstep
+        )
+        let measured = try execute(evaluations: evaluations)
+        guard measured.result == expected else {
+            throw AppleZKProverError.correctnessValidationFailed("M31 sum-check GPU chunk did not match the CPU oracle.")
+        }
+        return measured
     }
 
     public func executeUploadedVector(
@@ -231,7 +246,7 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        MetalBufferFactory.zeroSharedBuffer(upload)
+        uploadRing.clear()
         MetalBufferFactory.zeroSharedBuffer(finalReadback)
         MetalBufferFactory.zeroSharedBuffer(coefficientReadback)
         MetalBufferFactory.zeroSharedBuffer(challengeReadback)
@@ -243,8 +258,10 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
     }
 
     private func executeLocked(inputBuffer: MTLBuffer, inputOffset: Int) throws -> SumcheckChunkMeasurement {
+        let inputEnd = inputOffset.addingReportingOverflow(max(1, inputByteCount))
         guard inputOffset >= 0,
-              inputBuffer.length >= inputOffset + max(1, inputByteCount) else {
+              !inputEnd.overflow,
+              inputBuffer.length >= inputEnd.partialValue else {
             throw AppleZKProverError.invalidInputLayout
         }
 

@@ -47,6 +47,9 @@ struct BenchConfig {
     var hashFunction: BenchHashFunction = .sha3_256
     var hashKernelFamily: FixedOneBlockHashKernelFamily = .scalar
     var hashSIMDGroupsPerThreadgroup = 2
+    var keccakF1600Permutation = false
+    var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
+    var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
     var verifyWithCPU = true
     var warmupIterations = 1
@@ -71,6 +74,12 @@ struct BenchConfig {
         while let arg = iterator.next() {
             switch arg {
             case "--leaves":
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): leafCount = value
+                case let .failure(error): return error
+                }
+            case "--states":
+                keccakF1600Permutation = true
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
                 case let .success(value): leafCount = value
                 case let .failure(error): return error
@@ -126,6 +135,24 @@ struct BenchConfig {
             case "--hash-simdgroups-per-threadgroup":
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
                 case let .success(value): hashSIMDGroupsPerThreadgroup = value
+                case let .failure(error): return error
+                }
+            case "--keccakf-permutation", "--permutation-only":
+                keccakF1600Permutation = true
+            case "--permutation-kernel":
+                let valueResult = Self.requireValue(flag: arg, value: iterator.next())
+                let value: String
+                switch valueResult {
+                case let .success(parsed): value = parsed
+                case let .failure(error): return error
+                }
+                guard let parsed = KeccakF1600PermutationKernelFamily(rawValue: value) else {
+                    return BenchError.invalidArgument("--permutation-kernel must be either 'scalar' or 'simdgroup'.")
+                }
+                permutationKernelFamily = parsed
+            case "--permutation-simdgroups-per-threadgroup":
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): permutationSIMDGroupsPerThreadgroup = value
                 case let .failure(error): return error
                 }
             case "--json":
@@ -195,6 +222,11 @@ struct BenchConfig {
           --hash-kernel NAME         Standalone hash kernel family: scalar or simdgroup. Default: scalar
           --hash-simdgroups-per-threadgroup N
                                       SIMD-group hash kernel packing. Default: 2
+          --keccakf-permutation      Run Keccak-F1600 permutation-only benchmark instead of hash/Merkle
+          --states N                 State count for --keccakf-permutation. Alias for --leaves in that mode
+          --permutation-kernel NAME  Keccak-F1600 permutation kernel family: scalar or simdgroup. Default: scalar
+          --permutation-simdgroups-per-threadgroup N
+                                      SIMD-group permutation packing. Default: 2
           --json                     Shortcut for --format json
           --suite                    Run the supported benchmark matrix
           --suite-leaf-bytes LIST    Comma-separated suite leaf lengths. Default: 0,32,64,128,135,136
@@ -209,7 +241,19 @@ struct BenchConfig {
     }
 
     private mutating func validate() -> BenchError? {
-        guard leafCount > 0, leafCount.nonzeroBitCount == 1 else {
+        guard leafCount > 0 else {
+            return BenchError.invalidArgument(keccakF1600Permutation ? "--states must be greater than zero." : "--leaves must be greater than zero.")
+        }
+        if keccakF1600Permutation {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with --keccakf-permutation.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: KeccakF1600PermutationBatchDescriptor.stateByteCount).overflow else {
+                return BenchError.invalidArgument("Requested Keccak-F1600 state buffer is too large for this process.")
+            }
+            return nil
+        }
+        guard leafCount.nonzeroBitCount == 1 else {
             return BenchError.invalidArgument("--leaves must be a non-zero power of two.")
         }
         if suite {
@@ -452,6 +496,35 @@ struct BenchmarkSuiteReport: Codable {
     let reports: [BenchmarkReport]
 }
 
+struct KeccakPermutationBenchmarkConfigReport: Codable {
+    let stateCount: Int
+    let stateStride: Int
+    let outputStride: Int
+    let kernelFamily: String
+    let simdgroupsPerThreadgroup: Int?
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct KeccakPermutationVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct KeccakPermutationBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: KeccakPermutationBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let permutation: MeasurementReport?
+    let verification: KeccakPermutationVerificationReport
+}
+
 func makeDeterministicLeaves(count: Int, leafLength: Int) -> Data {
     precondition(count > 0)
     precondition(leafLength >= 0)
@@ -466,6 +539,82 @@ func makeDeterministicLeaves(count: Int, leafLength: Int) -> Data {
         }
     }
     return Data(bytes)
+}
+
+func makeDeterministicKeccakF1600States(count: Int) -> Data {
+    precondition(count > 0)
+    var data = Data()
+    data.reserveCapacity(count * KeccakF1600PermutationBatchDescriptor.stateByteCount)
+
+    for state in 0..<count {
+        for lane in 0..<25 {
+            let value = UInt64(truncatingIfNeeded: state &* 0x1f1f_0101)
+                ^ UInt64(truncatingIfNeeded: lane &* 0x0102_0305)
+                ^ (UInt64(lane) << 40)
+                ^ (UInt64(state) << 56)
+            appendUInt64LittleEndian(value, to: &data)
+        }
+    }
+    return data
+}
+
+func cpuKeccakF1600PermutationBatch(
+    states: Data,
+    descriptor: KeccakF1600PermutationBatchDescriptor
+) throws -> Data {
+    guard states.count >= descriptor.count * descriptor.inputStride,
+          descriptor.inputStride >= KeccakF1600PermutationBatchDescriptor.stateByteCount,
+          descriptor.outputStride >= KeccakF1600PermutationBatchDescriptor.stateByteCount,
+          descriptor.inputStride.isMultiple(of: MemoryLayout<UInt64>.stride),
+          descriptor.outputStride.isMultiple(of: MemoryLayout<UInt64>.stride) else {
+        throw AppleZKProverError.invalidInputLayout
+    }
+
+    var output = Data(count: descriptor.count * descriptor.outputStride)
+    try states.withUnsafeBytes { inputRaw in
+        try output.withUnsafeMutableBytes { outputRaw in
+            guard let inputBase = inputRaw.bindMemory(to: UInt8.self).baseAddress,
+                  let outputBase = outputRaw.bindMemory(to: UInt8.self).baseAddress else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+
+            for stateIndex in 0..<descriptor.count {
+                let inputOffset = stateIndex * descriptor.inputStride
+                let lanes = (0..<25).map { lane in
+                    readUInt64LittleEndian(inputBase.advanced(by: inputOffset + lane * MemoryLayout<UInt64>.stride))
+                }
+                let permuted = try SHA3Oracle.keccakF1600Permutation(lanes)
+                let outputOffset = stateIndex * descriptor.outputStride
+                for lane in 0..<25 {
+                    storeUInt64LittleEndian(
+                        permuted[lane],
+                        to: outputBase.advanced(by: outputOffset + lane * MemoryLayout<UInt64>.stride)
+                    )
+                }
+            }
+        }
+    }
+    return output
+}
+
+func appendUInt64LittleEndian(_ value: UInt64, to data: inout Data) {
+    for shift in stride(from: 0, to: 64, by: 8) {
+        data.append(UInt8((value >> UInt64(shift)) & 0xff))
+    }
+}
+
+func readUInt64LittleEndian(_ source: UnsafePointer<UInt8>) -> UInt64 {
+    var value: UInt64 = 0
+    for byteIndex in 0..<MemoryLayout<UInt64>.stride {
+        value |= UInt64(source[byteIndex]) << UInt64(byteIndex * 8)
+    }
+    return value
+}
+
+func storeUInt64LittleEndian(_ value: UInt64, to destination: UnsafeMutablePointer<UInt8>) {
+    for byteIndex in 0..<MemoryLayout<UInt64>.stride {
+        destination[byteIndex] = UInt8((value >> UInt64(byteIndex * 8)) & 0xff)
+    }
 }
 
 func makeSeries(_ samples: [Double]) -> SeriesReport {
@@ -579,6 +728,14 @@ func emitJSON(_ report: BenchmarkSuiteReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: KeccakPermutationBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitText(_ report: BenchmarkReport) {
     print("zkmetal-bench")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -636,6 +793,53 @@ func emitText(_ report: BenchmarkReport) {
     print("  root         : \(report.verification.rootHex)")
     if let cpuRoot = report.verification.cpuRootHex {
         print("  cpu root     : \(cpuRoot)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
+func emitText(_ report: KeccakPermutationBenchmarkReport) {
+    print("zkmetal-bench keccak-f1600")
+    print("  states       : \(report.configuration.stateCount)")
+    print("  state bytes  : \(KeccakF1600PermutationBatchDescriptor.stateByteCount)")
+    print("  state stride : \(report.configuration.stateStride)")
+    print("  output stride: \(report.configuration.outputStride)")
+    print("  kernel       : \(report.configuration.kernelFamily)")
+    if let simdgroups = report.configuration.simdgroupsPerThreadgroup {
+        print("  simd/tg      : \(simdgroups)")
+    }
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  apple7       : \(device.supportsApple7)")
+        print("  apple4       : \(device.supportsApple4)")
+        print("  SIMD reduce  : \(device.supportsSIMDReductions)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let permutation = report.permutation {
+        printSeconds("perm wall", permutation.wallSeconds)
+        if let gpu = permutation.gpuSeconds {
+            printSeconds("perm gpu ", gpu)
+        }
+        print("  states/sec   : \(String(format: "%.2f", permutation.hashInvocationsPerSecond))")
+        print("  state B/s    : \(String(format: "%.2f", permutation.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
     }
     if let matchedCPU = report.verification.matchedCPU {
         print("  match        : \(matchedCPU)")
@@ -929,6 +1133,162 @@ func runBenchmark(_ config: BenchConfig) throws -> BenchmarkReport {
     #endif
 }
 
+func makeKeccakPermutationConfigReport(
+    config: BenchConfig,
+    descriptor: KeccakF1600PermutationBatchDescriptor,
+    effectiveSIMDGroupsPerThreadgroup: Int?
+) -> KeccakPermutationBenchmarkConfigReport {
+    KeccakPermutationBenchmarkConfigReport(
+        stateCount: descriptor.count,
+        stateStride: descriptor.inputStride,
+        outputStride: descriptor.outputStride,
+        kernelFamily: config.permutationKernelFamily.rawValue,
+        simdgroupsPerThreadgroup: effectiveSIMDGroupsPerThreadgroup,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+@inline(never)
+func runKeccakPermutationBenchmark(_ config: BenchConfig) throws -> KeccakPermutationBenchmarkReport {
+    let descriptor = KeccakF1600PermutationBatchDescriptor(count: config.leafCount)
+    let states = makeDeterministicKeccakF1600States(count: descriptor.count)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = try cpuKeccakF1600PermutationBatch(states: states, descriptor: descriptor)
+        let digest = SHA3Oracle.sha3_256(cpuOutput).hexString
+        return KeccakPermutationBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: makeKeccakPermutationConfigReport(
+                config: config,
+                descriptor: descriptor,
+                effectiveSIMDGroupsPerThreadgroup: nil
+            ),
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            permutation: nil,
+            verification: KeccakPermutationVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let batcher = KeccakF1600PermutationBatcher(context: context)
+    let plan = try batcher.makePermutationPlan(
+        descriptor: descriptor,
+        kernelFamily: config.permutationKernelFamily,
+        simdgroupsPerThreadgroup: config.permutationKernelFamily == .simdgroup
+            ? config.permutationSIMDGroupsPerThreadgroup
+            : nil
+    )
+    let effectiveSIMDGroupsPerThreadgroup = config.permutationKernelFamily == .simdgroup
+        ? plan.simdgroupsPerThreadgroup
+        : nil
+    try context.serializePipelineArchiveIfNeeded()
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.permute(states: states)
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    var output = Data()
+
+    for _ in 0..<config.iterations {
+        let result = try plan.permute(states: states)
+        wallSeconds.append(result.stats.cpuWallSeconds)
+        gpuSeconds.append(result.stats.gpuSeconds)
+        output = result.states
+    }
+
+    let cpuOutput = config.verifyWithCPU
+        ? try cpuKeccakF1600PermutationBatch(states: states, descriptor: descriptor)
+        : nil
+    let matchedCPU = cpuOutput.map { $0 == output }
+    let outputDigest = SHA3Oracle.sha3_256(output).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256($0).hexString }
+
+    return KeccakPermutationBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: makeKeccakPermutationConfigReport(
+            config: config,
+            descriptor: descriptor,
+            effectiveSIMDGroupsPerThreadgroup: effectiveSIMDGroupsPerThreadgroup
+        ),
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        permutation: makeMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            hashInvocations: descriptor.count,
+            inputBytes: Double(descriptor.count) * Double(KeccakF1600PermutationBatchDescriptor.stateByteCount)
+        ),
+        verification: KeccakPermutationVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = try cpuKeccakF1600PermutationBatch(states: states, descriptor: descriptor)
+    let digest = SHA3Oracle.sha3_256(cpuOutput).hexString
+    return KeccakPermutationBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: makeKeccakPermutationConfigReport(
+            config: config,
+            descriptor: descriptor,
+            effectiveSIMDGroupsPerThreadgroup: nil
+        ),
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        permutation: nil,
+        verification: KeccakPermutationVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+func verificationFailureMessages(in report: KeccakPermutationBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        let simdgroups = report.configuration.simdgroupsPerThreadgroup.map { " simdgroups/tg=\($0)" } ?? ""
+        return [
+            "keccak-f1600 kernel=\(report.configuration.kernelFamily)\(simdgroups) states=\(report.configuration.stateCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
 @inline(never)
 func runCLI() -> Int32 {
     do {
@@ -943,7 +1303,21 @@ func runCLI() -> Int32 {
             fputs("error: \(error.localizedDescription)\n\n\(BenchConfig.usage)\n", stderr)
             return 1
         }
-        if config.suite {
+        if config.keccakF1600Permutation {
+            let report = try runKeccakPermutationBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.suite {
             let reports = try makeSuiteConfigs(config).map { try runBenchmark($0) }
             let suite = makeSuiteReport(config: config, reports: reports)
             if config.format == .json {

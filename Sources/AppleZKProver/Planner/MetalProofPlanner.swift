@@ -90,7 +90,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
         )
 
         return MerkleTuningResult(
-            executionPlan: makeMerklePlan(
+            executionPlan: try makeMerklePlan(
                 workload: workload,
                 selected: winner.spec,
                 leafCount: leafCount,
@@ -128,6 +128,9 @@ public final class MetalProofPlanner: @unchecked Sendable {
         guard leafBytes >= 0, leafStride >= leafBytes else {
             throw AppleZKProverError.invalidInputLayout
         }
+        guard leafBytes <= SHA3Oracle.sha3_256Rate else {
+            throw AppleZKProverError.unsupportedOneBlockLength(leafBytes)
+        }
 
         let workload = merkleWorkload(
             leafCount: leafCount,
@@ -141,7 +144,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
             shaderHash: context.shaderSourceHash,
             protocolHash: protocolHash
         ) {
-            return makeMerklePlan(
+            return try makeMerklePlan(
                 workload: workload,
                 selected: persisted.winner,
                 leafCount: leafCount,
@@ -155,7 +158,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
             leafCount: leafCount,
             leafBytes: leafBytes
         )
-        return makeMerklePlan(
+        return try makeMerklePlan(
             workload: workload,
             selected: selected,
             leafCount: leafCount,
@@ -195,7 +198,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
             leafCount: leafCount,
             leafBytes: leafBytes
         )
-        let executionPlan = makeMerklePlan(
+        let executionPlan = try makeMerklePlan(
             workload: workload,
             selected: selected,
             leafCount: leafCount,
@@ -328,9 +331,17 @@ public final class MetalProofPlanner: @unchecked Sendable {
         leafCount: Int,
         leafBytes: Int,
         leafStride: Int
-    ) -> ExecutionPlan {
-        let scratchBytes = max(32, leafCount * 32)
-        let arenaBytes = scratchBytes * 2 + 256
+    ) throws -> ExecutionPlan {
+        let scratchBytes = max(32, try checkedBufferLength(leafCount, 32))
+        let doubledScratch = scratchBytes.multipliedReportingOverflow(by: 2)
+        guard !doubledScratch.overflow else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let arenaBytes = doubledScratch.partialValue.addingReportingOverflow(256)
+        guard !arenaBytes.overflow else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let uploadBytes = try checkedBufferLength(leafCount, leafStride)
         let leafKernel = SHA3OneBlockKernel.spec(forInputLength: leafBytes)
         let kernels: [KernelSpec]
         if selected.family == .treelet {
@@ -344,8 +355,8 @@ public final class MetalProofPlanner: @unchecked Sendable {
             queueMode: selected.queueMode,
             kernels: kernels,
             bufferLayout: ExecutionPlan.BufferLayout(
-                uploadBytes: leafCount * leafStride,
-                privateArenaBytes: arenaBytes,
+                uploadBytes: uploadBytes,
+                privateArenaBytes: arenaBytes.partialValue,
                 readbackBytes: 32
             ),
             commandBufferChunks: 1,
@@ -674,6 +685,11 @@ public final class MetalPlannedMerkleCommitPlan: @unchecked Sendable {
 
     public func commitWithObservation(leaves: Data) throws -> PlannedMerkleCommitment {
         let measured = try commitPlan.commitMeasured(leaves: leaves)
+        return try makeObservedCommitment(measured)
+    }
+
+    public func commitVerified(leaves: Data) throws -> PlannedMerkleCommitment {
+        let measured = try commitPlan.commitMeasuredVerified(leaves: leaves)
         return try makeObservedCommitment(measured)
     }
 

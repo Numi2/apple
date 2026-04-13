@@ -91,6 +91,32 @@ final class MerkleTests: XCTestCase {
         }
     }
 
+    func testGPUMerkleVerifiedCommitMatchesCPU() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let leafCount = 32
+        let leafLength = 64
+        let leaves = Self.makeLeaves(count: leafCount, leafLength: leafLength, salt: 37)
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let commitment = try committer.commitRawLeavesVerified(
+            leaves: leaves,
+            leafCount: leafCount,
+            leafStride: leafLength,
+            leafLength: leafLength
+        )
+        let cpuRoot = try MerkleOracle.rootSHA3_256(
+            rawLeaves: leaves,
+            leafCount: leafCount,
+            leafStride: leafLength,
+            leafLength: leafLength
+        )
+
+        XCTAssertEqual(commitment.root, cpuRoot)
+    }
+
     func testGPURawLeafMerklePlanCanBeReused() throws {
         guard let _ = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -118,6 +144,55 @@ final class MerkleTests: XCTestCase {
             let gpu = try plan.commit(leaves: leaves)
             XCTAssertEqual(cpu, gpu.root)
             try plan.clearReusableBuffers()
+        }
+    }
+
+    func testGPURawLeafMerklePlanSupportsSingleUploadRingSlot() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let leafCount = 16
+        let leafLength = 64
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let plan = try committer.makeRawLeavesCommitPlan(
+            leafCount: leafCount,
+            leafStride: leafLength,
+            leafLength: leafLength,
+            configuration: MerkleCommitPlanConfiguration(uploadRingSlotCount: 1)
+        )
+
+        for salt in [11, 97, 211] {
+            let leaves = Self.makeLeaves(count: leafCount, leafLength: leafLength, salt: salt)
+            let cpu = try MerkleOracle.rootSHA3_256(
+                rawLeaves: leaves,
+                leafCount: leafCount,
+                leafStride: leafLength,
+                leafLength: leafLength
+            )
+            let gpu = try plan.commit(leaves: leaves)
+            XCTAssertEqual(cpu, gpu.root)
+        }
+    }
+
+    func testGPURawLeafMerklePlanRejectsInvalidUploadRingSlotCount() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+
+        XCTAssertThrowsError(
+            try committer.makeRawLeavesCommitPlan(
+                leafCount: 2,
+                leafStride: 32,
+                leafLength: 32,
+                configuration: MerkleCommitPlanConfiguration(uploadRingSlotCount: 0)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
     }
 

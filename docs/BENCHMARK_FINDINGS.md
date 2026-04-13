@@ -21,6 +21,7 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - Suite allocation checks use the largest selected suite leaf length, so oversized benchmark matrices fail during argument validation instead of reaching buffer construction.
 - Text output now has a compact suite summary with each case's target, minimum hash wall time, minimum Merkle wall time, and CPU verification status.
 - CPU verification is now a hard benchmark gate: when enabled, any false or missing CPU match emits the report, writes a mismatch summary to stderr, and exits with status `2`.
+- Added a dedicated Keccak-F1600 permutation-only benchmark mode for Plonky3-style raw permutation relevance. It emits schema v1 JSON reports separate from the existing hash/Merkle schema v4 reports and verifies the output digest against the CPU permutation oracle.
 
 ## Verification Commands
 
@@ -32,12 +33,14 @@ swift run zkmetal-bench --suite --leaves 256 --iterations 1 --warmups 0 --no-pip
 swift run zkmetal-bench --suite --suite-leaf-bytes 32 --suite-hashes sha3-256 --leaves 128 --iterations 1 --warmups 0 --no-pipeline-archive
 swift run zkmetal-bench --suite --suite-leaf-bytes 32,137 --leaves 128 --iterations 1 --warmups 0 --no-pipeline-archive --json
 swift run zkmetal-bench --suite --suite-leaf-bytes 0,136 --leaves 2305843009213693952 --iterations 1 --warmups 0 --no-pipeline-archive --json
+swift run zkmetal-bench --keccakf-permutation --states 128 --iterations 1 --warmups 0 --no-pipeline-archive --json
+swift run zkmetal-bench --keccakf-permutation --states 64 --permutation-kernel simdgroup --iterations 1 --warmups 0 --no-pipeline-archive --json
 swift build -c release -Xswiftc -Osize
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --json > BenchmarkBaselines/apple-m4-apple9-suite-2026-04-13.json
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json > BenchmarkBaselines/apple-m4-apple9-suite-simdgroup-2026-04-13.json
 ```
 
-Observed result: `swift test -c release -Xswiftc -Osize` passed 43 tests. Both optimized JSON suites produced 12 benchmark reports and every report had `verification.matchedCPU == true`. The invalid `137`-byte suite input failed during argument validation with the expected fixed-rate range error. The oversized suite failed during argument validation with the expected leaf-buffer size error.
+Observed result: `swift test -c release -Xswiftc -Osize` passed 43 tests at baseline capture time. Both optimized JSON suites produced 12 benchmark reports and every report had `verification.matchedCPU == true`. The invalid `137`-byte suite input failed during argument validation with the expected fixed-rate range error. The oversized suite failed during argument validation with the expected leaf-buffer size error. Later Keccak-F1600 scalar and simdgroup smoke reports produced schema v1 JSON with `verification.matchedCPU == true`; these smoke runs are correctness checks, not checked-in performance baselines.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 

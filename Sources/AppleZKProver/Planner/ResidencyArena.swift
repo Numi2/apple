@@ -69,18 +69,25 @@ public final class ResidencyArena: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let alignedOffset = Self.align(cursor, to: alignment)
-        let end = alignedOffset + max(1, length)
-        guard end <= capacity else {
+        let alignedOffset = try Self.align(cursor, to: alignment)
+        let end = alignedOffset.addingReportingOverflow(max(1, length))
+        guard !end.overflow, end.partialValue <= capacity else {
             throw AppleZKProverError.failedToCreateBuffer(label: "ResidencyArena.\(role.rawValue)", length: length)
         }
-        cursor = end
+        cursor = end.partialValue
         return ArenaSlice(buffer: buffer, offset: alignedOffset, length: length, role: role)
     }
 
-    private static func align(_ value: Int, to alignment: Int) -> Int {
+    private static func align(_ value: Int, to alignment: Int) throws -> Int {
         let remainder = value % alignment
-        return remainder == 0 ? value : value + alignment - remainder
+        guard remainder != 0 else {
+            return value
+        }
+        let aligned = value.addingReportingOverflow(alignment - remainder)
+        guard !aligned.overflow else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return aligned.partialValue
     }
 }
 #endif

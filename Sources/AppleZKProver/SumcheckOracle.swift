@@ -10,7 +10,7 @@ public enum M31Field {
     }
 }
 
-public struct SumcheckChunkOracleResult: Sendable {
+public struct SumcheckChunkOracleResult: Equatable, Sendable {
     public let finalVector: [UInt32]
     public let coefficients: [UInt32]
     public let challenges: [UInt32]

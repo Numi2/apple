@@ -54,6 +54,20 @@ public final class Keccak256BatchHasher: @unchecked Sendable {
         )
         return try plan.hash(messages: messages)
     }
+
+    public func hashFixedOneBlockVerified(
+        messages: Data,
+        descriptor: FixedMessageBatchDescriptor,
+        kernelFamily: FixedOneBlockHashKernelFamily = .scalar,
+        simdgroupsPerThreadgroup: Int? = nil
+    ) throws -> GPUHashBatchResult {
+        let plan = try makeFixedOneBlockPlan(
+            descriptor: descriptor,
+            kernelFamily: kernelFamily,
+            simdgroupsPerThreadgroup: simdgroupsPerThreadgroup
+        )
+        return try plan.hashVerified(messages: messages)
+    }
 }
 
 public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
@@ -150,6 +164,9 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
         defer { executionLock.unlock() }
 
         try MetalBufferFactory.copy(messages, into: inputBuffer, byteCount: declaredInputLength)
+        if descriptor.outputStride > 32 {
+            MetalBufferFactory.zeroSharedBuffer(outputBuffer)
+        }
 
         let start = DispatchTime.now()
         guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
@@ -183,6 +200,12 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
         return GPUHashBatchResult(digests: data, stats: GPUExecutionStats(cpuWallSeconds: wall, gpuSeconds: gpu))
     }
 
+    public func hashVerified(messages: Data) throws -> GPUHashBatchResult {
+        let result = try hash(messages: messages)
+        try verifyCPU(messages: messages, result: result)
+        return result
+    }
+
     public func clearReusableBuffers() {
         executionLock.lock()
         defer { executionLock.unlock() }
@@ -209,6 +232,25 @@ public final class Keccak256FixedOneBlockHashPlan: @unchecked Sendable {
                 simdgroupCount: descriptor.count,
                 simdgroupsPerThreadgroup: Int(params.simdgroupsPerThreadgroup)
             )
+        }
+    }
+
+    private func verifyCPU(messages: Data, result: GPUHashBatchResult) throws {
+        guard messages.count >= declaredInputLength,
+              result.digests.count >= outputLength else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        for index in 0..<descriptor.count {
+            let messageStart = index * descriptor.messageStride
+            let digestStart = index * descriptor.outputStride
+            let message = messages.subdata(in: messageStart..<(messageStart + descriptor.messageLength))
+            let digest = result.digests.subdata(in: digestStart..<(digestStart + 32))
+            guard digest == KeccakOracle.keccak_256(message) else {
+                throw AppleZKProverError.correctnessValidationFailed(
+                    "Keccak-256 GPU digest did not match the CPU oracle at message \(index)."
+                )
+            }
         }
     }
 }
