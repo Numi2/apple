@@ -10,7 +10,7 @@ private struct MerkleFuseParams {
     var nodeCount: UInt32
 }
 
-private struct MerkleSubtree32Params {
+private struct MerkleTreeletParams {
     var leafCount: UInt32
     var inputStride: UInt32
     var subtreeLeafCount: UInt32
@@ -43,21 +43,34 @@ enum MerkleKernelSpecs {
         )
     }
 
-    static func treelet32ByteLeaves(depth: Int, family: KernelSpec.Family = .treelet) -> KernelSpec {
+    static func treeletLeaves(
+        leafBytes: Int,
+        depth: Int,
+        family: KernelSpec.Family = .treelet
+    ) -> KernelSpec {
         KernelSpec(
-            kernel: "sha3_256_merkle_treelet_32byte_leaves",
+            kernel: "sha3_256_merkle_treelet_leaves_specialized",
             family: family,
             queueMode: .metal3,
             functionConstants: .plannerConstants([
-                (.leafBytes, 32),
+                (.leafBytes, UInt64(leafBytes)),
                 (.parentBytes, 32),
                 (.treeArity, 2),
                 (.treeletDepth, UInt64(depth)),
-                (.fixedWidthCase, 32),
+                (.fixedWidthCase, UInt64(fixedWidthCase(forLeafBytes: leafBytes))),
                 (.barrierCadence, 1),
             ]),
             threadsPerThreadgroup: UInt16(1 << max(0, min(depth, 15)))
         )
+    }
+
+    private static func fixedWidthCase(forLeafBytes leafBytes: Int) -> Int {
+        switch leafBytes {
+        case 32, 64, 128, 136:
+            return leafBytes
+        default:
+            return 0
+        }
     }
 }
 
@@ -240,7 +253,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     public let subtreeLeafCount: Int
     private let executionLock = NSLock()
     private var leafParams: SHA3BatchParams
-    private var subtreeParams: MerkleSubtree32Params?
+    private var subtreeParams: MerkleTreeletParams?
 
     init(
         context: MetalContext,
@@ -303,12 +316,15 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             leafLength: leafLength,
             device: context.device,
             pipelineProvider: {
-                try context.pipeline(for: MerkleKernelSpecs.treelet32ByteLeaves(depth: 3))
+                try context.pipeline(for: MerkleKernelSpecs.treeletLeaves(leafBytes: leafLength, depth: 3))
             }
         )
         if selectedSubtreeLeafCount > 0 {
             let subtreePipeline = try context.pipeline(
-                for: MerkleKernelSpecs.treelet32ByteLeaves(depth: Self.log2(selectedSubtreeLeafCount))
+                for: MerkleKernelSpecs.treeletLeaves(
+                    leafBytes: leafLength,
+                    depth: Self.log2(selectedSubtreeLeafCount)
+                )
             )
             self.subtreePipeline = subtreePipeline
             self.subtreeLeafCount = selectedSubtreeLeafCount
@@ -323,7 +339,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             outputStride: 32
         )
         if subtreeLeafCount > 1 {
-            self.subtreeParams = MerkleSubtree32Params(
+            self.subtreeParams = MerkleTreeletParams(
                 leafCount: leafCount32,
                 inputStride: leafStride32,
                 subtreeLeafCount: try checkedUInt32(subtreeLeafCount)
@@ -389,7 +405,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             subtreeEncoder.setComputePipelineState(subtreePipeline)
             subtreeEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
             subtreeEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
-            subtreeEncoder.setBytes(&subtreeParams, length: MemoryLayout<MerkleSubtree32Params>.stride, index: 2)
+            subtreeEncoder.setBytes(&subtreeParams, length: MemoryLayout<MerkleTreeletParams>.stride, index: 2)
             subtreeEncoder.setThreadgroupMemoryLength(subtreeLeafCount * 32, index: 0)
             subtreeEncoder.dispatchThreadgroups(
                 MTLSize(width: leafCount / subtreeLeafCount, height: 1, depth: 1),
@@ -514,14 +530,6 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         device: MTLDevice,
         pipelineProvider: () throws -> MTLComputePipelineState
     ) throws -> Int {
-        guard leafLength == 32 else {
-            switch mode {
-            case .disabled:
-                return 0
-            case .automatic, .fixed:
-                throw AppleZKProverError.invalidInputLayout
-            }
-        }
         guard mode != .disabled else {
             return 0
         }

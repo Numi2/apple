@@ -39,7 +39,7 @@ The objective is superstep cost: median GPU time plus median CPU submit time, wi
 The planner only races implementations that are currently distinct and correctness-gated. Today that means:
 
 - scalar Merkle commitment,
-- binary treelet Merkle commitment for 32-byte leaves, starting at depth 3 and depth 4 where feasible.
+- binary treelet Merkle commitment for fixed-rate SHA3 leaves (`0...136` bytes), starting at depth 3 and depth 4 where feasible.
 
 Apple7 simdgroup Merkle and tuned sum-check families remain design targets, but they are not eligible for measured winner persistence until their kernels are real cooperative implementations with deterministic and randomized differential tests. This avoids storing misleading records for a label that does not correspond to different GPU work.
 

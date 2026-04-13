@@ -37,7 +37,7 @@ final class PlannerTests: XCTestCase {
                 (.treeArity, 2),
             ])
         )
-        let treelet = MerkleKernelSpecs.treelet32ByteLeaves(depth: 3)
+        let treelet = MerkleKernelSpecs.treeletLeaves(leafBytes: 32, depth: 3)
         let record = PlanRecord(
             device: device,
             workload: workload,
@@ -260,6 +260,30 @@ final class PlannerTests: XCTestCase {
         )
         XCTAssertEqual(persisted?.winner, result.winner.winner)
         XCTAssertEqual(persisted?.confidence, result.winner.confidence)
+    }
+
+    func testMerklePlannerIncludesNon32ByteTreeletCandidates() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let planner = MetalProofPlanner(context: try MetalContext(device: device))
+        let workload = WorkloadSignature(
+            stage: .merkleCommit,
+            field: .bytes,
+            inputLog2: 10,
+            leafBytes: 64,
+            arity: 2,
+            roundsPerSuperstep: 1,
+            fixedWidthCase: 64
+        )
+
+        let candidates = planner.merkleCandidates(workload: workload, leafCount: 1024)
+        XCTAssertTrue(candidates.contains { candidate in
+            candidate.family == .treelet
+                && candidate.functionConstants[PlannerFunctionConstant.leafBytes.rawValue] == 64
+                && candidate.functionConstants[PlannerFunctionConstant.treeletDepth.rawValue] == 3
+        })
     }
 
     func testPlannedMerkleCommitUsesPersistedWinnerAndRecordsLiveObservation() throws {
@@ -597,7 +621,7 @@ final class PlannerTests: XCTestCase {
             roundsPerSuperstep: 1,
             fixedWidthCase: 32
         )
-        let treelet = MerkleKernelSpecs.treelet32ByteLeaves(depth: 3)
+        let treelet = MerkleKernelSpecs.treeletLeaves(leafBytes: 32, depth: 3)
         return PlanRecord(
             device: device,
             workload: workload,

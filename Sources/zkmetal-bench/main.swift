@@ -234,7 +234,7 @@ struct BenchConfig {
           --verify / --no-verify     Enable or disable CPU root check. Default: verify
           --pipeline-archive PATH    Read/write Metal binary archive at PATH
           --no-pipeline-archive      Disable Metal binary archive use
-          --merkle-subtree-auto      Enable benchmark-tuned 32-byte leaf subtree path
+          --merkle-subtree-auto      Enable benchmark-tuned fixed-rate leaf subtree path
           --merkle-subtree-leaves N  Use N leaves per lower Merkle subtree; N must be a power of two
           --no-merkle-subtree        Disable lower subtree path. Default
         """
@@ -290,13 +290,8 @@ struct BenchConfig {
         case .disabled:
             break
         case .automatic:
-            guard suite ? suiteLeafLengths.allSatisfy({ $0 == 32 }) : leafLength == 32 else {
-                return BenchError.invalidArgument("--merkle-subtree-auto currently requires --leaf-bytes 32.")
-            }
+            break
         case let .fixed(value):
-            guard suite ? suiteLeafLengths.allSatisfy({ $0 == 32 }) : leafLength == 32 else {
-                return BenchError.invalidArgument("--merkle-subtree-leaves currently requires --leaf-bytes 32.")
-            }
             guard value >= 2, value.nonzeroBitCount == 1 else {
                 return BenchError.invalidArgument("--merkle-subtree-leaves must be a power of two greater than or equal to 2.")
             }

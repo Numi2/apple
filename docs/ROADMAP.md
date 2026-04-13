@@ -8,7 +8,7 @@ This project is an Apple-silicon-first backend for hash-heavy transparent provin
 - GPU hash: rate-bounded SHA3-256 and Keccak-256 for `0...136` byte messages.
 - GPU specialization: exact 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak kernels.
 - GPU Keccak-F: permutation-only batch plans are implemented with a scalar baseline kernel, opt-in Apple7+ simdgroup kernel, CPU differential tests, and standalone JSON benchmark reports.
-- GPU Merkle: raw leaves are uploaded once, parents stay GPU-resident, small upper-tree reductions are fused in threadgroup memory, only the 32-byte root is copied back. A 32-byte lower-subtree treelet kernel is implemented and can be selected by the planner after a correctness-gated short race.
+- GPU Merkle: raw leaves are uploaded once, parents stay GPU-resident, small upper-tree reductions are fused in threadgroup memory, only the 32-byte root is copied back. Lower-subtree treelet kernels now cover the fixed-rate SHA3 leaf contract (`0...136` bytes) and can be selected by the planner after correctness-gated races.
 - Runtime: Apple GPU family detection, nonuniform dispatch, reusable hash/Merkle execution plans with explicit buffer clearing, CPU-verified accelerator APIs, `KernelSpec`-keyed pipeline cache, optional Metal binary archive persistence, ring-buffered shared upload staging, private residency arenas, and SQLite plan history.
 - Bench: warmups, repeated measurements, CPU verification, text output, and JSON output.
 - Baselines: first optimized Apple M4 / Apple9 suite baseline is checked in under `BenchmarkBaselines/`.
@@ -61,7 +61,7 @@ This is the first performance battlefield.
 - Specialize SHA3 paths for 32-byte, 64-byte, 128-byte, and full-rate 136-byte absorbs. The 32-byte, 64-byte, 128-byte, and full-rate 136-byte SHA3/Keccak paths are implemented.
 - Keep Keccak-256 domain handling separate from SHA3-256 and add Keccak-domain Merkle only as a distinct commitment API.
 - Add Keccak-F permutation-only batch kernels for Plonky3-style benchmark relevance. Scalar and opt-in simdgroup batch plans are implemented with CPU verification and a dedicated `zkmetal-bench --keccakf-permutation` JSON report.
-- Extend fused threadgroup-local Merkle subtree kernels beyond 32-byte leaves where measurements justify it.
+- Extend fused threadgroup-local Merkle subtree kernels beyond 32-byte leaves where measurements justify it. The first fixed-rate extension covers `0...136` byte SHA3 leaves with CPU/GPU differential tests; Apple M4 / Apple9 release smoke measurements showed wins across the measured 64-, 128-, 135-, and 136-byte slice.
 - Extend fused multi-level parent reduction into more tree shapes where measurements justify it.
 - Add proof-node extraction kernels so Merkle openings can remain mostly GPU-resident.
 

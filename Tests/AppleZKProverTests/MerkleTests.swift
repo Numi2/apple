@@ -255,6 +255,50 @@ final class MerkleTests: XCTestCase {
         XCTAssertEqual(cpu, gpu.root)
     }
 
+    func testGPUMerkleSubtreePathSupportsFixedRateLeafLengths() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let leafCount = 256
+        let subtreeLeafCount = 16
+        let cases = [
+            (leafLength: 0, leafStride: 5, salt: 7),
+            (leafLength: 64, leafStride: 72, salt: 31),
+            (leafLength: 128, leafStride: 136, salt: 59),
+            (leafLength: 135, leafStride: 144, salt: 83),
+            (leafLength: 136, leafStride: 144, salt: 109),
+        ]
+
+        for testCase in cases {
+            let leaves = Self.makeLeaves(
+                count: leafCount,
+                leafStride: testCase.leafStride,
+                leafLength: testCase.leafLength,
+                salt: testCase.salt
+            )
+            let cpu = try MerkleOracle.rootSHA3_256(
+                rawLeaves: leaves,
+                leafCount: leafCount,
+                leafStride: testCase.leafStride,
+                leafLength: testCase.leafLength
+            )
+
+            let plan = try committer.makeRawLeavesCommitPlan(
+                leafCount: leafCount,
+                leafStride: testCase.leafStride,
+                leafLength: testCase.leafLength,
+                configuration: MerkleCommitPlanConfiguration(leafSubtreeMode: .fixed(subtreeLeafCount))
+            )
+            XCTAssertEqual(plan.subtreeLeafCount, subtreeLeafCount)
+
+            let gpu = try plan.commitVerified(leaves: leaves)
+            XCTAssertEqual(cpu, gpu.root, "Merkle treelet mismatch for leaf length \(testCase.leafLength)")
+        }
+    }
+
     func testGPUMerklePlanRejectsUInt32OverflowingLeafCount() throws {
         guard let _ = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")

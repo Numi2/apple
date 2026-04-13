@@ -239,17 +239,17 @@ public final class MetalProofPlanner: @unchecked Sendable {
             ),
         ]
 
-        if leafBytes == 32,
+        if leafBytes <= SHA3Oracle.sha3_256Rate,
            leafCount >= 8,
            leafCount.nonzeroBitCount == 1 {
-            candidates.append(MerkleKernelSpecs.treelet32ByteLeaves(depth: 3))
+            candidates.append(MerkleKernelSpecs.treeletLeaves(leafBytes: leafBytes, depth: 3))
         }
 
-        if leafBytes == 32,
+        if leafBytes <= SHA3Oracle.sha3_256Rate,
            leafCount >= 16,
            leafCount.nonzeroBitCount == 1,
            context.device.maxThreadgroupMemoryLength >= 16 * 32 {
-            candidates.append(MerkleKernelSpecs.treelet32ByteLeaves(depth: 4))
+            candidates.append(MerkleKernelSpecs.treeletLeaves(leafBytes: leafBytes, depth: 4))
         }
 
         if context.capabilities.supportsMetal4Queue {
@@ -538,7 +538,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
         case .simdgroup:
             score += context.capabilities.supportsSIMDReductions && (leafBytes == 32 || leafBytes == 64) ? 40 : -100
         case .treelet:
-            score += leafBytes == 32 && leafCount >= 512 ? 60 : 15
+            score += (leafBytes == 32 || leafBytes == 64) && leafCount >= 512 ? 60 : 15
         }
         if spec.queueMode == .metal4 {
             score += leafCount <= 4096 ? 5 : 0
