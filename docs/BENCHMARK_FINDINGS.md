@@ -23,6 +23,9 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - CPU verification is now a hard benchmark gate: when enabled, any false or missing CPU match emits the report, writes a mismatch summary to stderr, and exits with status `2`.
 - Added a dedicated Keccak-F1600 permutation-only benchmark mode for Plonky3-style raw permutation relevance. It emits schema v1 JSON reports separate from the existing hash/Merkle schema v4 reports and verifies the output digest against the CPU permutation oracle.
 - Extended the lower Merkle treelet path from 32-byte leaves to the full fixed-rate SHA3 leaf contract (`0...136` bytes). The new treelet remains a SHA3 Merkle commitment path: standalone Keccak-256 suite rows still use SHA3 for the Merkle root, matching the existing commitment API.
+- Added `zkmetal-bench --merkle-opening` for raw-leaf SHA3 opening extraction. It emits a schema v1 opening report with root, proof digest, sibling count, CPU proof match, and opening timing without dumping proof nodes.
+- Reworked threadgroup-local Merkle treelet and fused-upper reductions to use ping-pong scratch halves, eliminating the intra-threadgroup read/write overlap that parent compaction could otherwise create.
+- Added treelet-aware opening extraction: selected lower treelets now write the requested lower sibling path on GPU, then the upper path is extracted from the resident subtree-root tree.
 
 ## Verification Commands
 
@@ -37,9 +40,11 @@ swift run zkmetal-bench --suite --suite-leaf-bytes 0,136 --leaves 23058430092136
 swift run zkmetal-bench --keccakf-permutation --states 128 --iterations 1 --warmups 0 --no-pipeline-archive --json
 swift run zkmetal-bench --keccakf-permutation --states 64 --permutation-kernel simdgroup --iterations 1 --warmups 0 --no-pipeline-archive --json
 swift run zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256,keccak-256 --leaves 256 --iterations 1 --warmups 0 --no-pipeline-archive --merkle-subtree-leaves 16 --json > /tmp/applezk-treelet-fixedrate-suite.json
+swift run zkmetal-bench --merkle-opening --leaves 1024 --leaf-bytes 135 --opening-leaf-index 777 --merkle-subtree-auto --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-merkle-opening.json
 swift build -c release -Xswiftc -Osize
 .build/release/zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256 --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --no-merkle-subtree --json > /tmp/applezk-release-scalar-fixedrate-suite.json
-.build/release/zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256 --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --merkle-subtree-auto --json > /tmp/applezk-release-treelet-fixedrate-suite.json
+.build/release/zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256 --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --merkle-subtree-auto --json > /tmp/applezk-release-auto-fixedrate-suite.json
+.build/release/zkmetal-bench --merkle-opening --leaves 16384 --leaf-bytes 135 --opening-leaf-index 7777 --merkle-subtree-auto --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-merkle-opening.json
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --json > BenchmarkBaselines/apple-m4-apple9-suite-2026-04-13.json
 .build/release/zkmetal-bench --suite --leaves 16384 --iterations 10 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json > BenchmarkBaselines/apple-m4-apple9-suite-simdgroup-2026-04-13.json
 ```
@@ -47,6 +52,8 @@ swift build -c release -Xswiftc -Osize
 Observed result: `swift test -c release -Xswiftc -Osize` passed 43 tests at baseline capture time. Both optimized JSON suites produced 12 benchmark reports and every report had `verification.matchedCPU == true`. The invalid `137`-byte suite input failed during argument validation with the expected fixed-rate range error. The oversized suite failed during argument validation with the expected leaf-buffer size error. Later Keccak-F1600 scalar and simdgroup smoke reports produced schema v1 JSON with `verification.matchedCPU == true`; these smoke runs are correctness checks, not checked-in performance baselines.
 
 After the fixed-rate Merkle treelet expansion, `swift test` and `swift test -c release -Xswiftc -Osize` passed 60 tests. The fixed-rate treelet smoke suite produced 8 benchmark reports and every report had `verification.matchedCPU == true`.
+
+After Merkle opening extraction was added, `swift test` passed 65 tests. After the race-free treelet scratch and treelet-aware opening work, `swift test` and `swift test -c release -Xswiftc -Osize` passed 66 tests. The debug opening smoke report had `verification.matchedCPU == true`, 10 siblings for 1,024 leaves, and selected a 64-leaf opening treelet. The optimized opening smoke report had `verification.matchedCPU == true`, 14 siblings for 16,384 leaves, and selected a 64-leaf opening treelet.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 
@@ -69,18 +76,26 @@ The smoke suite used debug builds, one timed iteration, no warmup, and pipeline 
 | SHA3-256 | 136 | 0.002503292 | 0.000982083 |
 | Keccak-256 | 136 | 0.001757708 | 0.001012000 |
 
-## Fixed-Rate Merkle Treelet Smoke
+## Fixed-Rate Merkle Auto Smoke
 
-The fixed-rate treelet smoke used release `-Osize`, 16,384 leaves, one warmup, five timed iterations, CPU verification enabled, pipeline archives disabled, and SHA3-256 standalone hash rows so the Merkle timings compare the same commitment workload. These are not checked-in release baselines; they are the first correctness-gated measurement of the generalized treelet path on this Apple M4 / Apple9 host.
+The fixed-rate Merkle smoke used release `-Osize`, 16,384 leaves, one warmup, five timed iterations, CPU verification enabled, pipeline archives disabled, and SHA3-256 standalone hash rows so the Merkle timings compare the same commitment workload. These are not checked-in release baselines. After switching treelet reductions to race-free ping-pong scratch, automatic subtree selection is intentionally conservative: it selected no treelet for 64- and 128-byte leaves on this host, and selected 64-leaf treelets for the near-rate 135- and 136-byte cases below.
 
-| Leaf bytes | Scalar Merkle min wall seconds | Treelet Merkle min wall seconds | Wall speedup | Scalar Merkle min GPU seconds | Treelet Merkle min GPU seconds | GPU speedup |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 0.001987458 | 0.001056833 | 1.88x | 0.001551125 | 0.000476750 | 3.25x |
-| 128 | 0.001951250 | 0.001167167 | 1.67x | 0.001602500 | 0.000544000 | 2.95x |
-| 135 | 0.002150500 | 0.001300209 | 1.65x | 0.001621375 | 0.000574250 | 2.82x |
-| 136 | 0.002462250 | 0.001267958 | 1.94x | 0.001913500 | 0.000649208 | 2.95x |
+| Leaf bytes | Selected subtree leaves | Scalar Merkle min wall seconds | Auto Merkle min wall seconds | Wall speedup | Scalar Merkle min GPU seconds | Auto Merkle min GPU seconds | GPU speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 135 | 64 | 0.001348959 | 0.000722208 | 1.87x | 0.000749125 | 0.000493250 | 1.52x |
+| 136 | 64 | 0.001771000 | 0.000996834 | 1.78x | 0.001132667 | 0.000567042 | 2.00x |
 
-Interpretation: the treelet launch fusion is beneficial across this fixed-rate slice on this host, including the generic 135-byte padding path. Future planner scoring should still rely on measured records instead of assuming the same win profile across devices and tree shapes.
+Interpretation: race-free treelets remain beneficial for near-rate SHA3 leaves on this Apple M4 / Apple9 host. Shorter fixed-rate leaves require explicit `--merkle-subtree-leaves` or planner tuning records rather than automatic promotion, because the scalar path was faster in the refreshed smoke data.
+
+## Merkle Opening Smoke
+
+The opening smoke used release `-Osize`, 16,384 leaves, 135-byte leaves, leaf index 7,777, one warmup, five timed iterations, CPU verification enabled, and pipeline archives disabled. The configured subtree mode was automatic and selected a 64-leaf treelet; lower siblings were extracted inside the selected treelet and upper siblings were extracted from the resident subtree-root tree.
+
+| Leaf bytes | Leaf index | Selected subtree leaves | Siblings | Opening min wall seconds | Opening min GPU seconds | CPU proof match |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 135 | 7777 | 64 | 14 | 0.001980750 | 0.001435917 | true |
+
+Interpretation: this is the first measurement gate for treelet-aware GPU opening extraction. It establishes correctness, JSON reporting, and a baseline for future tuning; the target treelet is currently hashed once for the root batch and once for lower-sibling extraction.
 
 ## Release Baseline
 

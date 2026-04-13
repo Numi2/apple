@@ -65,6 +65,56 @@ final class MerkleTests: XCTestCase {
         }
     }
 
+    func testCPUOpeningVerifiesAndRejectsTampering() throws {
+        let leafCount = 16
+        let leafLength = 64
+        let leaves = Self.makeLeaves(count: leafCount, leafStride: 72, leafLength: leafLength, salt: 41)
+        let opening = try MerkleOracle.openingSHA3_256(
+            rawLeaves: leaves,
+            leafCount: leafCount,
+            leafStride: 72,
+            leafLength: leafLength,
+            leafIndex: 11
+        )
+
+        XCTAssertEqual(opening.siblingHashes.count, 4)
+        XCTAssertTrue(try MerkleOracle.verifySHA3_256(opening: opening))
+        XCTAssertEqual(
+            opening.root,
+            try MerkleOracle.rootSHA3_256(
+                rawLeaves: leaves,
+                leafCount: leafCount,
+                leafStride: 72,
+                leafLength: leafLength
+            )
+        )
+
+        var tamperedLeaf = opening.leaf
+        tamperedLeaf[0] ^= 0x80
+        let tampered = MerkleOpeningProof(
+            leafIndex: opening.leafIndex,
+            leaf: tamperedLeaf,
+            siblingHashes: opening.siblingHashes,
+            root: opening.root
+        )
+        XCTAssertFalse(try MerkleOracle.verifySHA3_256(opening: tampered))
+    }
+
+    func testCPUOpeningRejectsInvalidLeafIndex() throws {
+        let leaves = Self.makeLeaves(count: 4, leafLength: 32)
+        XCTAssertThrowsError(
+            try MerkleOracle.openingSHA3_256(
+                rawLeaves: leaves,
+                leafCount: 4,
+                leafStride: 32,
+                leafLength: 32,
+                leafIndex: 4
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     #if canImport(Metal)
     func testGPUMerkleMatchesCPU() throws {
         guard let _ = MTLCreateSystemDefaultDevice() else {
@@ -255,6 +305,30 @@ final class MerkleTests: XCTestCase {
         XCTAssertEqual(cpu, gpu.root)
     }
 
+    func testGPUMerkleAutomaticSubtreeSelectionIsConservative() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let shortLeafPlan = try committer.makeRawLeavesCommitPlan(
+            leafCount: 256,
+            leafStride: 128,
+            leafLength: 128,
+            configuration: MerkleCommitPlanConfiguration(leafSubtreeMode: .automatic)
+        )
+        XCTAssertEqual(shortLeafPlan.subtreeLeafCount, 0)
+
+        let nearRatePlan = try committer.makeRawLeavesCommitPlan(
+            leafCount: 256,
+            leafStride: 135,
+            leafLength: 135,
+            configuration: MerkleCommitPlanConfiguration(leafSubtreeMode: .automatic)
+        )
+        XCTAssertGreaterThanOrEqual(nearRatePlan.subtreeLeafCount, 2)
+    }
+
     func testGPUMerkleSubtreePathSupportsFixedRateLeafLengths() throws {
         guard let _ = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -296,6 +370,81 @@ final class MerkleTests: XCTestCase {
 
             let gpu = try plan.commitVerified(leaves: leaves)
             XCTAssertEqual(cpu, gpu.root, "Merkle treelet mismatch for leaf length \(testCase.leafLength)")
+        }
+    }
+
+    func testGPUMerkleOpeningMatchesCPUAndVerifies() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let leafCount = 128
+        let leafLength = 135
+        let leafStride = 144
+        let leaves = Self.makeLeaves(count: leafCount, leafStride: leafStride, leafLength: leafLength, salt: 131)
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let plan = try committer.makeRawLeavesCommitPlan(
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength,
+            configuration: MerkleCommitPlanConfiguration(leafSubtreeMode: .fixed(16))
+        )
+        XCTAssertEqual(plan.treeDepth, 7)
+        XCTAssertEqual(plan.subtreeLeafCount, 16)
+
+        for leafIndex in [0, 1, 63, 64, 127] {
+            let gpu = try plan.openRawLeafVerified(leaves: leaves, leafIndex: leafIndex)
+            let cpu = try MerkleOracle.openingSHA3_256(
+                rawLeaves: leaves,
+                leafCount: leafCount,
+                leafStride: leafStride,
+                leafLength: leafLength,
+                leafIndex: leafIndex
+            )
+
+            XCTAssertEqual(gpu.proof, cpu)
+            XCTAssertTrue(try MerkleOracle.verifySHA3_256(opening: gpu.proof))
+        }
+    }
+
+    func testGPUMerkleOpeningSupportsSingleLeafTree() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let leaves = Self.makeLeaves(count: 1, leafLength: 32, salt: 5)
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let opening = try committer.openRawLeafVerified(
+            leaves: leaves,
+            leafCount: 1,
+            leafStride: 32,
+            leafLength: 32,
+            leafIndex: 0
+        )
+
+        XCTAssertTrue(opening.proof.siblingHashes.isEmpty)
+        XCTAssertTrue(try MerkleOracle.verifySHA3_256(opening: opening.proof))
+        XCTAssertEqual(opening.proof.root, SHA3Oracle.sha3_256(opening.proof.leaf))
+    }
+
+    func testGPUMerkleOpeningRejectsInvalidLeafIndex() throws {
+        guard let _ = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let leaves = Self.makeLeaves(count: 8, leafLength: 32)
+        let context = try MetalContext()
+        let committer = SHA3MerkleCommitter(context: context)
+        let plan = try committer.makeRawLeavesCommitPlan(
+            leafCount: 8,
+            leafStride: 32,
+            leafLength: 32
+        )
+
+        XCTAssertThrowsError(try plan.openRawLeaf(leaves: leaves, leafIndex: 8)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
     }
 

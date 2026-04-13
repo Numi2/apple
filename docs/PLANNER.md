@@ -14,6 +14,7 @@
 - Live observations can update an EMA for a persisted winner and mark the plan stale after sustained relative drift.
 - `MetalPlannedMerkleCommitPlan` records live observations automatically when it was built from a persisted winner.
 - Upload and final root readback may use shared buffers. Reusable Merkle and M31 sum-check plans stage public array inputs through `SharedUploadRing`; intermediate Merkle and sum-check state lives in reusable private buffers through `ResidencyArena`.
+- Raw-leaf Merkle opening extraction reuses the same resident hash/reduction buffers, extracts exactly one sibling node per level, extracts lower siblings inside selected race-free treelets when configured, and reads back only the requested sibling path plus root.
 - `MetalSumcheckChunkPlan` executes `round_eval -> coeff_pack -> transcript_absorb -> challenge_squeeze -> fold_halve` inside one command buffer for the supported M31 chunk shape.
 - Sum-check chunk execution reads back only final proof material: the final folded vector, coefficient words, and challenges after the superstep completes.
 - `executeVerified` recomputes the M31 chunk with the independent CPU oracle before accepting GPU proof bytes.
@@ -39,7 +40,7 @@ The objective is superstep cost: median GPU time plus median CPU submit time, wi
 The planner only races implementations that are currently distinct and correctness-gated. Today that means:
 
 - scalar Merkle commitment,
-- binary treelet Merkle commitment for fixed-rate SHA3 leaves (`0...136` bytes), starting at depth 3 and depth 4 where feasible.
+- binary treelet Merkle commitment for fixed-rate SHA3 leaves (`0...136` bytes), starting at depth 3 and depth 4 where feasible, with ping-pong threadgroup scratch for race-free parent compaction.
 
 Apple7 simdgroup Merkle and tuned sum-check families remain design targets, but they are not eligible for measured winner persistence until their kernels are real cooperative implementations with deterministic and randomized differential tests. This avoids storing misleading records for a label that does not correspond to different GPU work.
 

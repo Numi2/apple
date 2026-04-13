@@ -10,10 +10,25 @@ private struct MerkleFuseParams {
     var nodeCount: UInt32
 }
 
+private struct MerkleExtractParams {
+    var nodeCount: UInt32
+    var nodeIndex: UInt32
+    var proofOffset: UInt32
+}
+
 private struct MerkleTreeletParams {
     var leafCount: UInt32
     var inputStride: UInt32
     var subtreeLeafCount: UInt32
+}
+
+private struct MerkleTreeletOpenParams {
+    var leafCount: UInt32
+    var inputStride: UInt32
+    var subtreeLeafCount: UInt32
+    var baseLeaf: UInt32
+    var localLeafIndex: UInt32
+    var proofOffset: UInt32
 }
 
 struct MerkleCommitMeasurement {
@@ -43,6 +58,18 @@ enum MerkleKernelSpecs {
         )
     }
 
+    static func extractSibling32() -> KernelSpec {
+        KernelSpec(
+            kernel: "sha3_256_merkle_extract_sibling_32",
+            family: .scalar,
+            queueMode: .metal3,
+            functionConstants: .plannerConstants([
+                (.parentBytes, 32),
+                (.treeArity, 2),
+            ])
+        )
+    }
+
     static func treeletLeaves(
         leafBytes: Int,
         depth: Int,
@@ -51,6 +78,26 @@ enum MerkleKernelSpecs {
         KernelSpec(
             kernel: "sha3_256_merkle_treelet_leaves_specialized",
             family: family,
+            queueMode: .metal3,
+            functionConstants: .plannerConstants([
+                (.leafBytes, UInt64(leafBytes)),
+                (.parentBytes, 32),
+                (.treeArity, 2),
+                (.treeletDepth, UInt64(depth)),
+                (.fixedWidthCase, UInt64(fixedWidthCase(forLeafBytes: leafBytes))),
+                (.barrierCadence, 1),
+            ]),
+            threadsPerThreadgroup: UInt16(1 << max(0, min(depth, 15)))
+        )
+    }
+
+    static func treeletOpeningLeaves(
+        leafBytes: Int,
+        depth: Int
+    ) -> KernelSpec {
+        KernelSpec(
+            kernel: "sha3_256_merkle_treelet_opening_leaves_specialized",
+            family: .treelet,
             queueMode: .metal3,
             functionConstants: .plannerConstants([
                 (.leafBytes, UInt64(leafBytes)),
@@ -143,6 +190,36 @@ public final class SHA3MerkleCommitter: @unchecked Sendable {
             leafLength: leafLength
         )
         return try plan.commitVerified(leaves: leaves)
+    }
+
+    public func openRawLeaf(
+        leaves: Data,
+        leafCount: Int,
+        leafStride: Int,
+        leafLength: Int,
+        leafIndex: Int
+    ) throws -> MerkleOpening {
+        let plan = try makeRawLeavesCommitPlan(
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength
+        )
+        return try plan.openRawLeaf(leaves: leaves, leafIndex: leafIndex)
+    }
+
+    public func openRawLeafVerified(
+        leaves: Data,
+        leafCount: Int,
+        leafStride: Int,
+        leafLength: Int,
+        leafIndex: Int
+    ) throws -> MerkleOpening {
+        let plan = try makeRawLeavesCommitPlan(
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength
+        )
+        return try plan.openRawLeafVerified(leaves: leaves, leafIndex: leafIndex)
     }
 
     public func commitPrehashedLeaves(_ leafHashes: Data) throws -> MerkleCommitment {
@@ -245,12 +322,16 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     private let scratchA: ArenaSlice
     private let scratchB: ArenaSlice
     private let rootReadback: MTLBuffer
+    private let openingReadback: MTLBuffer
     private let leafHashPipeline: MTLComputePipelineState
     private let parentPipeline: MTLComputePipelineState
     private let fusedUpperPipeline: MTLComputePipelineState
+    private let extractSiblingPipeline: MTLComputePipelineState
     private let subtreePipeline: MTLComputePipelineState?
+    private let subtreeOpeningPipeline: MTLComputePipelineState?
     public let fusedUpperNodeLimit: Int
     public let subtreeLeafCount: Int
+    public let treeDepth: Int
     private let executionLock = NSLock()
     private var leafParams: SHA3BatchParams
     private var subtreeParams: MerkleTreeletParams?
@@ -285,6 +366,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         self.leafStride = leafStride
         self.leafLength = leafLength
         self.declaredLeafBytes = declaredLeafBytes
+        self.treeDepth = Self.log2(leafCount)
         self.uploadRing = try SharedUploadRing(
             device: context.device,
             slotCapacity: declaredLeafBytes,
@@ -303,9 +385,15 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             length: 32,
             label: "Merkle.RootReadback"
         )
+        self.openingReadback = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            length: max(1, Self.log2(leafCount) * 32),
+            label: "Merkle.OpeningReadback"
+        )
         self.leafHashPipeline = try context.pipeline(for: SHA3OneBlockKernel.spec(forInputLength: leafLength))
         self.parentPipeline = try context.pipeline(for: MerkleKernelSpecs.parent32x32())
         self.fusedUpperPipeline = try context.pipeline(for: MerkleKernelSpecs.fusedUpper32())
+        self.extractSiblingPipeline = try context.pipeline(for: MerkleKernelSpecs.extractSibling32())
         self.fusedUpperNodeLimit = Self.fusedUpperNodeLimit(
             device: context.device,
             pipeline: fusedUpperPipeline
@@ -320,16 +408,25 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             }
         )
         if selectedSubtreeLeafCount > 0 {
+            let subtreeDepth = Self.log2(selectedSubtreeLeafCount)
             let subtreePipeline = try context.pipeline(
                 for: MerkleKernelSpecs.treeletLeaves(
                     leafBytes: leafLength,
-                    depth: Self.log2(selectedSubtreeLeafCount)
+                    depth: subtreeDepth
+                )
+            )
+            let subtreeOpeningPipeline = try context.pipeline(
+                for: MerkleKernelSpecs.treeletOpeningLeaves(
+                    leafBytes: leafLength,
+                    depth: subtreeDepth
                 )
             )
             self.subtreePipeline = subtreePipeline
+            self.subtreeOpeningPipeline = subtreeOpeningPipeline
             self.subtreeLeafCount = selectedSubtreeLeafCount
         } else {
             self.subtreePipeline = nil
+            self.subtreeOpeningPipeline = nil
             self.subtreeLeafCount = 0
         }
         self.leafParams = SHA3BatchParams(
@@ -357,6 +454,16 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         try commitMeasuredVerified(leaves: leaves).commitment
     }
 
+    public func openRawLeaf(leaves: Data, leafIndex: Int) throws -> MerkleOpening {
+        try openRawLeafMeasured(leaves: leaves, leafIndex: leafIndex)
+    }
+
+    public func openRawLeafVerified(leaves: Data, leafIndex: Int) throws -> MerkleOpening {
+        let opening = try openRawLeafMeasured(leaves: leaves, leafIndex: leafIndex)
+        try verifyOpening(leaves: leaves, opening: opening.proof)
+        return opening
+    }
+
     func commitMeasured(leaves: Data) throws -> MerkleCommitMeasurement {
         executionLock.lock()
         defer { executionLock.unlock() }
@@ -376,6 +483,22 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         let measured = try commitMeasured(leaves: leaves)
         try verifyCommitment(leaves: leaves, root: measured.commitment.root)
         return measured
+    }
+
+    private func openRawLeafMeasured(leaves: Data, leafIndex: Int) throws -> MerkleOpening {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        guard leafIndex >= 0, leafIndex < leafCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let slot = try uploadRing.copy(leaves, byteCount: declaredLeafBytes)
+        return try openRawLeafMeasuredLocked(
+            leaves: leaves,
+            leafIndex: leafIndex,
+            uploadBuffer: slot.buffer,
+            uploadOffset: slot.offset
+        )
     }
 
     private func commitMeasuredLocked(uploadBuffer: MTLBuffer, uploadOffset: Int = 0) throws -> MerkleCommitMeasurement {
@@ -406,7 +529,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             subtreeEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
             subtreeEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
             subtreeEncoder.setBytes(&subtreeParams, length: MemoryLayout<MerkleTreeletParams>.stride, index: 2)
-            subtreeEncoder.setThreadgroupMemoryLength(subtreeLeafCount * 32, index: 0)
+            subtreeEncoder.setThreadgroupMemoryLength(try checkedBufferLength(subtreeLeafCount, 64), index: 0)
             subtreeEncoder.dispatchThreadgroups(
                 MTLSize(width: leafCount / subtreeLeafCount, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: subtreeLeafCount, height: 1, depth: 1)
@@ -454,7 +577,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
             fusedEncoder.setBuffer(current.buffer, offset: current.offset, index: 0)
             fusedEncoder.setBuffer(rootReadback, offset: 0, index: 1)
             fusedEncoder.setBytes(&fuseParams, length: MemoryLayout<MerkleFuseParams>.stride, index: 2)
-            fusedEncoder.setThreadgroupMemoryLength(currentCount * 32, index: 0)
+            fusedEncoder.setThreadgroupMemoryLength(try checkedBufferLength(currentCount, 64), index: 0)
             fusedEncoder.dispatchThreadgroups(
                 MTLSize(width: 1, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: currentCount, height: 1, depth: 1)
@@ -488,6 +611,166 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         )
     }
 
+    private func openRawLeafMeasuredLocked(
+        leaves: Data,
+        leafIndex: Int,
+        uploadBuffer: MTLBuffer,
+        uploadOffset: Int = 0
+    ) throws -> MerkleOpening {
+        let uploadEnd = uploadOffset.addingReportingOverflow(max(1, declaredLeafBytes))
+        guard uploadOffset >= 0,
+              !uploadEnd.overflow,
+              uploadBuffer.length >= uploadEnd.partialValue,
+              leaves.count >= declaredLeafBytes else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        let start = DispatchTime.now()
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "Merkle.OpenRawLeaf"
+
+        var current = scratchA
+        var alternate = scratchB
+        var currentCount: Int
+        var currentIndex: Int
+        var level: Int
+
+        if let subtreePipeline, let subtreeOpeningPipeline, var subtreeParams, subtreeLeafCount > 1 {
+            guard let subtreeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            subtreeEncoder.label = "Merkle.Open.Subtrees.\(subtreeLeafCount)"
+            subtreeEncoder.setComputePipelineState(subtreePipeline)
+            subtreeEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
+            subtreeEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
+            subtreeEncoder.setBytes(&subtreeParams, length: MemoryLayout<MerkleTreeletParams>.stride, index: 2)
+            subtreeEncoder.setThreadgroupMemoryLength(try checkedBufferLength(subtreeLeafCount, 64), index: 0)
+            subtreeEncoder.dispatchThreadgroups(
+                MTLSize(width: leafCount / subtreeLeafCount, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: subtreeLeafCount, height: 1, depth: 1)
+            )
+            subtreeEncoder.endEncoding()
+
+            let subtreeDepth = Self.log2(subtreeLeafCount)
+            let baseLeaf = (leafIndex / subtreeLeafCount) * subtreeLeafCount
+            var openParams = MerkleTreeletOpenParams(
+                leafCount: try checkedUInt32(leafCount),
+                inputStride: try checkedUInt32(leafStride),
+                subtreeLeafCount: try checkedUInt32(subtreeLeafCount),
+                baseLeaf: try checkedUInt32(baseLeaf),
+                localLeafIndex: try checkedUInt32(leafIndex - baseLeaf),
+                proofOffset: 0
+            )
+            guard let treeletOpenEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            treeletOpenEncoder.label = "Merkle.Open.Treelet.\(subtreeLeafCount)"
+            treeletOpenEncoder.setComputePipelineState(subtreeOpeningPipeline)
+            treeletOpenEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
+            treeletOpenEncoder.setBuffer(openingReadback, offset: 0, index: 1)
+            treeletOpenEncoder.setBytes(&openParams, length: MemoryLayout<MerkleTreeletOpenParams>.stride, index: 2)
+            treeletOpenEncoder.setThreadgroupMemoryLength(try checkedBufferLength(subtreeLeafCount, 64), index: 0)
+            treeletOpenEncoder.dispatchThreadgroups(
+                MTLSize(width: 1, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: subtreeLeafCount, height: 1, depth: 1)
+            )
+            treeletOpenEncoder.endEncoding()
+
+            currentCount = leafCount / subtreeLeafCount
+            currentIndex = leafIndex / subtreeLeafCount
+            level = subtreeDepth
+        } else {
+            guard let hashEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            hashEncoder.label = "Merkle.Open.LeafHash"
+            hashEncoder.setComputePipelineState(leafHashPipeline)
+            hashEncoder.setBuffer(uploadBuffer, offset: uploadOffset, index: 0)
+            hashEncoder.setBuffer(scratchA.buffer, offset: scratchA.offset, index: 1)
+            hashEncoder.setBytes(&leafParams, length: MemoryLayout<SHA3BatchParams>.stride, index: 2)
+            context.dispatch1D(hashEncoder, pipeline: leafHashPipeline, elementCount: leafCount)
+            hashEncoder.endEncoding()
+
+            currentCount = leafCount
+            currentIndex = leafIndex
+            level = 0
+        }
+
+        while currentCount > 1 {
+            var extractParams = MerkleExtractParams(
+                nodeCount: try checkedUInt32(currentCount),
+                nodeIndex: try checkedUInt32(currentIndex),
+                proofOffset: try checkedUInt32(level * 32)
+            )
+            guard let extractEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            extractEncoder.label = "Merkle.Open.Extract.\(level)"
+            extractEncoder.setComputePipelineState(extractSiblingPipeline)
+            extractEncoder.setBuffer(current.buffer, offset: current.offset, index: 0)
+            extractEncoder.setBuffer(openingReadback, offset: 0, index: 1)
+            extractEncoder.setBytes(&extractParams, length: MemoryLayout<MerkleExtractParams>.stride, index: 2)
+            context.dispatch1D(extractEncoder, pipeline: extractSiblingPipeline, elementCount: 32)
+            extractEncoder.endEncoding()
+
+            var parentParams = MerkleParentParams(pairCount: try checkedUInt32(currentCount / 2))
+            guard let parentEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            parentEncoder.label = "Merkle.Open.Reduce.\(currentCount)"
+            parentEncoder.setComputePipelineState(parentPipeline)
+            parentEncoder.setBuffer(current.buffer, offset: current.offset, index: 0)
+            parentEncoder.setBuffer(alternate.buffer, offset: alternate.offset, index: 1)
+            parentEncoder.setBytes(&parentParams, length: MemoryLayout<MerkleParentParams>.stride, index: 2)
+            context.dispatch1D(parentEncoder, pipeline: parentPipeline, elementCount: currentCount / 2)
+            parentEncoder.endEncoding()
+
+            swap(&current, &alternate)
+            currentCount /= 2
+            currentIndex >>= 1
+            level += 1
+        }
+
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        blit.label = "Merkle.Open.RootReadback"
+        blit.copy(from: current.buffer, sourceOffset: current.offset, to: rootReadback, destinationOffset: 0, size: 32)
+        blit.endEncoding()
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        let leafStart = leafIndex * leafStride
+        let leaf = leaves.subdata(in: leafStart..<(leafStart + leafLength))
+        let proofBytes = Data(bytes: openingReadback.contents(), count: treeDepth * 32)
+        var siblings: [Data] = []
+        siblings.reserveCapacity(treeDepth)
+        for level in 0..<treeDepth {
+            let start = level * 32
+            siblings.append(proofBytes.subdata(in: start..<(start + 32)))
+        }
+        let root = Data(bytes: rootReadback.contents(), count: 32)
+        let wall = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
+        let gpu = gpuDuration(commandBuffer)
+        return MerkleOpening(
+            proof: MerkleOpeningProof(
+                leafIndex: leafIndex,
+                leaf: leaf,
+                siblingHashes: siblings,
+                root: root
+            ),
+            stats: GPUExecutionStats(cpuWallSeconds: wall, gpuSeconds: gpu)
+        )
+    }
+
     private func verifyCommitment(leaves: Data, root: Data) throws {
         let cpuRoot = try MerkleOracle.rootSHA3_256(
             rawLeaves: leaves,
@@ -500,12 +783,29 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         }
     }
 
+    private func verifyOpening(leaves: Data, opening: MerkleOpeningProof) throws {
+        let cpuOpening = try MerkleOracle.openingSHA3_256(
+            rawLeaves: leaves,
+            leafCount: leafCount,
+            leafStride: leafStride,
+            leafLength: leafLength,
+            leafIndex: opening.leafIndex
+        )
+        guard opening == cpuOpening else {
+            throw AppleZKProverError.correctnessValidationFailed("SHA3 Merkle GPU opening did not match the CPU oracle.")
+        }
+        guard try MerkleOracle.verifySHA3_256(opening: opening) else {
+            throw AppleZKProverError.correctnessValidationFailed("SHA3 Merkle GPU opening did not verify against its root.")
+        }
+    }
+
     public func clearReusableBuffers() throws {
         executionLock.lock()
         defer { executionLock.unlock() }
 
         uploadRing.clear()
         MetalBufferFactory.zeroSharedBuffer(rootReadback)
+        MetalBufferFactory.zeroSharedBuffer(openingReadback)
         try MetalBufferFactory.zeroPrivateBuffers(
             [arena.buffer],
             context: context,
@@ -514,7 +814,7 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     }
 
     private static func fusedUpperNodeLimit(device: MTLDevice, pipeline: MTLComputePipelineState) -> Int {
-        let maxNodesByThreadgroupMemory = device.maxThreadgroupMemoryLength / 32
+        let maxNodesByThreadgroupMemory = device.maxThreadgroupMemoryLength / 64
         let maxNodesByThreads = pipeline.maxTotalThreadsPerThreadgroup
         let candidate = min(512, min(maxNodesByThreadgroupMemory, maxNodesByThreads))
         guard candidate >= 2 else {
@@ -535,13 +835,16 @@ public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
         }
 
         let pipeline = try pipelineProvider()
-        let maxLeavesByThreadgroupMemory = device.maxThreadgroupMemoryLength / 32
+        let maxLeavesByThreadgroupMemory = device.maxThreadgroupMemoryLength / 64
         let maxLeavesByThreads = pipeline.maxTotalThreadsPerThreadgroup
 
         switch mode {
         case .disabled:
             return 0
         case .automatic:
+            guard leafLength >= SHA3Oracle.sha3_256Rate - 1 else {
+                return 0
+            }
             let candidate = min(64, min(leafCount, min(maxLeavesByThreadgroupMemory, maxLeavesByThreads)))
             guard candidate >= 2 else {
                 return 0

@@ -248,7 +248,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
         if leafBytes <= SHA3Oracle.sha3_256Rate,
            leafCount >= 16,
            leafCount.nonzeroBitCount == 1,
-           context.device.maxThreadgroupMemoryLength >= 16 * 32 {
+           context.device.maxThreadgroupMemoryLength >= 16 * 64 {
             candidates.append(MerkleKernelSpecs.treeletLeaves(leafBytes: leafBytes, depth: 4))
         }
 
@@ -519,7 +519,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
             return false
         }
         if let depth = spec.functionConstants[PlannerFunctionConstant.treeletDepth.rawValue] {
-            let scratchBytes = (1 << Int(depth)) * 32
+            let scratchBytes = (1 << Int(depth)) * 64
             if scratchBytes > context.device.maxThreadgroupMemoryLength {
                 return false
             }
@@ -538,7 +538,7 @@ public final class MetalProofPlanner: @unchecked Sendable {
         case .simdgroup:
             score += context.capabilities.supportsSIMDReductions && (leafBytes == 32 || leafBytes == 64) ? 40 : -100
         case .treelet:
-            score += (leafBytes == 32 || leafBytes == 64) && leafCount >= 512 ? 60 : 15
+            score += leafBytes >= SHA3Oracle.sha3_256Rate - 1 && leafCount >= 512 ? 50 : -5
         }
         if spec.queueMode == .metal4 {
             score += leafCount <= 4096 ? 5 : 0

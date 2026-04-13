@@ -88,6 +88,35 @@ public struct MerkleCommitment: Sendable {
     }
 }
 
+public struct MerkleOpeningProof: Equatable, Sendable {
+    public let leafIndex: Int
+    public let leaf: Data
+    public let siblingHashes: [Data]
+    public let root: Data
+
+    public init(
+        leafIndex: Int,
+        leaf: Data,
+        siblingHashes: [Data],
+        root: Data
+    ) {
+        self.leafIndex = leafIndex
+        self.leaf = leaf
+        self.siblingHashes = siblingHashes
+        self.root = root
+    }
+}
+
+public struct MerkleOpening: Sendable {
+    public let proof: MerkleOpeningProof
+    public let stats: GPUExecutionStats
+
+    public init(proof: MerkleOpeningProof, stats: GPUExecutionStats) {
+        self.proof = proof
+        self.stats = stats
+    }
+}
+
 public struct FixedMessageBatchDescriptor: Sendable {
     public let count: Int
     public let messageStride: Int

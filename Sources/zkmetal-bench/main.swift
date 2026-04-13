@@ -51,6 +51,8 @@ struct BenchConfig {
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
+    var merkleOpening = false
+    var openingLeafIndex = 0
     var verifyWithCPU = true
     var warmupIterations = 1
     var iterations = 5
@@ -139,6 +141,13 @@ struct BenchConfig {
                 }
             case "--keccakf-permutation", "--permutation-only":
                 keccakF1600Permutation = true
+            case "--merkle-opening":
+                merkleOpening = true
+            case "--opening-leaf-index":
+                switch Self.parseNonnegativeInt(flag: arg, value: iterator.next()) {
+                case let .success(value): openingLeafIndex = value
+                case let .failure(error): return error
+                }
             case "--permutation-kernel":
                 let valueResult = Self.requireValue(flag: arg, value: iterator.next())
                 let value: String
@@ -223,6 +232,8 @@ struct BenchConfig {
           --hash-simdgroups-per-threadgroup N
                                       SIMD-group hash kernel packing. Default: 2
           --keccakf-permutation      Run Keccak-F1600 permutation-only benchmark instead of hash/Merkle
+          --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
+          --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
           --states N                 State count for --keccakf-permutation. Alias for --leaves in that mode
           --permutation-kernel NAME  Keccak-F1600 permutation kernel family: scalar or simdgroup. Default: scalar
           --permutation-simdgroups-per-threadgroup N
@@ -244,6 +255,9 @@ struct BenchConfig {
         guard leafCount > 0 else {
             return BenchError.invalidArgument(keccakF1600Permutation ? "--states must be greater than zero." : "--leaves must be greater than zero.")
         }
+        guard !(keccakF1600Permutation && merkleOpening) else {
+            return BenchError.invalidArgument("--keccakf-permutation and --merkle-opening are mutually exclusive.")
+        }
         if keccakF1600Permutation {
             guard !suite else {
                 return BenchError.invalidArgument("--suite is not supported with --keccakf-permutation.")
@@ -253,8 +267,14 @@ struct BenchConfig {
             }
             return nil
         }
+        guard !(suite && merkleOpening) else {
+            return BenchError.invalidArgument("--suite is not supported with --merkle-opening.")
+        }
         guard leafCount.nonzeroBitCount == 1 else {
             return BenchError.invalidArgument("--leaves must be a non-zero power of two.")
+        }
+        guard openingLeafIndex < leafCount else {
+            return BenchError.invalidArgument("--opening-leaf-index must be in 0..<--leaves.")
         }
         if suite {
             guard !suiteLeafLengths.isEmpty else {
@@ -520,6 +540,40 @@ struct KeccakPermutationBenchmarkReport: Codable {
     let verification: KeccakPermutationVerificationReport
 }
 
+struct MerkleOpeningBenchmarkConfigReport: Codable {
+    let leafCount: Int
+    let leafLength: Int
+    let leafStride: Int
+    let leafIndex: Int
+    let merkleSubtreeMode: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct MerkleOpeningVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let rootHex: String
+    let cpuRootHex: String?
+    let proofDigestHex: String
+    let cpuProofDigestHex: String?
+    let siblingCount: Int
+}
+
+struct MerkleOpeningBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: MerkleOpeningBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let merkleSubtreeLeafCount: Int?
+    let treeDepth: Int?
+    let opening: MeasurementReport?
+    let verification: MerkleOpeningVerificationReport
+}
+
 func makeDeterministicLeaves(count: Int, leafLength: Int) -> Data {
     precondition(count > 0)
     precondition(leafLength >= 0)
@@ -610,6 +664,21 @@ func storeUInt64LittleEndian(_ value: UInt64, to destination: UnsafeMutablePoint
     for byteIndex in 0..<MemoryLayout<UInt64>.stride {
         destination[byteIndex] = UInt8((value >> UInt64(byteIndex * 8)) & 0xff)
     }
+}
+
+func merkleOpeningProofDigestHex(_ proof: MerkleOpeningProof) -> String {
+    var encoded = Data()
+    appendUInt64LittleEndian(UInt64(proof.leafIndex), to: &encoded)
+    appendUInt64LittleEndian(UInt64(proof.leaf.count), to: &encoded)
+    encoded.append(proof.leaf)
+    appendUInt64LittleEndian(UInt64(proof.siblingHashes.count), to: &encoded)
+    for sibling in proof.siblingHashes {
+        appendUInt64LittleEndian(UInt64(sibling.count), to: &encoded)
+        encoded.append(sibling)
+    }
+    appendUInt64LittleEndian(UInt64(proof.root.count), to: &encoded)
+    encoded.append(proof.root)
+    return SHA3Oracle.sha3_256(encoded).hexString
 }
 
 func makeSeries(_ samples: [Double]) -> SeriesReport {
@@ -731,6 +800,14 @@ func emitJSON(_ report: KeccakPermutationBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: MerkleOpeningBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitText(_ report: BenchmarkReport) {
     print("zkmetal-bench")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -841,6 +918,57 @@ func emitText(_ report: KeccakPermutationBenchmarkReport) {
     }
 }
 
+func emitText(_ report: MerkleOpeningBenchmarkReport) {
+    print("zkmetal-bench merkle-opening")
+    print("  leaves       : \(report.configuration.leafCount)")
+    print("  leaf bytes   : \(report.configuration.leafLength)")
+    print("  leaf index   : \(report.configuration.leafIndex)")
+    print("  subtree mode : \(report.configuration.merkleSubtreeMode)")
+    if let subtree = report.merkleSubtreeLeafCount {
+        print("  subtree leafs: \(subtree)")
+    }
+    if let treeDepth = report.treeDepth {
+        print("  tree depth   : \(treeDepth)")
+    }
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let opening = report.opening {
+        printSeconds("open wall", opening.wallSeconds)
+        if let gpu = opening.gpuSeconds {
+            printSeconds("open gpu ", gpu)
+        }
+        print("  openings/sec : \(String(format: "%.2f", opening.hashInvocationsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", opening.inputBytesPerSecond))")
+    }
+
+    print("  siblings     : \(report.verification.siblingCount)")
+    print("  root         : \(report.verification.rootHex)")
+    if let cpuRoot = report.verification.cpuRootHex {
+        print("  cpu root     : \(cpuRoot)")
+    }
+    print("  proof digest : \(report.verification.proofDigestHex)")
+    if let cpuProof = report.verification.cpuProofDigestHex {
+        print("  cpu proof    : \(cpuProof)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ suite: BenchmarkSuiteReport) {
     print("zkmetal-bench suite")
     print("  leaves       : \(suite.configuration.leafCount)")
@@ -927,6 +1055,20 @@ func verificationFailureMessages(in suite: BenchmarkSuiteReport) -> [String] {
     suite.reports.flatMap { verificationFailureMessages(in: $0) }
 }
 
+func verificationFailureMessages(in report: MerkleOpeningBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuRoot = report.verification.cpuRootHex ?? "missing"
+        let cpuProof = report.verification.cpuProofDigestHex ?? "missing"
+        return [
+            "merkle-opening leaf-bytes=\(report.configuration.leafLength) leaf-index=\(report.configuration.leafIndex) target=\(report.target) root=\(report.verification.rootHex) cpu-root=\(cpuRoot) proof=\(report.verification.proofDigestHex) cpu-proof=\(cpuProof)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -943,6 +1085,167 @@ func makeBenchmarkConfigReport(
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
     )
+}
+
+func makeMerkleOpeningConfigReport(config: BenchConfig) -> MerkleOpeningBenchmarkConfigReport {
+    MerkleOpeningBenchmarkConfigReport(
+        leafCount: config.leafCount,
+        leafLength: config.leafLength,
+        leafStride: config.leafLength,
+        leafIndex: config.openingLeafIndex,
+        merkleSubtreeMode: merkleSubtreeModeDescription(config.merkleSubtreeMode),
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+@inline(never)
+func runMerkleOpeningBenchmark(_ config: BenchConfig) throws -> MerkleOpeningBenchmarkReport {
+    let leaves = makeDeterministicLeaves(count: config.leafCount, leafLength: config.leafLength)
+    let configReport = makeMerkleOpeningConfigReport(config: config)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOpening = try MerkleOracle.openingSHA3_256(
+            rawLeaves: leaves,
+            leafCount: config.leafCount,
+            leafStride: config.leafLength,
+            leafLength: config.leafLength,
+            leafIndex: config.openingLeafIndex
+        )
+        return MerkleOpeningBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            merkleSubtreeLeafCount: nil,
+            treeDepth: cpuOpening.siblingHashes.count,
+            opening: nil,
+            verification: MerkleOpeningVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                rootHex: cpuOpening.root.hexString,
+                cpuRootHex: cpuOpening.root.hexString,
+                proofDigestHex: merkleOpeningProofDigestHex(cpuOpening),
+                cpuProofDigestHex: merkleOpeningProofDigestHex(cpuOpening),
+                siblingCount: cpuOpening.siblingHashes.count
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let committer = SHA3MerkleCommitter(context: context)
+    let plan = try committer.makeRawLeavesCommitPlan(
+        leafCount: config.leafCount,
+        leafStride: config.leafLength,
+        leafLength: config.leafLength,
+        configuration: makeMerkleCommitPlanConfiguration(config.merkleSubtreeMode)
+    )
+    try context.serializePipelineArchiveIfNeeded()
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.openRawLeaf(leaves: leaves, leafIndex: config.openingLeafIndex)
+        }
+    }
+
+    var openingWallSeconds: [Double] = []
+    var openingGPUSeconds: [Double?] = []
+    var opening: MerkleOpening?
+    for _ in 0..<config.iterations {
+        let result = try plan.openRawLeaf(leaves: leaves, leafIndex: config.openingLeafIndex)
+        openingWallSeconds.append(result.stats.cpuWallSeconds)
+        openingGPUSeconds.append(result.stats.gpuSeconds)
+        opening = result
+    }
+
+    guard let opening else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+    let cpuOpening = config.verifyWithCPU
+        ? try MerkleOracle.openingSHA3_256(
+            rawLeaves: leaves,
+            leafCount: config.leafCount,
+            leafStride: config.leafLength,
+            leafLength: config.leafLength,
+            leafIndex: config.openingLeafIndex
+        )
+        : nil
+    let matchedCPU = try cpuOpening.map { cpuProof in
+        guard opening.proof == cpuProof else {
+            return false
+        }
+        return try MerkleOracle.verifySHA3_256(opening: opening.proof)
+    }
+    let merkleHashInvocations = config.leafCount + config.leafCount - 1
+    let merkleInputBytes = Double(config.leafCount) * Double(config.leafLength)
+        + Double(config.leafCount - 1) * 64
+        + Double(opening.proof.siblingHashes.count) * 32
+    return MerkleOpeningBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        merkleSubtreeLeafCount: plan.subtreeLeafCount,
+        treeDepth: plan.treeDepth,
+        opening: makeMeasurement(
+            wallSeconds: openingWallSeconds,
+            gpuSeconds: openingGPUSeconds,
+            hashInvocations: merkleHashInvocations,
+            inputBytes: merkleInputBytes
+        ),
+        verification: MerkleOpeningVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            rootHex: opening.proof.root.hexString,
+            cpuRootHex: cpuOpening?.root.hexString,
+            proofDigestHex: merkleOpeningProofDigestHex(opening.proof),
+            cpuProofDigestHex: cpuOpening.map { merkleOpeningProofDigestHex($0) },
+            siblingCount: opening.proof.siblingHashes.count
+        )
+    )
+    #else
+    let cpuOpening = try MerkleOracle.openingSHA3_256(
+        rawLeaves: leaves,
+        leafCount: config.leafCount,
+        leafStride: config.leafLength,
+        leafLength: config.leafLength,
+        leafIndex: config.openingLeafIndex
+    )
+    return MerkleOpeningBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        merkleSubtreeLeafCount: nil,
+        treeDepth: cpuOpening.siblingHashes.count,
+        opening: nil,
+        verification: MerkleOpeningVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            rootHex: cpuOpening.root.hexString,
+            cpuRootHex: cpuOpening.root.hexString,
+            proofDigestHex: merkleOpeningProofDigestHex(cpuOpening),
+            cpuProofDigestHex: merkleOpeningProofDigestHex(cpuOpening),
+            siblingCount: cpuOpening.siblingHashes.count
+        )
+    )
+    #endif
 }
 
 @inline(never)
@@ -1300,6 +1603,20 @@ func runCLI() -> Int32 {
         }
         if config.keccakF1600Permutation {
             let report = try runKeccakPermutationBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.merkleOpening {
+            let report = try runMerkleOpeningBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

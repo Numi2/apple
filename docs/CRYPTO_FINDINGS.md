@@ -45,3 +45,38 @@ Work completed:
 Reference:
 
 - NIST FIPS 202, SHA-3 Standard: Permutation-Based Hash and Extendable-Output Functions: https://csrc.nist.gov/pubs/fips/202/final
+
+## 2026-04-13: Merkle Opening Extraction And Verification
+
+Finding:
+
+- The Merkle commitment path produced CPU-verified roots, but there was no first-class opening proof API. Callers would have needed to read back or reconstruct intermediate levels outside the reusable GPU plan to answer inclusion queries.
+
+Work completed:
+
+- Added `MerkleOpeningProof` as a public proof object containing the leaf index, leaf bytes, bottom-up sibling hashes, and root.
+- Added independent CPU SHA3 Merkle opening construction and verification. Verification hashes the leaf, folds each sibling according to the leaf-index bits, rejects malformed sibling/root layouts, and compares the recomputed root.
+- Added a GPU raw-leaf opening path that hashes leaves on the GPU, extracts exactly one sibling node per level with `sha3_256_merkle_extract_sibling_32`, reduces the tree on resident private buffers, and reads back only the sibling path plus root.
+- Added `openRawLeafVerified`, which compares the GPU opening against the CPU oracle and also verifies the returned proof against its root before accepting it.
+- Regression coverage now checks CPU tamper detection, invalid leaf indices, single-leaf trees, strided fixed-rate leaves, and GPU/CPU opening equality for several leaf positions.
+
+Residual risk:
+
+- The target lower treelet is currently hashed once in the all-subtree root pass and once in the opening-extraction pass. This keeps the implementation simple and fully verified, but leaves a tuning opportunity for a future combined root/opening kernel.
+
+## 2026-04-13: Race-Free Merkle Treelets
+
+Finding:
+
+- The threadgroup-local Merkle treelet and fused-upper kernels compacted parent nodes into the same scratch span that sibling threads could still be reading as child input. CPU/GPU tests passed on the benchmark host, but the layout depended on implicit execution ordering inside a threadgroup and was not an acceptable cryptographic implementation invariant.
+
+Work completed:
+
+- Reworked `sha3_256_merkle_treelet_leaves_specialized` and `sha3_256_merkle_fuse_upper_32` to use two threadgroup scratch halves and swap read/write bases after each level.
+- Updated Swift feasibility and dispatch sizing so treelet and fused-upper kernels reserve 64 bytes per live node instead of 32 bytes.
+- Added a treelet-aware opening kernel that extracts the lower sibling path from the selected subtree using the same ping-pong reduction discipline.
+- Made automatic subtree selection conservative after refreshed Apple M4 / Apple9 smoke data: near-rate 135- and 136-byte SHA3 leaves can select 64-leaf treelets; shorter leaves require explicit fixed mode or planner tuning records.
+
+Residual risk:
+
+- Ping-pong scratch doubles threadgroup memory use and changes the benchmark profile. More devices and tree sizes need measured plan records before promoting additional automatic treelet shapes.

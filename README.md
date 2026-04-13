@@ -19,7 +19,7 @@ round-trips.
 | Language and platform | Swift 6 package targeting macOS 14+ |
 | Accelerator | Metal compute kernels tuned for Apple GPU families |
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
-| Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root readback only |
+| Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
@@ -59,7 +59,13 @@ Implemented today:
 - GPU SHA3 Merkle commitment from raw leaves or prehashed leaves, with parent
   levels kept resident and only the final 32-byte root copied back. Fixed-rate
   raw-leaf treelets can fuse leaf hashing plus the first local Merkle levels for
-  SHA3 inputs in the supported `0...136` byte range.
+  SHA3 inputs in the supported `0...136` byte range using race-free ping-pong
+  threadgroup scratch. Automatic treelets are currently conservative and promote
+  only the near-rate shapes supported by local smoke data.
+- GPU raw-leaf Merkle opening extraction for SHA3 commitments. The opening path
+  reads back only the requested sibling path plus the root, extracts lower
+  siblings inside selected treelets, and is checked against an independent CPU
+  opening oracle by the verified API.
 - Reusable hash, permutation, Merkle, and sum-check plans with explicit clearing
   for private buffers.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan
@@ -137,6 +143,7 @@ computing base:
 - `hashVerified`
 - `permuteVerified`
 - `commitRawLeavesVerified`
+- `openRawLeafVerified`
 - planned Merkle `commitVerified`
 - M31 sum-check `executeVerified`
 
@@ -160,6 +167,7 @@ Useful benchmark variants:
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash keccak-256 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 32 --hash-kernel simdgroup --hash-simdgroups-per-threadgroup 2 --json
 swift run zkmetal-bench --leaves 16384 --leaf-bytes 136 --merkle-subtree-auto --json
+swift run zkmetal-bench --merkle-opening --leaves 16384 --leaf-bytes 135 --opening-leaf-index 7777 --json
 swift run zkmetal-bench --suite --suite-leaf-bytes 32,64,128,136 --suite-hashes sha3-256,keccak-256 --json
 ```
 

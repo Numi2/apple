@@ -48,6 +48,9 @@ The current package aims to guarantee:
 - GPU SHA3 one-block output matches the CPU oracle for tested inputs,
 - GPU Keccak-256 one-block output matches the CPU oracle for tested inputs,
 - GPU Merkle roots match CPU Merkle roots for tested layouts,
+- GPU threadgroup Merkle treelets and fused upper reductions use disjoint ping-pong scratch spans for child reads and parent writes,
+- CPU Merkle opening verification recomputes the SHA3 leaf hash and all parent hashes from the supplied bottom-up sibling path,
+- GPU Merkle opening extraction for raw SHA3 leaves matches the independent CPU opening oracle for tested layouts,
 - invalid non-power-of-two Merkle leaf counts are rejected,
 - fixed-rate GPU SHA3 rejects inputs longer than 136 bytes,
 - CPU Merkle oracle layout failures and one-block hash length failures return typed errors instead of process traps,
@@ -57,7 +60,7 @@ The current package aims to guarantee:
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 sum-check clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
-- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, planned Merkle commitments, and M31 sum-check chunks,
+- verified accelerator APIs are available for fixed-rate SHA3/Keccak hashes, Keccak-F1600 permutation batches, raw-leaf Merkle commitments, raw-leaf Merkle openings, planned Merkle commitments, and M31 sum-check chunks,
 - the M31 GPU fold path uses the `2^31 - 1` Mersenne reduction instead of generic integer remainder for canonical M31 values.
 
 These are correctness guarantees for the implemented slice. They are not a full proof-system security claim.
