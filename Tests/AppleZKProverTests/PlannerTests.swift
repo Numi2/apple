@@ -114,6 +114,21 @@ final class PlannerTests: XCTestCase {
         )
     }
 
+    func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
+        let evaluations = (0..<16).map { UInt32(($0 + 1) * 17) }
+        let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
+
+        XCTAssertEqual(result.finalVector, [47_995_132, 403_760_185])
+        XCTAssertEqual(result.challenges, [1_881_734_986, 98_454_187, 1_942_862_365])
+        XCTAssertEqual(result.coefficients, [
+            17, 34, 51, 68, 85, 102, 119, 136,
+            153, 170, 187, 204, 221, 238, 255, 272,
+            1_701_963_778, 1_256_443_926, 810_924_074, 365_404_222,
+            2_067_368_017, 1_621_848_165, 1_176_328_313, 730_808_461,
+            709_310_370, 499_338_437, 289_366_504, 79_394_571,
+        ])
+    }
+
     func testTranscriptStateAbsorbsMultipleBlocks() throws {
         var transcript = SHA3Oracle.TranscriptState()
         let bytes = Data((0..<513).map { UInt8(truncatingIfNeeded: $0 &* 31) })
@@ -123,6 +138,29 @@ final class PlannerTests: XCTestCase {
         let challenges = try transcript.squeezeUInt32(count: 8, modulus: M31Field.modulus)
         XCTAssertEqual(challenges.count, 8)
         XCTAssertEqual(challenges, try transcript.squeezeUInt32(count: 8, modulus: M31Field.modulus))
+    }
+
+    func testTranscriptSqueezeUsesFullRateAndAdditionalBlocks() throws {
+        var transcript = SHA3Oracle.TranscriptState()
+        let bytes = Data((0..<513).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let expected: [UInt32] = [
+            2_127_244_439, 2_006_685_240, 365_476_064, 325_825_389,
+            748_474_199, 1_574_807_894, 1_702_599_380, 1_638_745_504,
+            119_529_931, 1_982_750_828, 2_081_507_940, 98_603_085,
+            245_063_869, 1_571_176_274, 407_642_607, 869_703_177,
+            1_884_659_589, 579_968_773, 522_851_100, 684_430_966,
+            856_568_228, 588_718_645, 410_141_074, 1_143_554_196,
+            1_136_193_723, 248_491_159, 1_736_217_753, 1_984_458_058,
+            196_165_745, 57_049_776, 259_472_649, 135_497_590,
+            140_823_932, 1_710_230_381, 1_848_732_132, 1_219_297_182,
+            97_705_825, 1_371_638_320, 2_029_813_781, 1_986_135_364,
+        ]
+
+        try transcript.absorb(bytes)
+
+        let challenges = try transcript.squeezeUInt32(count: expected.count, modulus: M31Field.modulus)
+        XCTAssertEqual(challenges, expected)
+        XCTAssertNotEqual(challenges[0..<6], challenges[34..<40])
     }
 
     #if canImport(Metal)
@@ -346,6 +384,113 @@ final class PlannerTests: XCTestCase {
         XCTAssertThrowsError(
             try planner.makeSumcheckChunkPlan(laneCount: 64, roundsPerSuperstep: 7)
         )
+    }
+
+    func testGPUTranscriptSqueezeMatchesCPUAcrossSqueezeBlocks() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let bytes = Data((0..<513).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        var cpuTranscript = SHA3Oracle.TranscriptState()
+        try cpuTranscript.absorb(bytes)
+        let expected = try cpuTranscript.squeezeUInt32(count: 40, modulus: M31Field.modulus)
+
+        let context = try MetalContext(device: device)
+        let arena = try ResidencyArena(device: device, capacity: 4096, label: "PlannerTests.TranscriptArena")
+        let transcript = try TranscriptEngine(context: context, arena: arena)
+        let packed = try arena.allocate(length: bytes.count, role: .scratch)
+        let challenges = try arena.allocate(
+            length: expected.count * MemoryLayout<UInt32>.stride,
+            role: .challenges
+        )
+        let upload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: bytes,
+            declaredLength: bytes.count,
+            label: "PlannerTests.TranscriptUpload"
+        )
+        let readback = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.count * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.TranscriptReadback"
+        )
+
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        try transcript.encodeReset(on: commandBuffer)
+        try transcript.encodeCanonicalPack(
+            input: upload,
+            output: packed,
+            byteCount: bytes.count,
+            on: commandBuffer
+        )
+        try transcript.encodeAbsorb(packed: packed, byteCount: bytes.count, on: commandBuffer)
+        try transcript.encodeSqueezeChallenges(
+            output: challenges,
+            challengeCount: expected.count,
+            fieldModulus: M31Field.modulus,
+            on: commandBuffer
+        )
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        blit.copy(
+            from: challenges.buffer,
+            sourceOffset: challenges.offset,
+            to: readback,
+            destinationOffset: 0,
+            size: expected.count * MemoryLayout<UInt32>.stride
+        )
+        blit.endEncoding()
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let words = readback.contents().bindMemory(to: UInt32.self, capacity: expected.count)
+        let actual = (0..<expected.count).map { words[$0] }
+        XCTAssertEqual(actual, expected)
+    }
+
+    func testGPUTranscriptEngineRejectsInvalidChallengeLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let arena = try ResidencyArena(device: device, capacity: 1024, label: "PlannerTests.InvalidTranscriptArena")
+        let transcript = try TranscriptEngine(context: context, arena: arena)
+        let emptyOutput = try arena.allocate(length: 0, role: .challenges)
+        let oneWordOutput = try arena.allocate(length: MemoryLayout<UInt32>.stride, role: .challenges)
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+
+        XCTAssertThrowsError(
+            try transcript.encodeSqueezeChallenges(
+                output: emptyOutput,
+                challengeCount: 1,
+                fieldModulus: M31Field.modulus,
+                on: commandBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        XCTAssertThrowsError(
+            try transcript.encodeSqueezeChallenges(
+                output: oneWordOutput,
+                challengeCount: 1,
+                fieldModulus: 0,
+                on: commandBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
     }
     #endif
 

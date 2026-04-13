@@ -60,6 +60,7 @@ constant ulong AZK_FC_TREELET_DEPTH [[function_constant(4)]];
 constant ulong AZK_FC_FIXED_WIDTH_CASE [[function_constant(5)]];
 constant ulong AZK_FC_BARRIER_CADENCE [[function_constant(7)]];
 constant ulong AZK_FC_DOMAIN_SUFFIX [[function_constant(8)]];
+constant uint SHA3_256_RATE_U32_WORDS = 34u;
 
 constant ulong KECCAKF_ROUND_CONSTANTS[24] = {
     0x0000000000000001UL,
@@ -1134,15 +1135,36 @@ kernel void transcript_squeeze_challenges(
     constant TranscriptSqueezeParams &params [[buffer(2)]],
     uint gid [[thread_position_in_grid]])
 {
-    if (gid >= params.challengeCount) {
+    if (gid != 0u || params.challengeCount == 0u) {
         return;
     }
 
-    const uint lane = gid & 15u;
-    const ulong word = transcriptState[lane >> 1];
-    const uint candidate = uint((word >> ((lane & 1u) * 32u)) & 0xffffffffUL);
-    const uint modulus = max(params.fieldModulus, 1u);
-    challenges[gid] = candidate % modulus;
+    thread ulong state[25];
+    for (uint i = 0; i < 25u; ++i) {
+        state[i] = transcriptState[i];
+    }
+
+    const ulong modulus = ulong(max(params.fieldModulus, 1u));
+    const ulong sampleSpace = 0x100000000UL;
+    const ulong rejectionLimit = sampleSpace - (sampleSpace % modulus);
+    uint produced = 0u;
+    ulong candidateIndex = 0u;
+
+    while (produced < params.challengeCount) {
+        if (candidateIndex > 0u && (candidateIndex % ulong(SHA3_256_RATE_U32_WORDS)) == 0u) {
+            keccak_f1600(state);
+        }
+
+        const uint wordIndex = uint(candidateIndex % ulong(SHA3_256_RATE_U32_WORDS));
+        const ulong word = state[wordIndex >> 1];
+        const ulong candidate = (word >> ((wordIndex & 1u) * 32u)) & 0xffffffffUL;
+        candidateIndex += 1u;
+
+        if (candidate < rejectionLimit) {
+            challenges[produced] = uint(candidate % modulus);
+            produced += 1u;
+        }
+    }
 }
 
 inline uint add_mod(uint a, uint b, uint modulus) {

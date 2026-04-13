@@ -52,6 +52,8 @@ The current package aims to guarantee:
 - fixed-rate GPU SHA3 rejects inputs longer than 136 bytes,
 - CPU Merkle oracle layout failures and one-block hash length failures return typed errors instead of process traps,
 - zero-length one-block messages are handled as valid SHA3 input,
+- CPU and GPU transcript squeeze paths consume the full SHA3-256 rate, advance through additional squeeze blocks with Keccak-F1600, and use rejection sampling for field reduction,
+- the M31 sum-check chunk transcript uses versioned header, round, and challenge frames with stable CPU vectors and GPU differential coverage,
 - reusable hash and Merkle plans expose explicit buffer clearing methods.
 
 These are correctness guarantees for the implemented slice. They are not a full proof-system security claim.
@@ -109,7 +111,6 @@ Malformed inputs must return typed errors rather than trapping in library code.
 
 Before this project claims production security:
 
-- the transcript layer must have independent test vectors,
 - all proof verifiers must be CPU-only and deterministic,
 - fuzzing must cover public deserialization and verifier inputs,
 - GPU/CPU differential tests must run over randomized workloads,

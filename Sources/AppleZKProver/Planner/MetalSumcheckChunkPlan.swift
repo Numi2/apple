@@ -12,6 +12,11 @@ private struct SumcheckParams {
     var fieldModulus: UInt32
 }
 
+private struct TranscriptFrameUpload {
+    let buffer: MTLBuffer
+    let byteCount: Int
+}
+
 public struct SumcheckChunkDescriptor: Hashable, Sendable {
     public let laneCount: Int
     public let roundsPerSuperstep: Int
@@ -48,6 +53,9 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
     private let finalReadback: MTLBuffer
     private let coefficientReadback: MTLBuffer
     private let challengeReadback: MTLBuffer
+    private let transcriptHeaderFrame: TranscriptFrameUpload
+    private let transcriptRoundFrames: [TranscriptFrameUpload]
+    private let transcriptChallengeFrames: [TranscriptFrameUpload]
     private let currentVector: ArenaSlice
     private let nextVector: ArenaSlice
     private let coefficientLog: ArenaSlice
@@ -77,11 +85,14 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         let coefficientBytes = try checkedBufferLength(totalCoefficientWords, MemoryLayout<UInt32>.stride)
         let challengeBytes = try checkedBufferLength(descriptor.roundsPerSuperstep, MemoryLayout<UInt32>.stride)
         let vectorBytes = inputByteCount
+        let frameData = try Self.makeTranscriptFrames(descriptor: descriptor)
+        let maxFrameBytes = frameData.all.map(\.count).max() ?? 0
+        let packedScratchBytes = max(vectorBytes, maxFrameBytes)
         let arenaBytes = try Self.checkedSum([
             vectorBytes,
             vectorBytes,
             coefficientBytes,
-            vectorBytes,
+            packedScratchBytes,
             challengeBytes,
             MemoryLayout<UInt32>.stride,
             25 * MemoryLayout<UInt64>.stride,
@@ -96,10 +107,29 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         self.currentVector = try arena.allocate(length: vectorBytes, role: .sumcheckVector)
         self.nextVector = try arena.allocate(length: vectorBytes, role: .sumcheckVector)
         self.coefficientLog = try arena.allocate(length: coefficientBytes, role: .coefficients)
-        self.packedScratch = try arena.allocate(length: vectorBytes, role: .scratch)
+        self.packedScratch = try arena.allocate(length: packedScratchBytes, role: .scratch)
         self.challengeScratch = try arena.allocate(length: MemoryLayout<UInt32>.stride, role: .challenges)
         self.challengeLog = try arena.allocate(length: challengeBytes, role: .challenges)
         self.transcript = try TranscriptEngine(context: context, arena: arena)
+        self.transcriptHeaderFrame = try Self.makeFrameUpload(
+            device: context.device,
+            data: frameData.header,
+            label: "AppleZKProver.SumcheckTranscriptHeader"
+        )
+        self.transcriptRoundFrames = try frameData.rounds.enumerated().map { index, data in
+            try Self.makeFrameUpload(
+                device: context.device,
+                data: data,
+                label: "AppleZKProver.SumcheckRoundFrame.\(index)"
+            )
+        }
+        self.transcriptChallengeFrames = try frameData.challenges.enumerated().map { index, data in
+            try Self.makeFrameUpload(
+                device: context.device,
+                data: data,
+                label: "AppleZKProver.SumcheckChallengeFrame.\(index)"
+            )
+        }
 
         self.roundEvalPipeline = try context.pipeline(
             for: KernelSpec(
@@ -241,6 +271,7 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         uploadBlit.endEncoding()
 
         try transcript.encodeReset(on: commandBuffer)
+        try encodeTranscriptFrame(transcriptHeaderFrame, on: commandBuffer)
 
         var activeLaneCount = descriptor.laneCount
         var current = currentVector
@@ -256,6 +287,7 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
                 activeLaneCount: activeLaneCount,
                 on: commandBuffer
             )
+            try encodeTranscriptFrame(transcriptRoundFrames[round], on: commandBuffer)
             try encodePackWords(
                 coefficientOffsetBytes: coefficientOffsetBytes,
                 wordCount: coefficientWordCount,
@@ -266,6 +298,7 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
                 byteCount: coefficientByteCount,
                 on: commandBuffer
             )
+            try encodeTranscriptFrame(transcriptChallengeFrames[round], on: commandBuffer)
             try transcript.encodeSqueezeChallenges(
                 output: challengeScratch,
                 challengeCount: 1,
@@ -413,6 +446,23 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
         encoder.endEncoding()
     }
 
+    private func encodeTranscriptFrame(
+        _ frame: TranscriptFrameUpload,
+        on commandBuffer: MTLCommandBuffer
+    ) throws {
+        try transcript.encodeCanonicalPack(
+            input: frame.buffer,
+            output: packedScratch,
+            byteCount: frame.byteCount,
+            on: commandBuffer
+        )
+        try transcript.encodeAbsorb(
+            packed: packedScratch,
+            byteCount: frame.byteCount,
+            on: commandBuffer
+        )
+    }
+
     private func validateCanonicalEvaluations(_ evaluations: [UInt32]) throws {
         guard evaluations.count == descriptor.laneCount else {
             throw AppleZKProverError.invalidInputLayout
@@ -442,6 +492,50 @@ public final class MetalSumcheckChunkPlan: @unchecked Sendable {
             active >>= 1
         }
         return total
+    }
+
+    private static func makeTranscriptFrames(
+        descriptor: SumcheckChunkDescriptor
+    ) throws -> (header: Data, rounds: [Data], challenges: [Data], all: [Data]) {
+        let header = try SumcheckTranscriptFraming.header(
+            laneCount: descriptor.laneCount,
+            rounds: descriptor.roundsPerSuperstep,
+            fieldModulus: M31Field.modulus
+        )
+        var roundFrames: [Data] = []
+        var challengeFrames: [Data] = []
+        roundFrames.reserveCapacity(descriptor.roundsPerSuperstep)
+        challengeFrames.reserveCapacity(descriptor.roundsPerSuperstep)
+
+        var activeLaneCount = descriptor.laneCount
+        for round in 0..<descriptor.roundsPerSuperstep {
+            roundFrames.append(try SumcheckTranscriptFraming.round(
+                roundIndex: round,
+                activeLaneCount: activeLaneCount,
+                coefficientWordCount: activeLaneCount
+            ))
+            challengeFrames.append(try SumcheckTranscriptFraming.challenge(
+                roundIndex: round,
+                fieldModulus: M31Field.modulus
+            ))
+            activeLaneCount >>= 1
+        }
+
+        return (header, roundFrames, challengeFrames, [header] + roundFrames + challengeFrames)
+    }
+
+    private static func makeFrameUpload(
+        device: MTLDevice,
+        data: Data,
+        label: String
+    ) throws -> TranscriptFrameUpload {
+        let buffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: data,
+            declaredLength: data.count,
+            label: label
+        )
+        return TranscriptFrameUpload(buffer: buffer, byteCount: data.count)
     }
 
     private static func checkedSum(_ values: [Int]) throws -> Int {

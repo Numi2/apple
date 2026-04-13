@@ -60,7 +60,19 @@ public final class TranscriptEngine: @unchecked Sendable {
         byteCount: Int,
         on commandBuffer: MTLCommandBuffer
     ) throws {
-        var params = TranscriptPackParams(byteCount: try checkedUInt32(byteCount))
+        let byteCount32 = try checkedUInt32(byteCount)
+        let inputEnd = inputOffset.addingReportingOverflow(byteCount)
+        guard inputOffset >= 0,
+              !inputEnd.overflow,
+              input.length >= inputEnd.partialValue,
+              output.length >= byteCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        guard byteCount > 0 else {
+            return
+        }
+
+        var params = TranscriptPackParams(byteCount: byteCount32)
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw AppleZKProverError.failedToCreateEncoder
         }
@@ -78,7 +90,12 @@ public final class TranscriptEngine: @unchecked Sendable {
         byteCount: Int,
         on commandBuffer: MTLCommandBuffer
     ) throws {
-        var params = TranscriptAbsorbParams(byteCount: try checkedUInt32(byteCount))
+        let byteCount32 = try checkedUInt32(byteCount)
+        guard packed.length >= byteCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        var params = TranscriptAbsorbParams(byteCount: byteCount32)
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw AppleZKProverError.failedToCreateEncoder
         }
@@ -97,8 +114,16 @@ public final class TranscriptEngine: @unchecked Sendable {
         fieldModulus: UInt32,
         on commandBuffer: MTLCommandBuffer
     ) throws {
+        let challengeCount32 = try checkedUInt32(challengeCount)
+        let outputBytes = try checkedBufferLength(challengeCount, MemoryLayout<UInt32>.stride)
+        guard fieldModulus > 0, output.length >= outputBytes else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        guard challengeCount > 0 else {
+            return
+        }
         var params = TranscriptSqueezeParams(
-            challengeCount: try checkedUInt32(challengeCount),
+            challengeCount: challengeCount32,
             fieldModulus: fieldModulus
         )
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {

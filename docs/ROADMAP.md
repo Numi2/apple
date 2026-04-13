@@ -116,7 +116,7 @@ Exit gate:
 
 Sumcheck is where Apple7 SIMD reductions and Apple9 64-bit atomics become important.
 
-- The first M31 chunk now keeps round coefficients, transcript challenge generation, and fold/halve on GPU with multi-block transcript absorb.
+- The first M31 chunk now keeps round coefficients, framed transcript challenge generation, and fold/halve on GPU with multi-block transcript absorb.
 - Implement batched multilinear evaluation.
 - Implement sumcheck round reductions for the full target protocol shape.
 - Add simdgroup reduction variants.

@@ -48,6 +48,7 @@ These constraints are deliberate for the first high-value commit path.
 - `Sources/zkmetal-bench/main.swift`: bench / smoke-test CLI.
 - `docs/ROADMAP.md`: phased development plan and exit gates.
 - `docs/SECURITY_MODEL.md`: current guarantees, threat model, and required security gates.
+- `docs/CRYPTO_FINDINGS.md`: security-relevant engineering findings and completed remediation work.
 
 ## Quick start
 

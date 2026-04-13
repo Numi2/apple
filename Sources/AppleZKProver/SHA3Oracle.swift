@@ -41,13 +41,30 @@ public enum SHA3Oracle {
                 throw AppleZKProverError.invalidInputLayout
             }
 
-            return (0..<count).map { index in
-                let lane = index & 15
-                let word = state[lane >> 1]
-                let shift = UInt64((lane & 1) * 32)
-                let candidate = UInt32(truncatingIfNeeded: word >> shift)
-                return candidate % modulus
+            let wordsPerSqueezeBlock = SHA3Oracle.sha3_256Rate / MemoryLayout<UInt32>.stride
+            let sampleSpace = UInt64(UInt32.max) + 1
+            let rejectionLimit = sampleSpace - (sampleSpace % UInt64(modulus))
+            var squeezeState = state
+            var challenges: [UInt32] = []
+            challenges.reserveCapacity(count)
+            var candidateIndex = 0
+
+            while challenges.count < count {
+                if candidateIndex > 0, candidateIndex.isMultiple(of: wordsPerSqueezeBlock) {
+                    SHA3Oracle.keccakF1600(&squeezeState)
+                }
+
+                let wordIndex = candidateIndex % wordsPerSqueezeBlock
+                let word = squeezeState[wordIndex >> 1]
+                let shift = UInt64((wordIndex & 1) * 32)
+                let candidate = UInt64(UInt32(truncatingIfNeeded: word >> shift))
+                candidateIndex += 1
+
+                if candidate < rejectionLimit {
+                    challenges.append(UInt32(candidate % UInt64(modulus)))
+                }
             }
+            return challenges
         }
     }
 

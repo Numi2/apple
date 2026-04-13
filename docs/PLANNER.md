@@ -90,6 +90,14 @@ Planned Merkle commits return the drift status beside the commitment through `co
 
 It owns a private transcript-state arena slice. The engine is intentionally low-level: protocol code should chain its encoders inside a command buffer between round evaluation and fold/halve kernels. It should not read coefficients or challenges back to the CPU except through explicit debug taps.
 
+Challenge squeezing treats the transcript state as a non-mutating sponge view: each squeeze block exposes the full SHA3-256 rate (`136` bytes, or `34` little-endian `UInt32` candidates), applies Keccak-F1600 for additional blocks, and reduces candidates with rejection sampling before writing field elements. CPU and GPU tests cover the first block boundary so challenge streams cannot silently wrap over the first state words.
+
+The current M31 sum-check chunk uses explicit transcript frames:
+
+- a versioned chunk header with lane count, rounds, and field modulus,
+- a per-round frame before absorbing coefficient words,
+- a per-round challenge frame before squeezing the challenge.
+
 ## Current Sum-Check Chunk
 
 `MetalSumcheckChunkPlan` supports one field backend today: canonical M31 elements (`0 <= x < 2^31 - 1`). The transcript absorb path now handles multi-block coefficient byte strings, so the chunk limit is driven by buffer sizing and validation rather than SHA3 rate truncation:
@@ -99,7 +107,7 @@ It owns a private transcript-state arena slice. The engine is intentionally low-
 - public array convenience APIs reject non-canonical M31 input,
 - uploaded-buffer APIs assume the caller already populated canonical field elements.
 
-For each round, the GPU writes canonical pair coefficients, packs those `UInt32` words in little-endian transcript order, absorbs them into the private Keccak state, squeezes the next challenge, and folds the vector in private memory. The tests compare final vectors, coefficient logs, and challenges against the independent CPU oracle.
+For each round, the GPU writes canonical pair coefficients, packs those `UInt32` words in little-endian transcript order, absorbs the framed transcript data into the private Keccak state, squeezes the next challenge, and folds the vector in private memory. The tests compare final vectors, coefficient logs, and challenges against the independent CPU oracle, including a stable framed transcript vector.
 
 ## Research Notes
 
