@@ -1,0 +1,287 @@
+#if canImport(Metal)
+import Foundation
+import Metal
+
+private struct CM31VectorParams {
+    var count: UInt32
+    var operation: UInt32
+    var fieldModulus: UInt32
+}
+
+public struct CM31VectorArithmeticResult: Sendable {
+    public let values: [CM31Element]
+    public let stats: GPUExecutionStats
+
+    public init(values: [CM31Element], stats: GPUExecutionStats) {
+        self.values = values
+        self.stats = stats
+    }
+}
+
+public final class CM31VectorArithmeticPlan: @unchecked Sendable {
+    private static let defaultUploadRingSlotCount = 3
+
+    public let operation: CM31VectorOperation
+    public let count: Int
+
+    private let context: MetalContext
+    private let pipeline: MTLComputePipelineState
+    private let uploadRingLHS: SharedUploadRing
+    private let uploadRingRHS: SharedUploadRing
+    private let arena: ResidencyArena
+    private let lhsVector: ArenaSlice
+    private let rhsVector: ArenaSlice
+    private let outputVector: ArenaSlice
+    private let outputReadback: MTLBuffer
+    private let inputByteCount: Int
+    private let executionLock = NSLock()
+
+    public init(
+        context: MetalContext,
+        operation: CM31VectorOperation,
+        count: Int
+    ) throws {
+        guard count > 0, count <= Int(UInt32.max) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+
+        self.context = context
+        self.operation = operation
+        self.count = count
+
+        let elementByteCount = 2 * MemoryLayout<UInt32>.stride
+        let inputByteCount = try checkedBufferLength(count, elementByteCount)
+        self.inputByteCount = inputByteCount
+        self.pipeline = try context.pipeline(
+            for: KernelSpec(kernel: "cm31_vector_arithmetic", family: .scalar, queueMode: .metal3)
+        )
+        self.uploadRingLHS = try SharedUploadRing(
+            device: context.device,
+            slotCapacity: inputByteCount,
+            slotCount: Self.defaultUploadRingSlotCount,
+            label: "AppleZKProver.CM31VectorUploadLHS"
+        )
+        self.uploadRingRHS = try SharedUploadRing(
+            device: context.device,
+            slotCapacity: inputByteCount,
+            slotCount: Self.defaultUploadRingSlotCount,
+            label: "AppleZKProver.CM31VectorUploadRHS"
+        )
+        self.arena = try ResidencyArena(
+            device: context.device,
+            capacity: try Self.checkedSum([
+                inputByteCount,
+                inputByteCount,
+                inputByteCount,
+                3 * 256,
+            ]),
+            label: "AppleZKProver.CM31VectorArena"
+        )
+        self.lhsVector = try arena.allocate(length: inputByteCount, role: .sumcheckVector)
+        self.rhsVector = try arena.allocate(length: inputByteCount, role: .sumcheckVector)
+        self.outputVector = try arena.allocate(length: inputByteCount, role: .sumcheckVector)
+        self.outputReadback = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            length: inputByteCount,
+            label: "AppleZKProver.CM31VectorReadback"
+        )
+    }
+
+    public func execute(
+        lhs: [CM31Element],
+        rhs: [CM31Element]? = nil
+    ) throws -> CM31VectorArithmeticResult {
+        try validateInputs(lhs: lhs, rhs: rhs)
+        let lhsBytes = Self.packLittleEndian(lhs)
+        let rhsBytes = Self.packLittleEndian(rhs ?? lhs)
+
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let lhsSlot = try uploadRingLHS.copy(lhsBytes, byteCount: inputByteCount)
+        let rhsSlot = try uploadRingRHS.copy(rhsBytes, byteCount: inputByteCount)
+        return try executeLocked(
+            lhsBuffer: lhsSlot.buffer,
+            lhsOffset: lhsSlot.offset,
+            rhsBuffer: rhsSlot.buffer,
+            rhsOffset: rhsSlot.offset
+        )
+    }
+
+    public func executeVerified(
+        lhs: [CM31Element],
+        rhs: [CM31Element]? = nil
+    ) throws -> CM31VectorArithmeticResult {
+        let expected = try CM31Field.apply(operation, lhs: lhs, rhs: rhs)
+        let measured = try execute(lhs: lhs, rhs: rhs)
+        guard measured.values == expected else {
+            throw AppleZKProverError.correctnessValidationFailed("CM31 vector arithmetic GPU result did not match the CPU oracle.")
+        }
+        return measured
+    }
+
+    public func clearReusableBuffers() throws {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        uploadRingLHS.clear()
+        uploadRingRHS.clear()
+        MetalBufferFactory.zeroSharedBuffer(outputReadback)
+        try MetalBufferFactory.zeroPrivateBuffers(
+            [arena.buffer],
+            context: context,
+            label: "CM31Vector.PlanClear"
+        )
+    }
+
+    private func executeLocked(
+        lhsBuffer: MTLBuffer,
+        lhsOffset: Int,
+        rhsBuffer: MTLBuffer,
+        rhsOffset: Int
+    ) throws -> CM31VectorArithmeticResult {
+        try validateBufferRange(buffer: lhsBuffer, offset: lhsOffset, byteCount: inputByteCount)
+        try validateBufferRange(buffer: rhsBuffer, offset: rhsOffset, byteCount: inputByteCount)
+
+        let start = DispatchTime.now()
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "CM31.VectorArithmetic.\(operation)"
+
+        guard let uploadBlit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        uploadBlit.label = "CM31.VectorArithmetic.Upload"
+        uploadBlit.copy(
+            from: lhsBuffer,
+            sourceOffset: lhsOffset,
+            to: lhsVector.buffer,
+            destinationOffset: lhsVector.offset,
+            size: inputByteCount
+        )
+        uploadBlit.copy(
+            from: rhsBuffer,
+            sourceOffset: rhsOffset,
+            to: rhsVector.buffer,
+            destinationOffset: rhsVector.offset,
+            size: inputByteCount
+        )
+        uploadBlit.fill(buffer: outputVector.buffer, range: outputVector.offset..<(outputVector.offset + outputVector.length), value: 0)
+        uploadBlit.endEncoding()
+
+        var params = CM31VectorParams(
+            count: try checkedUInt32(count),
+            operation: operation.rawValue,
+            fieldModulus: CM31Field.modulus
+        )
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        encoder.label = "CM31.VectorArithmetic.Kernel"
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(lhsVector.buffer, offset: lhsVector.offset, index: 0)
+        encoder.setBuffer(rhsVector.buffer, offset: rhsVector.offset, index: 1)
+        encoder.setBuffer(outputVector.buffer, offset: outputVector.offset, index: 2)
+        encoder.setBytes(&params, length: MemoryLayout<CM31VectorParams>.stride, index: 3)
+        context.dispatch1D(encoder, pipeline: pipeline, elementCount: count)
+        encoder.endEncoding()
+
+        guard let readbackBlit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        readbackBlit.label = "CM31.VectorArithmetic.Readback"
+        readbackBlit.copy(
+            from: outputVector.buffer,
+            sourceOffset: outputVector.offset,
+            to: outputReadback,
+            destinationOffset: 0,
+            size: inputByteCount
+        )
+        readbackBlit.endEncoding()
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        let wall = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
+        return CM31VectorArithmeticResult(
+            values: Self.readCM31Buffer(outputReadback, count: count),
+            stats: GPUExecutionStats(cpuWallSeconds: wall, gpuSeconds: gpuDuration(commandBuffer))
+        )
+    }
+
+    private func validateInputs(lhs: [CM31Element], rhs: [CM31Element]?) throws {
+        guard lhs.count == count else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try CM31Field.validateCanonical(lhs)
+        if operation.requiresRightHandSide {
+            guard let rhs, rhs.count == count else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            try CM31Field.validateCanonical(rhs)
+        } else if rhs != nil {
+            throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    private func validateBufferRange(buffer: MTLBuffer, offset: Int, byteCount: Int) throws {
+        let end = offset.addingReportingOverflow(max(1, byteCount))
+        guard offset >= 0,
+              byteCount >= 0,
+              !end.overflow,
+              buffer.length >= end.partialValue else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    private static func packLittleEndian(_ values: [CM31Element]) -> Data {
+        var data = Data()
+        data.reserveCapacity(values.count * 2 * MemoryLayout<UInt32>.stride)
+        for value in values {
+            appendUInt32LittleEndian(value.real, to: &data)
+            appendUInt32LittleEndian(value.imaginary, to: &data)
+        }
+        return data
+    }
+
+    private static func appendUInt32LittleEndian(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8(value & 0xff))
+        data.append(UInt8((value >> 8) & 0xff))
+        data.append(UInt8((value >> 16) & 0xff))
+        data.append(UInt8((value >> 24) & 0xff))
+    }
+
+    private static func readCM31Buffer(_ buffer: MTLBuffer, count: Int) -> [CM31Element] {
+        let wordCount = count * 2
+        let raw = buffer.contents().bindMemory(to: UInt32.self, capacity: wordCount)
+        return (0..<count).map { index in
+            CM31Element(real: raw[index * 2], imaginary: raw[index * 2 + 1])
+        }
+    }
+
+    private static func checkedSum(_ values: [Int]) throws -> Int {
+        var total = 0
+        for value in values {
+            let next = total.addingReportingOverflow(value)
+            guard value >= 0, !next.overflow else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            total = next.partialValue
+        }
+        return total
+    }
+
+    private func gpuDuration(_ commandBuffer: MTLCommandBuffer) -> Double? {
+        guard commandBuffer.gpuEndTime > commandBuffer.gpuStartTime else {
+            return nil
+        }
+        return commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+    }
+}
+#endif

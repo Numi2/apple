@@ -190,6 +190,85 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testCM31CPUOracleCoversEdgeValues() throws {
+        let modulus = CM31Field.modulus
+        let lhs: [CM31Element] = [
+            CM31Element(real: 0, imaginary: 0),
+            CM31Element(real: 1, imaginary: 0),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: modulus - 1, imaginary: 0),
+            CM31Element(real: modulus - 1, imaginary: modulus - 1),
+        ]
+        let rhs: [CM31Element] = [
+            CM31Element(real: 0, imaginary: 0),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: modulus - 1, imaginary: modulus - 1),
+            CM31Element(real: 1, imaginary: modulus - 1),
+        ]
+
+        XCTAssertEqual(
+            try CM31Field.apply(.add, lhs: lhs, rhs: rhs),
+            [
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: 1, imaginary: 1),
+                CM31Element(real: 0, imaginary: 2),
+                CM31Element(real: modulus - 2, imaginary: modulus - 1),
+                CM31Element(real: 0, imaginary: modulus - 2),
+            ]
+        )
+        XCTAssertEqual(
+            try CM31Field.apply(.subtract, lhs: lhs, rhs: rhs),
+            [
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: 1, imaginary: modulus - 1),
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: 0, imaginary: 1),
+                CM31Element(real: modulus - 2, imaginary: 0),
+            ]
+        )
+        XCTAssertEqual(
+            try CM31Field.apply(.negate, lhs: lhs),
+            [
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: modulus - 1, imaginary: 0),
+                CM31Element(real: 0, imaginary: modulus - 1),
+                CM31Element(real: 1, imaginary: 0),
+                CM31Element(real: 1, imaginary: 1),
+            ]
+        )
+        XCTAssertEqual(
+            try CM31Field.apply(.multiply, lhs: lhs, rhs: rhs),
+            [
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: 0, imaginary: 1),
+                CM31Element(real: modulus - 1, imaginary: 0),
+                CM31Element(real: 1, imaginary: 1),
+                CM31Element(real: modulus - 2, imaginary: 0),
+            ]
+        )
+        XCTAssertEqual(
+            try CM31Field.apply(.square, lhs: lhs),
+            [
+                CM31Element(real: 0, imaginary: 0),
+                CM31Element(real: 1, imaginary: 0),
+                CM31Element(real: modulus - 1, imaginary: 0),
+                CM31Element(real: 1, imaginary: 0),
+                CM31Element(real: 0, imaginary: 2),
+            ]
+        )
+
+        XCTAssertThrowsError(try CM31Field.apply(.multiply, lhs: [CM31Element(real: modulus, imaginary: 0)], rhs: [lhs[0]])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try CM31Field.apply(.multiply, lhs: [lhs[0]], rhs: nil)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try CM31Field.apply(.square, lhs: [lhs[0]], rhs: [rhs[0]])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
         let evaluations = (0..<16).map { UInt32(($0 + 1) * 17) }
         let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: 3)
@@ -546,6 +625,86 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testCM31VectorArithmeticPlansMatchCPUOracle() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        var lhs = Self.makeCM31Evaluations(count: 257, realSalt: 331, imaginarySalt: 337)
+        var rhs = Self.makeCM31Evaluations(count: 257, realSalt: 397, imaginarySalt: 401)
+        lhs.replaceSubrange(0..<5, with: [
+            CM31Element(real: 0, imaginary: 0),
+            CM31Element(real: 1, imaginary: 0),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: CM31Field.modulus - 1, imaginary: 0),
+            CM31Element(real: CM31Field.modulus - 1, imaginary: CM31Field.modulus - 1),
+        ])
+        rhs.replaceSubrange(0..<5, with: [
+            CM31Element(real: 0, imaginary: 0),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: 0, imaginary: 1),
+            CM31Element(real: CM31Field.modulus - 1, imaginary: CM31Field.modulus - 1),
+            CM31Element(real: 1, imaginary: CM31Field.modulus - 1),
+        ])
+
+        for operation in CM31VectorOperation.allCases {
+            let operationRHS = operation.requiresRightHandSide ? rhs : nil
+            let plan = try CM31VectorArithmeticPlan(
+                context: context,
+                operation: operation,
+                count: lhs.count
+            )
+            let measured = try plan.executeVerified(lhs: lhs, rhs: operationRHS)
+            let expected = try CM31Field.apply(operation, lhs: lhs, rhs: operationRHS)
+            XCTAssertEqual(measured.values, expected, "CM31 \(operation) mismatch")
+
+            try plan.clearReusableBuffers()
+            let reusedRHS = operation.requiresRightHandSide ? lhs : nil
+            let reused = try plan.executeVerified(lhs: rhs, rhs: reusedRHS)
+            let reusedExpected = try CM31Field.apply(operation, lhs: rhs, rhs: reusedRHS)
+            XCTAssertEqual(reused.values, reusedExpected, "CM31 \(operation) mismatch after clear/reuse")
+        }
+    }
+
+    func testCM31VectorArithmeticRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try CM31VectorArithmeticPlan(context: context, operation: .multiply, count: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let binaryPlan = try CM31VectorArithmeticPlan(context: context, operation: .multiply, count: 2)
+        XCTAssertThrowsError(
+            try binaryPlan.execute(
+                lhs: [CM31Element(real: 0, imaginary: 0), CM31Element(real: 1, imaginary: 1)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try binaryPlan.execute(
+                lhs: [CM31Element(real: 0, imaginary: CM31Field.modulus), CM31Element(real: 1, imaginary: 1)],
+                rhs: [CM31Element(real: 0, imaginary: 0), CM31Element(real: 1, imaginary: 1)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let unaryPlan = try CM31VectorArithmeticPlan(context: context, operation: .square, count: 2)
+        XCTAssertThrowsError(
+            try unaryPlan.execute(
+                lhs: [CM31Element(real: 0, imaginary: 0), CM31Element(real: 1, imaginary: 1)],
+                rhs: [CM31Element(real: 0, imaginary: 0), CM31Element(real: 1, imaginary: 1)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31DotProductPlanMatchesCPUOracleAndUploadedHotPath() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -881,6 +1040,16 @@ final class PlannerTests: XCTestCase {
             let value = UInt64(index + 1) * 1_048_573 + UInt64(salt) * 65_537
             return UInt32(value % UInt64(M31Field.modulus))
         }
+    }
+
+    private static func makeCM31Evaluations(
+        count: Int,
+        realSalt: UInt32,
+        imaginarySalt: UInt32
+    ) -> [CM31Element] {
+        let real = makeM31Evaluations(count: count, salt: realSalt)
+        let imaginary = makeM31Evaluations(count: count, salt: imaginarySalt)
+        return zip(real, imaginary).map { CM31Element(real: $0, imaginary: $1) }
     }
 
     private static func packUInt32LittleEndian(_ values: [UInt32]) -> Data {

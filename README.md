@@ -3,8 +3,8 @@
 AppleZKProver is a SwiftPM package for building Apple-silicon-first proving
 primitives on top of Metal. It focuses on the parts of transparent proof systems
 that are naturally GPU-resident: SHA3/Keccak hashing, Merkle commitments,
-Keccak-F1600 permutation batches, transcript work, M31 field reductions, and
-early M31 sum-check execution.
+Keccak-F1600 permutation batches, transcript work, M31/CM31 field reductions,
+and early M31 sum-check execution.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
 a broad cryptography catalog and does not claim production proof-system security
@@ -21,7 +21,7 @@ round-trips.
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
-| M31 field lanes | CPU oracle plus reusable GPU vector add, subtract, negate, multiply, square, inverse, and dot-product plans |
+| M31/CM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
 | Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
@@ -74,6 +74,9 @@ Implemented today:
   subtract, negate, multiply, square, inverse, and dot product. Inputs are
   validated as canonical field elements before CPU-backed APIs accept the
   result, and inversion rejects zero at the public API boundary.
+- CM31 extension-field arithmetic over `M31[X]/(X^2 + 1)`, including CPU
+  oracle coverage and reusable GPU vector add, subtract, negate, multiply, and
+  square plans with CPU-verified execution.
 - `MetalProofPlanner` for correctness-gated Merkle plan races, SQLite plan
   history, drift observation, and M31 sum-check plan construction.
 - GPU transcript helpers for canonical packing, Keccak absorb, and challenge
@@ -153,6 +156,7 @@ computing base:
 - planned Merkle `commitVerified`
 - M31 sum-check `executeVerified`
 - M31 vector dot-product `executeVerified`
+- CM31 vector arithmetic `executeVerified`
 
 These APIs recompute the result with the CPU oracle and throw
 `AppleZKProverError.correctnessValidationFailed` if the GPU result diverges.
@@ -168,6 +172,7 @@ swift run zkmetal-bench --suite --leaves 16384 --iterations 5 --json
 swift run zkmetal-bench --keccakf-permutation --states 16384 --iterations 5 --json
 swift run zkmetal-bench --m31-dot-product --elements 16384 --iterations 5 --json
 swift run zkmetal-bench --m31-inverse --elements 16384 --iterations 5 --json
+swift run zkmetal-bench --cm31-multiply --elements 16384 --iterations 5 --json
 ```
 
 Useful benchmark variants:

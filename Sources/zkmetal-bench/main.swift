@@ -50,6 +50,7 @@ struct BenchConfig {
     var keccakF1600Permutation = false
     var m31DotProduct = false
     var m31VectorInverse = false
+    var cm31VectorMultiply = false
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
@@ -89,7 +90,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse {
+                if !m31VectorInverse && !cm31VectorMultiply {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -155,6 +156,9 @@ struct BenchConfig {
                 m31DotProduct = true
             case "--m31-inverse", "--m31-vector-inverse":
                 m31VectorInverse = true
+                m31DotProduct = false
+            case "--cm31-multiply", "--cm31-vector-multiply":
+                cm31VectorMultiply = true
                 m31DotProduct = false
             case "--merkle-opening":
                 merkleOpening = true
@@ -249,7 +253,8 @@ struct BenchConfig {
           --keccakf-permutation      Run Keccak-F1600 permutation-only benchmark instead of hash/Merkle
           --m31-dot-product          Run M31 vector dot-product benchmark instead of hash/Merkle
           --m31-inverse              Run M31 vector inverse benchmark instead of hash/Merkle
-          --elements N               Element count for M31 benchmarks. Alias for --leaves in those modes
+          --cm31-multiply            Run CM31 vector multiplication benchmark instead of hash/Merkle
+          --elements N               Element count for M31/CM31 benchmarks. Alias for --leaves in those modes
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
           --states N                 State count for --keccakf-permutation. Alias for --leaves in that mode
@@ -273,9 +278,9 @@ struct BenchConfig {
         guard leafCount > 0 else {
             return BenchError.invalidArgument(keccakF1600Permutation ? "--states must be greater than zero." : "--leaves must be greater than zero.")
         }
-        let exclusiveModes = [keccakF1600Permutation, merkleOpening, m31DotProduct, m31VectorInverse].filter { $0 }.count
+        let exclusiveModes = [keccakF1600Permutation, merkleOpening, m31DotProduct, m31VectorInverse, cm31VectorMultiply].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, and --m31-inverse are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, and --cm31-multiply are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -292,6 +297,15 @@ struct BenchConfig {
             }
             guard !leafCount.multipliedReportingOverflow(by: 2 * MemoryLayout<UInt32>.stride).overflow else {
                 return BenchError.invalidArgument("Requested M31 vector buffers are too large for this process.")
+            }
+            return nil
+        }
+        if cm31VectorMultiply {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with CM31 vector benchmarks.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: 4 * MemoryLayout<UInt32>.stride).overflow else {
+                return BenchError.invalidArgument("Requested CM31 vector buffers are too large for this process.")
             }
             return nil
         }
@@ -629,6 +643,32 @@ struct M31VectorBenchmarkReport: Codable {
     let verification: M31VectorVerificationReport
 }
 
+struct CM31VectorBenchmarkConfigReport: Codable {
+    let elementCount: Int
+    let operation: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct CM31VectorVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct CM31VectorBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: CM31VectorBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let vector: FieldMeasurementReport?
+    let verification: CM31VectorVerificationReport
+}
+
 struct MerkleOpeningBenchmarkConfigReport: Codable {
     let leafCount: Int
     let leafLength: Int
@@ -695,16 +735,40 @@ func makeDeterministicNonzeroM31Vector(count: Int, salt: UInt32) -> [UInt32] {
     }
 }
 
+func makeDeterministicCM31Vector(
+    count: Int,
+    realSalt: UInt32,
+    imaginarySalt: UInt32
+) -> [CM31Element] {
+    let real = makeDeterministicM31Vector(count: count, salt: realSalt)
+    let imaginary = makeDeterministicM31Vector(count: count, salt: imaginarySalt)
+    return zip(real, imaginary).map { CM31Element(real: $0, imaginary: $1) }
+}
+
 func packUInt32LittleEndian(_ values: [UInt32]) -> Data {
     var data = Data()
     data.reserveCapacity(values.count * MemoryLayout<UInt32>.stride)
     for value in values {
-        data.append(UInt8(value & 0xff))
-        data.append(UInt8((value >> 8) & 0xff))
-        data.append(UInt8((value >> 16) & 0xff))
-        data.append(UInt8((value >> 24) & 0xff))
+        appendUInt32LittleEndian(value, to: &data)
     }
     return data
+}
+
+func packCM31LittleEndian(_ values: [CM31Element]) -> Data {
+    var data = Data()
+    data.reserveCapacity(values.count * 2 * MemoryLayout<UInt32>.stride)
+    for value in values {
+        appendUInt32LittleEndian(value.real, to: &data)
+        appendUInt32LittleEndian(value.imaginary, to: &data)
+    }
+    return data
+}
+
+func appendUInt32LittleEndian(_ value: UInt32, to data: inout Data) {
+    data.append(UInt8(value & 0xff))
+    data.append(UInt8((value >> 8) & 0xff))
+    data.append(UInt8((value >> 16) & 0xff))
+    data.append(UInt8((value >> 24) & 0xff))
 }
 
 func makeDeterministicKeccakF1600States(count: Int) -> Data {
@@ -952,6 +1016,14 @@ func emitJSON(_ report: M31VectorBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: CM31VectorBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitJSON(_ report: MerkleOpeningBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1116,6 +1188,44 @@ func emitText(_ report: M31DotProductBenchmarkReport) {
 
 func emitText(_ report: M31VectorBenchmarkReport) {
     print("zkmetal-bench m31-vector")
+    print("  elements     : \(report.configuration.elementCount)")
+    print("  operation    : \(report.configuration.operation)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let vector = report.vector {
+        printSeconds("vec wall", vector.wallSeconds)
+        if let gpu = vector.gpuSeconds {
+            printSeconds("vec gpu ", gpu)
+        }
+        print("  elements/sec : \(String(format: "%.2f", vector.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", vector.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
+func emitText(_ report: CM31VectorBenchmarkReport) {
+    print("zkmetal-bench cm31-vector")
     print("  elements     : \(report.configuration.elementCount)")
     print("  operation    : \(report.configuration.operation)")
     print("  warmups      : \(report.configuration.warmupIterations)")
@@ -1329,6 +1439,19 @@ func verificationFailureMessages(in report: M31VectorBenchmarkReport) -> [String
     return []
 }
 
+func verificationFailureMessages(in report: CM31VectorBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        return [
+            "cm31-vector operation=\(report.configuration.operation) elements=\(report.configuration.elementCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -1374,6 +1497,34 @@ func m31VectorOperationName(_ operation: M31VectorOperation) -> String {
         return "square"
     case .inverse:
         return "inverse"
+    }
+}
+
+func makeCM31VectorConfigReport(
+    config: BenchConfig,
+    operation: CM31VectorOperation
+) -> CM31VectorBenchmarkConfigReport {
+    CM31VectorBenchmarkConfigReport(
+        elementCount: config.leafCount,
+        operation: cm31VectorOperationName(operation),
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func cm31VectorOperationName(_ operation: CM31VectorOperation) -> String {
+    switch operation {
+    case .add:
+        return "add"
+    case .subtract:
+        return "subtract"
+    case .negate:
+        return "negate"
+    case .multiply:
+        return "multiply"
+    case .square:
+        return "square"
     }
 }
 
@@ -1496,6 +1647,107 @@ func runM31VectorInverseBenchmark(_ config: BenchConfig) throws -> M31VectorBenc
         pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
         vector: nil,
         verification: M31VectorVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+@inline(never)
+func runCM31VectorMultiplyBenchmark(_ config: BenchConfig) throws -> CM31VectorBenchmarkReport {
+    let operation = CM31VectorOperation.multiply
+    let lhs = makeDeterministicCM31Vector(count: config.leafCount, realSalt: 0xc31, imaginarySalt: 0xc37)
+    let rhs = makeDeterministicCM31Vector(count: config.leafCount, realSalt: 0xc41, imaginarySalt: 0xc43)
+    let configReport = makeCM31VectorConfigReport(config: config, operation: operation)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = try CM31Field.apply(operation, lhs: lhs, rhs: rhs)
+        let digest = SHA3Oracle.sha3_256(packCM31LittleEndian(cpuOutput)).hexString
+        return CM31VectorBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            vector: nil,
+            verification: CM31VectorVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try CM31VectorArithmeticPlan(context: context, operation: operation, count: config.leafCount)
+    try context.serializePipelineArchiveIfNeeded()
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.execute(lhs: lhs, rhs: rhs)
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    var output: [CM31Element] = []
+    for _ in 0..<config.iterations {
+        let result = try plan.execute(lhs: lhs, rhs: rhs)
+        wallSeconds.append(result.stats.cpuWallSeconds)
+        gpuSeconds.append(result.stats.gpuSeconds)
+        output = result.values
+    }
+
+    let cpuOutput = config.verifyWithCPU ? try CM31Field.apply(operation, lhs: lhs, rhs: rhs) : nil
+    let matchedCPU = cpuOutput.map { $0 == output }
+    let outputDigest = SHA3Oracle.sha3_256(packCM31LittleEndian(output)).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256(packCM31LittleEndian($0)).hexString }
+    return CM31VectorBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        vector: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: config.leafCount,
+            inputBytes: Double(config.leafCount) * Double(4 * MemoryLayout<UInt32>.stride)
+        ),
+        verification: CM31VectorVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = try CM31Field.apply(operation, lhs: lhs, rhs: rhs)
+    let digest = SHA3Oracle.sha3_256(packCM31LittleEndian(cpuOutput)).hexString
+    return CM31VectorBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        vector: nil,
+        verification: CM31VectorVerificationReport(
             enabled: true,
             matchedCPU: true,
             outputDigestHex: digest,
@@ -2145,6 +2397,20 @@ func runCLI() -> Int32 {
             }
         } else if config.m31VectorInverse {
             let report = try runM31VectorInverseBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.cm31VectorMultiply {
+            let report = try runCM31VectorMultiplyBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

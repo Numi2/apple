@@ -74,6 +74,12 @@ struct M31VectorParams {
     uint fieldModulus;
 };
 
+struct CM31VectorParams {
+    uint count;
+    uint operation;
+    uint fieldModulus;
+};
+
 struct M31DotProductParams {
     uint count;
     uint fieldModulus;
@@ -1408,6 +1414,71 @@ kernel void m31_vector_arithmetic(
         break;
     default:
         output[gid] = 0u;
+        break;
+    }
+}
+
+inline uint2 cm31_add_mod(uint2 a, uint2 b) {
+    return uint2(m31_add_mod(a.x, b.x), m31_add_mod(a.y, b.y));
+}
+
+inline uint2 cm31_sub_mod(uint2 a, uint2 b) {
+    return uint2(m31_sub_mod(a.x, b.x), m31_sub_mod(a.y, b.y));
+}
+
+inline uint2 cm31_neg_mod(uint2 value) {
+    return uint2(m31_neg_mod(value.x), m31_neg_mod(value.y));
+}
+
+inline uint2 cm31_mul_mod(uint2 a, uint2 b) {
+    const uint ac = m31_mul_mod(a.x, b.x);
+    const uint bd = m31_mul_mod(a.y, b.y);
+    const uint sumA = m31_add_mod(a.x, a.y);
+    const uint sumB = m31_add_mod(b.x, b.y);
+    const uint productOfSums = m31_mul_mod(sumA, sumB);
+    return uint2(
+        m31_sub_mod(ac, bd),
+        m31_sub_mod(m31_sub_mod(productOfSums, ac), bd)
+    );
+}
+
+inline uint2 cm31_square_mod(uint2 value) {
+    const uint sum = m31_add_mod(value.x, value.y);
+    const uint difference = m31_sub_mod(value.x, value.y);
+    const uint cross = m31_mul_mod(value.x, value.y);
+    return uint2(m31_mul_mod(sum, difference), m31_add_mod(cross, cross));
+}
+
+kernel void cm31_vector_arithmetic(
+    const device uint2 *lhs [[buffer(0)]],
+    const device uint2 *rhs [[buffer(1)]],
+    device uint2 *output [[buffer(2)]],
+    constant CM31VectorParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.count || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint2 a = lhs[gid];
+    switch (params.operation) {
+    case 0u:
+        output[gid] = cm31_add_mod(a, rhs[gid]);
+        break;
+    case 1u:
+        output[gid] = cm31_sub_mod(a, rhs[gid]);
+        break;
+    case 2u:
+        output[gid] = cm31_neg_mod(a);
+        break;
+    case 3u:
+        output[gid] = cm31_mul_mod(a, rhs[gid]);
+        break;
+    case 4u:
+        output[gid] = cm31_square_mod(a);
+        break;
+    default:
+        output[gid] = uint2(0u, 0u);
         break;
     }
 }

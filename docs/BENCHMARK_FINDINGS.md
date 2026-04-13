@@ -24,6 +24,7 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - Added a dedicated Keccak-F1600 permutation-only benchmark mode for Plonky3-style raw permutation relevance. It emits schema v1 JSON reports separate from the existing hash/Merkle schema v4 reports and verifies the output digest against the CPU permutation oracle.
 - Added a dedicated M31 dot-product benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, records threadgroup geometry, and verifies the one-word GPU reduction against the CPU M31 oracle.
 - Added a dedicated M31 vector inverse benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, and verifies the GPU output digest against the CPU M31 batch-inversion oracle.
+- Added a dedicated CM31 vector multiplication benchmark mode. It emits schema v1 JSON reports with CM31 elements/sec and input bandwidth, and verifies the GPU output digest against the independent CPU CM31 oracle.
 - Extended the lower Merkle treelet path from 32-byte leaves to the full fixed-rate SHA3 leaf contract (`0...136` bytes). The new treelet remains a SHA3 Merkle commitment path: standalone Keccak-256 suite rows still use SHA3 for the Merkle root, matching the existing commitment API.
 - Added `zkmetal-bench --merkle-opening` for raw-leaf SHA3 opening extraction. It emits a schema v1 opening report with root, proof digest, sibling count, CPU proof match, and opening timing without dumping proof nodes.
 - Reworked threadgroup-local Merkle treelet and fused-upper reductions to use ping-pong scratch halves, eliminating the intra-threadgroup read/write overlap that parent compaction could otherwise create.
@@ -46,6 +47,8 @@ swift run zkmetal-bench --m31-dot-product --elements 4097 --iterations 1 --warmu
 .build/release/zkmetal-bench --m31-dot-product --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-m31-dot-product.json
 swift run zkmetal-bench --m31-inverse --leaves 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-m31-inverse.json
 .build/release/zkmetal-bench --m31-inverse --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-m31-inverse.json
+swift run zkmetal-bench --cm31-multiply --elements 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-cm31-multiply.json
+.build/release/zkmetal-bench --cm31-multiply --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-cm31-multiply.json
 swift run zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256,keccak-256 --leaves 256 --iterations 1 --warmups 0 --no-pipeline-archive --merkle-subtree-leaves 16 --json > /tmp/applezk-treelet-fixedrate-suite.json
 swift run zkmetal-bench --merkle-opening --leaves 1024 --leaf-bytes 135 --opening-leaf-index 777 --merkle-subtree-auto --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-merkle-opening.json
 swift build -c release -Xswiftc -Osize
@@ -68,6 +71,8 @@ After the combined treelet root/opening kernel, `swift test` and `swift test -c 
 After the M31 dot-product primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 73 tests. The debug dot-product smoke report for 4,097 elements had `verification.matchedCPU == true` and selected 256 threads per threadgroup and 1,024 elements per threadgroup. The release `-Osize` smoke report for 16,384 elements had `verification.matchedCPU == true`, the same reduction geometry, 372,011,357.55 elements/sec, and 2,976,090,860.37 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
 
 After the M31 vector inverse primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 73 tests. The debug inverse smoke report for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 elements had `verification.matchedCPU == true`, 167,825,862.18 elements/sec, and 671,303,448.74 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
+
+After the CM31 vector multiplication primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 76 tests. The debug CM31 multiply smoke report for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 CM31 elements had `verification.matchedCPU == true`, 398,395,134.07 elements/sec, and 6,374,322,145.07 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 
@@ -110,6 +115,16 @@ The opening smoke used release `-Osize`, 16,384 leaves, 135-byte leaves, leaf in
 | 135 | 7777 | 64 | 14 | 0.001612791 | 0.000938375 | true |
 
 Interpretation: this is the current measurement gate for treelet-aware GPU opening extraction. The opening-mode treelet kernel now produces subtree roots for the upper tree and the requested lower sibling path in one pass, so the target treelet is no longer hashed twice. The previous race-free opening smoke minimums for the same command shape were 0.001980750 wall seconds and 0.001435917 GPU seconds.
+
+## CM31 Vector Multiply Smoke
+
+The CM31 smoke used release `-Osize`, 16,384 CM31 elements, one warmup, five timed iterations, CPU verification enabled, and pipeline archives disabled. The input bandwidth counts both CM31 input vectors, so each logical element contributes four 32-bit M31 limbs.
+
+| Elements | Operation | Min wall seconds | Min GPU seconds | Elements/sec | Input bytes/sec | CPU digest match |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 16,384 | multiply | 0.000418166 | 0.000041125 | 398,395,134.07 | 6,374,322,145.07 | true |
+
+Interpretation: this is the first measurement gate for extension-field multiplication. It validates the benchmark harness, kernel dispatch, and CPU digest check, but it is not a checked-in release baseline and does not yet measure resident composition with FRI or PCS kernels.
 
 ## Release Baseline
 

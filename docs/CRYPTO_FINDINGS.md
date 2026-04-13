@@ -2,6 +2,29 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: CM31 Extension Field Multiplication Primitive
+
+Finding:
+
+- The Phase 3 field-lane roadmap required extension-field multiplication, but the implemented reusable vector surface stopped at base M31 arithmetic. Circle-STARK/Stwo-style paths need the quadratic extension CM31 before Circle FFT, secure challenge packing, and later quartic-field work can be represented without falling back to ad hoc CPU code.
+
+Work completed:
+
+- Added `CM31Element` and `CM31Field`, an independent CPU oracle for `M31[X]/(X^2 + 1)` with canonical validation, componentwise add/subtract/negate, direct-form multiplication, and squaring.
+- Added `CM31VectorOperation` and `CM31VectorArithmeticPlan`, a reusable Metal plan for interleaved `real, imaginary` CM31 vectors. The public path validates canonical CM31 elements, copies through ring-buffered shared staging, keeps resident private buffers in a `ResidencyArena`, reads back only the output vector, and exposes `executeVerified` for CPU/GPU equality checks.
+- Added a Metal `cm31_vector_arithmetic` kernel. Multiplication uses the three-base-multiply Karatsuba form for `i^2 = -1`; the CPU oracle intentionally uses the direct four-product formula for differential independence.
+- Added deterministic CPU regression coverage for edge values `0`, `1`, `i`, `-1`, and `-1 - i`, malformed canonical limbs, binary/unary layout errors, GPU/CPU equality for every CM31 vector operation, and clear/reuse behavior.
+- Added `zkmetal-bench --cm31-multiply`, with schema v1 JSON/text output, CPU digest verification, CM31 elements/sec, and input bandwidth reporting.
+
+Residual risk:
+
+- This is a quadratic CM31 lane, not the full QM31 secure-field stack. The next extension step should build quartic multiplication over CM31 with independent test vectors before using extension challenges in a verifier-facing proof format.
+- The reusable plan is an uploaded-vector/readback primitive. It does not yet compose CM31 buffers directly into Circle FFT, FRI fold, PCS, or sum-check command plans.
+
+Reference:
+
+- Stwo Book, "Mersenne Primes", sections on M31, CM31, and QM31: https://zksecurity.github.io/stwo-book/how-it-works/mersenne-prime.html
+
 ## 2026-04-13: M31 Vector Inversion Primitive
 
 Finding:
