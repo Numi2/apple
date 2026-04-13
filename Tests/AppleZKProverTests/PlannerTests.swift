@@ -267,6 +267,145 @@ final class PlannerTests: XCTestCase {
         XCTAssertThrowsError(try CM31Field.apply(.square, lhs: [lhs[0]], rhs: [rhs[0]])) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
+
+        let value = CM31Element(real: 1, imaginary: 2)
+        let inverse = try CM31Field.inverse(value)
+        XCTAssertEqual(CM31Field.multiply(value, inverse), CM31Element(real: 1, imaginary: 0))
+        XCTAssertThrowsError(try CM31Field.inverse(CM31Element(real: 0, imaginary: 0))) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31CPUOracleCoversEdgeValuesAndInverse() throws {
+        let modulus = QM31Field.modulus
+        let lhs = QM31Element(a: 1, b: 2, c: 3, d: 4)
+        let rhs = QM31Element(a: 4, b: 5, c: 6, d: 7)
+
+        XCTAssertEqual(
+            QM31Field.add(lhs, rhs),
+            QM31Element(a: 5, b: 7, c: 9, d: 11)
+        )
+        XCTAssertEqual(
+            QM31Field.subtract(lhs, rhs),
+            QM31Element(a: modulus - 3, b: modulus - 3, c: modulus - 3, d: modulus - 3)
+        )
+        XCTAssertEqual(
+            QM31Field.negate(lhs),
+            QM31Element(a: modulus - 1, b: modulus - 2, c: modulus - 3, d: modulus - 4)
+        )
+        XCTAssertEqual(
+            QM31Field.multiply(lhs, rhs),
+            QM31Element(a: modulus - 71, b: 93, c: modulus - 16, d: 50)
+        )
+        XCTAssertEqual(
+            QM31Field.square(lhs),
+            QM31Element(a: modulus - 41, b: 45, c: modulus - 10, d: 20)
+        )
+
+        let inverse = try QM31Field.inverse(lhs)
+        XCTAssertEqual(QM31Field.multiply(lhs, inverse), QM31Element(a: 1, b: 0, c: 0, d: 0))
+        let inverses = try QM31Field.batchInverse([
+            lhs,
+            rhs,
+            QM31Element(a: modulus - 1, b: 1, c: 0, d: modulus - 1),
+        ])
+        for (value, inverse) in zip([lhs, rhs, QM31Element(a: modulus - 1, b: 1, c: 0, d: modulus - 1)], inverses) {
+            XCTAssertEqual(QM31Field.multiply(value, inverse), QM31Element(a: 1, b: 0, c: 0, d: 0))
+        }
+
+        XCTAssertThrowsError(try QM31Field.apply(.multiply, lhs: [QM31Element(a: modulus, b: 0, c: 0, d: 0)], rhs: [lhs])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31Field.apply(.multiply, lhs: [lhs], rhs: nil)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31Field.apply(.square, lhs: [lhs], rhs: [rhs])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31Field.batchInverse([QM31Element(a: 0, b: 0, c: 0, d: 0)])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31FRIFoldCPUOracleCoversRadix2FormulaAndRejections() throws {
+        let modulus = QM31Field.modulus
+        let positive = QM31Element(a: 1, b: 2, c: 3, d: 4)
+        let negative = QM31Element(a: 4, b: 5, c: 6, d: 7)
+        let challenge = QM31Element(a: 2, b: 0, c: 0, d: 0)
+        let one = QM31Element(a: 1, b: 0, c: 0, d: 0)
+
+        let folded = try QM31FRIFoldOracle.fold(
+            evaluations: [positive, negative],
+            inverseDomainPoints: [one],
+            challenge: challenge
+        )
+        XCTAssertEqual(
+            folded,
+            [
+                QM31Element(
+                    a: QM31FRIFoldOracle.inverseTwo.constant.real - 1,
+                    b: QM31FRIFoldOracle.inverseTwo.constant.real,
+                    c: QM31FRIFoldOracle.inverseTwo.constant.real + 1,
+                    d: QM31FRIFoldOracle.inverseTwo.constant.real + 2
+                ),
+            ]
+        )
+
+        let arbitraryChallenge = QM31Element(a: 9, b: 7, c: 5, d: 3)
+        XCTAssertEqual(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [positive, positive],
+                inverseDomainPoints: [one],
+                challenge: arbitraryChallenge
+            ),
+            [positive]
+        )
+
+        XCTAssertThrowsError(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [positive, negative, positive],
+                inverseDomainPoints: [one],
+                challenge: challenge
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [positive, negative],
+                inverseDomainPoints: [],
+                challenge: challenge
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [positive, negative],
+                inverseDomainPoints: [QM31Element(a: 0, b: 0, c: 0, d: 0)],
+                challenge: challenge
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [QM31Element(a: modulus, b: 0, c: 0, d: 0), negative],
+                inverseDomainPoints: [one],
+                challenge: challenge
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try QM31FRIFoldOracle.fold(
+                evaluations: [positive, negative],
+                inverseDomainPoints: [one],
+                challenge: QM31Element(a: 0, b: modulus, c: 0, d: 0)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
     }
 
     func testM31SumcheckCPUOracleStableFramedTranscriptVector() throws {
@@ -705,6 +844,306 @@ final class PlannerTests: XCTestCase {
         }
     }
 
+    func testQM31VectorArithmeticPlansMatchCPUOracleAndUploadedHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        var lhs = Self.makeQM31Evaluations(count: 257, aSalt: 503, bSalt: 509, cSalt: 521, dSalt: 523)
+        var rhs = Self.makeQM31Evaluations(count: 257, aSalt: 541, bSalt: 547, cSalt: 557, dSalt: 563)
+        lhs.replaceSubrange(0..<4, with: [
+            QM31Element(a: 0, b: 0, c: 0, d: 0),
+            QM31Element(a: 1, b: 0, c: 0, d: 0),
+            QM31Element(a: 1, b: 2, c: 3, d: 4),
+            QM31Element(a: QM31Field.modulus - 1, b: 1, c: 0, d: QM31Field.modulus - 1),
+        ])
+        rhs.replaceSubrange(0..<4, with: [
+            QM31Element(a: 0, b: 0, c: 0, d: 0),
+            QM31Element(a: 0, b: 1, c: 0, d: 0),
+            QM31Element(a: 4, b: 5, c: 6, d: 7),
+            QM31Element(a: 2, b: QM31Field.modulus - 1, c: 1, d: 1),
+        ])
+
+        for operation in QM31VectorOperation.allCases {
+            let operationLHS = operation == .inverse
+                ? lhs.map { QM31Field.isZero($0) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : $0 }
+                : lhs
+            let operationRHS = operation.requiresRightHandSide ? rhs : nil
+            let plan = try QM31VectorArithmeticPlan(
+                context: context,
+                operation: operation,
+                count: operationLHS.count
+            )
+            let measured = try plan.executeVerified(lhs: operationLHS, rhs: operationRHS)
+            let expected = try QM31Field.apply(operation, lhs: operationLHS, rhs: operationRHS)
+            XCTAssertEqual(measured.values, expected, "QM31 \(operation) mismatch")
+            if operation == .inverse {
+                for (value, inverse) in zip(operationLHS, measured.values) {
+                    XCTAssertEqual(QM31Field.multiply(value, inverse), QM31Element(a: 1, b: 0, c: 0, d: 0))
+                }
+            }
+
+            try plan.clearReusableBuffers()
+            let reusedLHS = operation == .inverse
+                ? rhs.map { QM31Field.isZero($0) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : $0 }
+                : rhs
+            let reusedRHS = operation.requiresRightHandSide ? lhs : nil
+            let reused = try plan.executeVerified(lhs: reusedLHS, rhs: reusedRHS)
+            let reusedExpected = try QM31Field.apply(operation, lhs: reusedLHS, rhs: reusedRHS)
+            XCTAssertEqual(reused.values, reusedExpected, "QM31 \(operation) mismatch after clear/reuse")
+        }
+
+        let uploadPlan = try QM31VectorArithmeticPlan(context: context, operation: .multiply, count: lhs.count)
+        let lhsUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(lhs),
+            declaredLength: lhs.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31VectorLHS"
+        )
+        let rhsUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(rhs),
+            declaredLength: rhs.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31VectorRHS"
+        )
+        let uploaded = try uploadPlan.executeUploadedVectors(
+            lhsBuffer: lhsUpload,
+            rhsBuffer: rhsUpload
+        )
+        XCTAssertEqual(uploaded.values, try QM31Field.apply(.multiply, lhs: lhs, rhs: rhs))
+    }
+
+    func testQM31VectorArithmeticRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try QM31VectorArithmeticPlan(context: context, operation: .multiply, count: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let binaryPlan = try QM31VectorArithmeticPlan(context: context, operation: .multiply, count: 2)
+        XCTAssertThrowsError(
+            try binaryPlan.execute(
+                lhs: [QM31Element(a: 0, b: 0, c: 0, d: 0), QM31Element(a: 1, b: 0, c: 0, d: 0)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try binaryPlan.execute(
+                lhs: [QM31Element(a: 0, b: QM31Field.modulus, c: 0, d: 0), QM31Element(a: 1, b: 0, c: 0, d: 0)],
+                rhs: [QM31Element(a: 0, b: 0, c: 0, d: 0), QM31Element(a: 1, b: 0, c: 0, d: 0)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let inversePlan = try QM31VectorArithmeticPlan(context: context, operation: .inverse, count: 2)
+        XCTAssertThrowsError(
+            try inversePlan.execute(
+                lhs: [QM31Element(a: 0, b: 0, c: 0, d: 0), QM31Element(a: 1, b: 0, c: 0, d: 0)]
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let shortUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian([QM31Element(a: 1, b: 0, c: 0, d: 0)]),
+            declaredLength: 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31VectorShortUpload"
+        )
+        XCTAssertThrowsError(
+            try binaryPlan.executeUploadedVectors(lhsBuffer: shortUpload, rhsBuffer: shortUpload)
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testQM31FRIFoldPlanMatchesCPUOracleAndResidentHotPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let inputCount = 258
+        var evaluations = Self.makeQM31Evaluations(
+            count: inputCount,
+            aSalt: 701,
+            bSalt: 709,
+            cSalt: 719,
+            dSalt: 727
+        )
+        evaluations.replaceSubrange(0..<4, with: [
+            QM31Element(a: 1, b: 2, c: 3, d: 4),
+            QM31Element(a: 4, b: 5, c: 6, d: 7),
+            QM31Element(a: 9, b: 8, c: 7, d: 6),
+            QM31Element(a: 9, b: 8, c: 7, d: 6),
+        ])
+        let inverseDomainPoints = Self.makeQM31Evaluations(
+            count: inputCount / 2,
+            aSalt: 733,
+            bSalt: 739,
+            cSalt: 743,
+            dSalt: 751
+        ).map { QM31Field.isZero($0) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : $0 }
+        let challenge = QM31Element(a: 9, b: 7, c: 5, d: 3)
+        let expected = try QM31FRIFoldOracle.fold(
+            evaluations: evaluations,
+            inverseDomainPoints: inverseDomainPoints,
+            challenge: challenge
+        )
+
+        let plan = try QM31FRIFoldPlan(context: context, inputCount: inputCount)
+        XCTAssertEqual(plan.outputCount, inputCount / 2)
+        let measured = try plan.executeVerified(
+            evaluations: evaluations,
+            inverseDomainPoints: inverseDomainPoints,
+            challenge: challenge
+        )
+        XCTAssertEqual(measured.values, expected)
+
+        try plan.clearReusableBuffers()
+        let reversedEvaluations = Array(evaluations.reversed())
+        let reused = try plan.executeVerified(
+            evaluations: reversedEvaluations,
+            inverseDomainPoints: inverseDomainPoints,
+            challenge: challenge
+        )
+        XCTAssertEqual(
+            reused.values,
+            try QM31FRIFoldOracle.fold(
+                evaluations: reversedEvaluations,
+                inverseDomainPoints: inverseDomainPoints,
+                challenge: challenge
+            )
+        )
+
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(evaluations),
+            declaredLength: inputCount * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldEvaluations"
+        )
+        let inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian(inverseDomainPoints),
+            declaredLength: inverseDomainPoints.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldInverseDomain"
+        )
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: expected.count * 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldOutput"
+        )
+
+        _ = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: inverseDomainBuffer,
+            outputBuffer: outputBuffer,
+            challenge: challenge
+        )
+        XCTAssertEqual(Self.readQM31Buffer(outputBuffer, count: expected.count), expected)
+    }
+
+    func testQM31FRIFoldRejectsInvalidLayouts() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        XCTAssertThrowsError(try QM31FRIFoldPlan(context: context, inputCount: 0)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(try QM31FRIFoldPlan(context: context, inputCount: 3)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let plan = try QM31FRIFoldPlan(context: context, inputCount: 2)
+        let one = QM31Element(a: 1, b: 0, c: 0, d: 0)
+        let zero = QM31Element(a: 0, b: 0, c: 0, d: 0)
+        XCTAssertThrowsError(
+            try plan.execute(
+                evaluations: [one, one],
+                inverseDomainPoints: [zero],
+                challenge: one
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.execute(
+                evaluations: [one, QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)],
+                inverseDomainPoints: [one],
+                challenge: one
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let shortUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian([one]),
+            declaredLength: 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldShortUpload"
+        )
+        let output = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: 4 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldShortOutput"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: shortUpload,
+                inverseDomainBuffer: shortUpload,
+                outputBuffer: output,
+                challenge: one
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: shortUpload,
+                inverseDomainBuffer: shortUpload,
+                outputBuffer: output,
+                challenge: QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let fullUpload = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: Self.packQM31LittleEndian([one, one]),
+            declaredLength: 8 * MemoryLayout<UInt32>.stride,
+            label: "PlannerTests.QM31FRIFoldAliasedUpload"
+        )
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullUpload,
+                inverseDomainBuffer: shortUpload,
+                outputBuffer: fullUpload,
+                challenge: one
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                evaluationsBuffer: fullUpload,
+                inverseDomainBuffer: shortUpload,
+                outputBuffer: shortUpload,
+                challenge: one
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testM31DotProductPlanMatchesCPUOracleAndUploadedHotPath() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -1052,6 +1491,22 @@ final class PlannerTests: XCTestCase {
         return zip(real, imaginary).map { CM31Element(real: $0, imaginary: $1) }
     }
 
+    private static func makeQM31Evaluations(
+        count: Int,
+        aSalt: UInt32,
+        bSalt: UInt32,
+        cSalt: UInt32,
+        dSalt: UInt32
+    ) -> [QM31Element] {
+        let a = makeM31Evaluations(count: count, salt: aSalt)
+        let b = makeM31Evaluations(count: count, salt: bSalt)
+        let c = makeM31Evaluations(count: count, salt: cSalt)
+        let d = makeM31Evaluations(count: count, salt: dSalt)
+        return (0..<count).map { index in
+            QM31Element(a: a[index], b: b[index], c: c[index], d: d[index])
+        }
+    }
+
     private static func packUInt32LittleEndian(_ values: [UInt32]) -> Data {
         var data = Data()
         data.reserveCapacity(values.count * MemoryLayout<UInt32>.stride)
@@ -1064,12 +1519,48 @@ final class PlannerTests: XCTestCase {
         return data
     }
 
+    private static func packQM31LittleEndian(_ values: [QM31Element]) -> Data {
+        var data = Data()
+        data.reserveCapacity(values.count * 4 * MemoryLayout<UInt32>.stride)
+        for value in values {
+            data.append(UInt8(value.constant.real & 0xff))
+            data.append(UInt8((value.constant.real >> 8) & 0xff))
+            data.append(UInt8((value.constant.real >> 16) & 0xff))
+            data.append(UInt8((value.constant.real >> 24) & 0xff))
+            data.append(UInt8(value.constant.imaginary & 0xff))
+            data.append(UInt8((value.constant.imaginary >> 8) & 0xff))
+            data.append(UInt8((value.constant.imaginary >> 16) & 0xff))
+            data.append(UInt8((value.constant.imaginary >> 24) & 0xff))
+            data.append(UInt8(value.uCoefficient.real & 0xff))
+            data.append(UInt8((value.uCoefficient.real >> 8) & 0xff))
+            data.append(UInt8((value.uCoefficient.real >> 16) & 0xff))
+            data.append(UInt8((value.uCoefficient.real >> 24) & 0xff))
+            data.append(UInt8(value.uCoefficient.imaginary & 0xff))
+            data.append(UInt8((value.uCoefficient.imaginary >> 8) & 0xff))
+            data.append(UInt8((value.uCoefficient.imaginary >> 16) & 0xff))
+            data.append(UInt8((value.uCoefficient.imaginary >> 24) & 0xff))
+        }
+        return data
+    }
+
     #if canImport(Metal)
     private static func readBytes(_ buffer: MTLBuffer, offset: Int, count: Int) -> [UInt8] {
         let bytes = buffer.contents()
             .advanced(by: offset)
             .bindMemory(to: UInt8.self, capacity: count)
         return (0..<count).map { bytes[$0] }
+    }
+
+    private static func readQM31Buffer(_ buffer: MTLBuffer, count: Int) -> [QM31Element] {
+        let words = buffer.contents().bindMemory(to: UInt32.self, capacity: count * 4)
+        return (0..<count).map { index in
+            QM31Element(
+                a: words[index * 4],
+                b: words[index * 4 + 1],
+                c: words[index * 4 + 2],
+                d: words[index * 4 + 3]
+            )
+        }
     }
     #endif
 }

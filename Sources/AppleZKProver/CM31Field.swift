@@ -79,6 +79,22 @@ public enum CM31Field {
         return CM31Element(real: real, imaginary: M31Field.add(cross, cross))
     }
 
+    public static func inverse(_ value: CM31Element) throws -> CM31Element {
+        try validateCanonical([value])
+        guard value.real != 0 || value.imaginary != 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let denominator = M31Field.add(
+            M31Field.square(value.real),
+            M31Field.square(value.imaginary)
+        )
+        let denominatorInverse = try M31Field.inverse(denominator)
+        return CM31Element(
+            real: M31Field.multiply(value.real, denominatorInverse),
+            imaginary: M31Field.multiply(M31Field.negate(value.imaginary), denominatorInverse)
+        )
+    }
+
     public static func apply(
         _ operation: CM31VectorOperation,
         lhs: [CM31Element],

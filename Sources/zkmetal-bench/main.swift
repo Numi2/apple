@@ -51,6 +51,9 @@ struct BenchConfig {
     var m31DotProduct = false
     var m31VectorInverse = false
     var cm31VectorMultiply = false
+    var qm31VectorMultiply = false
+    var qm31VectorInverse = false
+    var qm31FRIFold = false
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
@@ -90,7 +93,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -159,6 +162,15 @@ struct BenchConfig {
                 m31DotProduct = false
             case "--cm31-multiply", "--cm31-vector-multiply":
                 cm31VectorMultiply = true
+                m31DotProduct = false
+            case "--qm31-multiply", "--qm31-vector-multiply":
+                qm31VectorMultiply = true
+                m31DotProduct = false
+            case "--qm31-inverse", "--qm31-vector-inverse":
+                qm31VectorInverse = true
+                m31DotProduct = false
+            case "--qm31-fri-fold":
+                qm31FRIFold = true
                 m31DotProduct = false
             case "--merkle-opening":
                 merkleOpening = true
@@ -254,7 +266,10 @@ struct BenchConfig {
           --m31-dot-product          Run M31 vector dot-product benchmark instead of hash/Merkle
           --m31-inverse              Run M31 vector inverse benchmark instead of hash/Merkle
           --cm31-multiply            Run CM31 vector multiplication benchmark instead of hash/Merkle
-          --elements N               Element count for M31/CM31 benchmarks. Alias for --leaves in those modes
+          --qm31-multiply            Run QM31 vector multiplication benchmark instead of hash/Merkle
+          --qm31-inverse             Run QM31 vector inverse benchmark instead of hash/Merkle
+          --qm31-fri-fold            Run QM31 radix-2 FRI fold benchmark instead of hash/Merkle
+          --elements N               Element count for field-vector benchmarks. Alias for --leaves in those modes
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
           --states N                 State count for --keccakf-permutation. Alias for --leaves in that mode
@@ -278,9 +293,18 @@ struct BenchConfig {
         guard leafCount > 0 else {
             return BenchError.invalidArgument(keccakF1600Permutation ? "--states must be greater than zero." : "--leaves must be greater than zero.")
         }
-        let exclusiveModes = [keccakF1600Permutation, merkleOpening, m31DotProduct, m31VectorInverse, cm31VectorMultiply].filter { $0 }.count
+        let exclusiveModes = [
+            keccakF1600Permutation,
+            merkleOpening,
+            m31DotProduct,
+            m31VectorInverse,
+            cm31VectorMultiply,
+            qm31VectorMultiply,
+            qm31VectorInverse,
+            qm31FRIFold,
+        ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, and --cm31-multiply are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, and --qm31-fri-fold are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -306,6 +330,27 @@ struct BenchConfig {
             }
             guard !leafCount.multipliedReportingOverflow(by: 4 * MemoryLayout<UInt32>.stride).overflow else {
                 return BenchError.invalidArgument("Requested CM31 vector buffers are too large for this process.")
+            }
+            return nil
+        }
+        if qm31VectorMultiply || qm31VectorInverse {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with QM31 vector benchmarks.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: 8 * MemoryLayout<UInt32>.stride).overflow else {
+                return BenchError.invalidArgument("Requested QM31 vector buffers are too large for this process.")
+            }
+            return nil
+        }
+        if qm31FRIFold {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with QM31 FRI fold benchmarks.")
+            }
+            guard leafCount > 1, leafCount.isMultiple(of: 2) else {
+                return BenchError.invalidArgument("--elements must be an even count greater than one for --qm31-fri-fold.")
+            }
+            guard !leafCount.multipliedReportingOverflow(by: 6 * MemoryLayout<UInt32>.stride).overflow else {
+                return BenchError.invalidArgument("Requested QM31 FRI fold buffers are too large for this process.")
             }
             return nil
         }
@@ -669,6 +714,58 @@ struct CM31VectorBenchmarkReport: Codable {
     let verification: CM31VectorVerificationReport
 }
 
+struct QM31VectorBenchmarkConfigReport: Codable {
+    let elementCount: Int
+    let operation: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct QM31VectorVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct QM31VectorBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: QM31VectorBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let vector: FieldMeasurementReport?
+    let verification: QM31VectorVerificationReport
+}
+
+struct QM31FRIFoldBenchmarkConfigReport: Codable {
+    let inputElementCount: Int
+    let outputElementCount: Int
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct QM31FRIFoldVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let outputDigestHex: String
+    let cpuOutputDigestHex: String?
+}
+
+struct QM31FRIFoldBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: QM31FRIFoldBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let fold: FieldMeasurementReport?
+    let verification: QM31FRIFoldVerificationReport
+}
+
 struct MerkleOpeningBenchmarkConfigReport: Codable {
     let leafCount: Int
     let leafLength: Int
@@ -745,6 +842,40 @@ func makeDeterministicCM31Vector(
     return zip(real, imaginary).map { CM31Element(real: $0, imaginary: $1) }
 }
 
+func makeDeterministicQM31Vector(
+    count: Int,
+    aSalt: UInt32,
+    bSalt: UInt32,
+    cSalt: UInt32,
+    dSalt: UInt32
+) -> [QM31Element] {
+    let a = makeDeterministicM31Vector(count: count, salt: aSalt)
+    let b = makeDeterministicM31Vector(count: count, salt: bSalt)
+    let c = makeDeterministicM31Vector(count: count, salt: cSalt)
+    let d = makeDeterministicM31Vector(count: count, salt: dSalt)
+    return (0..<count).map { index in
+        QM31Element(a: a[index], b: b[index], c: c[index], d: d[index])
+    }
+}
+
+func makeDeterministicNonzeroQM31Vector(
+    count: Int,
+    aSalt: UInt32,
+    bSalt: UInt32,
+    cSalt: UInt32,
+    dSalt: UInt32
+) -> [QM31Element] {
+    makeDeterministicQM31Vector(
+        count: count,
+        aSalt: aSalt,
+        bSalt: bSalt,
+        cSalt: cSalt,
+        dSalt: dSalt
+    ).map { value in
+        QM31Field.isZero(value) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : value
+    }
+}
+
 func packUInt32LittleEndian(_ values: [UInt32]) -> Data {
     var data = Data()
     data.reserveCapacity(values.count * MemoryLayout<UInt32>.stride)
@@ -760,6 +891,18 @@ func packCM31LittleEndian(_ values: [CM31Element]) -> Data {
     for value in values {
         appendUInt32LittleEndian(value.real, to: &data)
         appendUInt32LittleEndian(value.imaginary, to: &data)
+    }
+    return data
+}
+
+func packQM31LittleEndian(_ values: [QM31Element]) -> Data {
+    var data = Data()
+    data.reserveCapacity(values.count * 4 * MemoryLayout<UInt32>.stride)
+    for value in values {
+        appendUInt32LittleEndian(value.constant.real, to: &data)
+        appendUInt32LittleEndian(value.constant.imaginary, to: &data)
+        appendUInt32LittleEndian(value.uCoefficient.real, to: &data)
+        appendUInt32LittleEndian(value.uCoefficient.imaginary, to: &data)
     }
     return data
 }
@@ -964,6 +1107,53 @@ func makeDeviceReport(_ capabilities: GPUCapabilities) -> DeviceReport {
     )
 }
 
+func makeSharedMetalBuffer(
+    device: MTLDevice,
+    bytes: Data,
+    label: String
+) throws -> MTLBuffer {
+    let length = bytes.count
+    let buffer: MTLBuffer?
+    if length == 0 {
+        buffer = device.makeBuffer(length: 1, options: .storageModeShared)
+    } else {
+        buffer = bytes.withUnsafeBytes { rawBuffer in
+            rawBuffer.baseAddress.flatMap {
+                device.makeBuffer(bytes: $0, length: length, options: .storageModeShared)
+            }
+        }
+    }
+    guard let buffer else {
+        throw AppleZKProverError.failedToCreateBuffer(label: label, length: length)
+    }
+    buffer.label = label
+    return buffer
+}
+
+func makeSharedMetalBuffer(
+    device: MTLDevice,
+    length: Int,
+    label: String
+) throws -> MTLBuffer {
+    guard let buffer = device.makeBuffer(length: max(1, length), options: .storageModeShared) else {
+        throw AppleZKProverError.failedToCreateBuffer(label: label, length: length)
+    }
+    buffer.label = label
+    return buffer
+}
+
+func readQM31Buffer(_ buffer: MTLBuffer, count: Int) -> [QM31Element] {
+    let words = buffer.contents().bindMemory(to: UInt32.self, capacity: count * 4)
+    return (0..<count).map { index in
+        QM31Element(
+            a: words[index * 4],
+            b: words[index * 4 + 1],
+            c: words[index * 4 + 2],
+            d: words[index * 4 + 3]
+        )
+    }
+}
+
 func makeMerkleCommitPlanConfiguration(_ mode: BenchMerkleSubtreeMode) -> MerkleCommitPlanConfiguration {
     switch mode {
     case .disabled:
@@ -1017,6 +1207,22 @@ func emitJSON(_ report: M31VectorBenchmarkReport) throws {
 }
 
 func emitJSON(_ report: CM31VectorBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+func emitJSON(_ report: QM31VectorBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+func emitJSON(_ report: QM31FRIFoldBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(report)
@@ -1262,6 +1468,82 @@ func emitText(_ report: CM31VectorBenchmarkReport) {
     }
 }
 
+func emitText(_ report: QM31VectorBenchmarkReport) {
+    print("zkmetal-bench qm31-vector")
+    print("  elements     : \(report.configuration.elementCount)")
+    print("  operation    : \(report.configuration.operation)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let vector = report.vector {
+        printSeconds("vec wall", vector.wallSeconds)
+        if let gpu = vector.gpuSeconds {
+            printSeconds("vec gpu ", gpu)
+        }
+        print("  elements/sec : \(String(format: "%.2f", vector.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", vector.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
+func emitText(_ report: QM31FRIFoldBenchmarkReport) {
+    print("zkmetal-bench qm31-fri-fold")
+    print("  input elems  : \(report.configuration.inputElementCount)")
+    print("  output elems : \(report.configuration.outputElementCount)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let fold = report.fold {
+        printSeconds("fold wall", fold.wallSeconds)
+        if let gpu = fold.gpuSeconds {
+            printSeconds("fold gpu ", gpu)
+        }
+        print("  folds/sec    : \(String(format: "%.2f", fold.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", fold.inputBytesPerSecond))")
+    }
+
+    print("  output digest: \(report.verification.outputDigestHex)")
+    if let cpuDigest = report.verification.cpuOutputDigestHex {
+        print("  cpu digest   : \(cpuDigest)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ report: MerkleOpeningBenchmarkReport) {
     print("zkmetal-bench merkle-opening")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -1452,6 +1734,32 @@ func verificationFailureMessages(in report: CM31VectorBenchmarkReport) -> [Strin
     return []
 }
 
+func verificationFailureMessages(in report: QM31VectorBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        return [
+            "qm31-vector operation=\(report.configuration.operation) elements=\(report.configuration.elementCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
+func verificationFailureMessages(in report: QM31FRIFoldBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true else {
+        let cpuDigest = report.verification.cpuOutputDigestHex ?? "missing"
+        return [
+            "qm31-fri-fold input-elements=\(report.configuration.inputElementCount) target=\(report.target) digest=\(report.verification.outputDigestHex) cpu-digest=\(cpuDigest)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -1526,6 +1834,46 @@ func cm31VectorOperationName(_ operation: CM31VectorOperation) -> String {
     case .square:
         return "square"
     }
+}
+
+func makeQM31VectorConfigReport(
+    config: BenchConfig,
+    operation: QM31VectorOperation
+) -> QM31VectorBenchmarkConfigReport {
+    QM31VectorBenchmarkConfigReport(
+        elementCount: config.leafCount,
+        operation: qm31VectorOperationName(operation),
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func qm31VectorOperationName(_ operation: QM31VectorOperation) -> String {
+    switch operation {
+    case .add:
+        return "add"
+    case .subtract:
+        return "subtract"
+    case .negate:
+        return "negate"
+    case .multiply:
+        return "multiply"
+    case .square:
+        return "square"
+    case .inverse:
+        return "inverse"
+    }
+}
+
+func makeQM31FRIFoldConfigReport(config: BenchConfig) -> QM31FRIFoldBenchmarkConfigReport {
+    QM31FRIFoldBenchmarkConfigReport(
+        inputElementCount: config.leafCount,
+        outputElementCount: config.leafCount / 2,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
 }
 
 func makeM31DotProductConfigReport(
@@ -1748,6 +2096,269 @@ func runCM31VectorMultiplyBenchmark(_ config: BenchConfig) throws -> CM31VectorB
         pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
         vector: nil,
         verification: CM31VectorVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+@inline(never)
+func runQM31VectorBenchmark(
+    _ config: BenchConfig,
+    operation: QM31VectorOperation
+) throws -> QM31VectorBenchmarkReport {
+    let lhs = operation == .inverse
+        ? makeDeterministicNonzeroQM31Vector(count: config.leafCount, aSalt: 0x9a1, bSalt: 0x9a7, cSalt: 0x9ad, dSalt: 0x9b3)
+        : makeDeterministicQM31Vector(count: config.leafCount, aSalt: 0x9a1, bSalt: 0x9a7, cSalt: 0x9ad, dSalt: 0x9b3)
+    let rhs = operation.requiresRightHandSide
+        ? makeDeterministicQM31Vector(count: config.leafCount, aSalt: 0x9c1, bSalt: 0x9c7, cSalt: 0x9d3, dSalt: 0x9df)
+        : nil
+    let configReport = makeQM31VectorConfigReport(config: config, operation: operation)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = try QM31Field.apply(operation, lhs: lhs, rhs: rhs)
+        let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+        return QM31VectorBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            vector: nil,
+            verification: QM31VectorVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try QM31VectorArithmeticPlan(context: context, operation: operation, count: config.leafCount)
+    try context.serializePipelineArchiveIfNeeded()
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.execute(lhs: lhs, rhs: rhs)
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    var output: [QM31Element] = []
+    for _ in 0..<config.iterations {
+        let result = try plan.execute(lhs: lhs, rhs: rhs)
+        wallSeconds.append(result.stats.cpuWallSeconds)
+        gpuSeconds.append(result.stats.gpuSeconds)
+        output = result.values
+    }
+
+    let cpuOutput = config.verifyWithCPU ? try QM31Field.apply(operation, lhs: lhs, rhs: rhs) : nil
+    let matchedCPU = cpuOutput.map { $0 == output }
+    let outputDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(output)).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
+    let inputVectors = operation.requiresRightHandSide ? 2 : 1
+    return QM31VectorBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        vector: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: config.leafCount,
+            inputBytes: Double(config.leafCount * inputVectors * 4 * MemoryLayout<UInt32>.stride)
+        ),
+        verification: QM31VectorVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = try QM31Field.apply(operation, lhs: lhs, rhs: rhs)
+    let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+    return QM31VectorBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        vector: nil,
+        verification: QM31VectorVerificationReport(
+            enabled: true,
+            matchedCPU: true,
+            outputDigestHex: digest,
+            cpuOutputDigestHex: digest
+        )
+    )
+    #endif
+}
+
+@inline(never)
+func runQM31FRIFoldBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldBenchmarkReport {
+    let outputCount = config.leafCount / 2
+    let evaluations = makeDeterministicQM31Vector(
+        count: config.leafCount,
+        aSalt: 0xf31,
+        bSalt: 0xf37,
+        cSalt: 0xf3d,
+        dSalt: 0xf43
+    )
+    let inverseDomainPoints = makeDeterministicNonzeroQM31Vector(
+        count: outputCount,
+        aSalt: 0xf47,
+        bSalt: 0xf4d,
+        cSalt: 0xf53,
+        dSalt: 0xf59
+    )
+    let challenge = QM31Element(a: 9, b: 7, c: 5, d: 3)
+    let configReport = makeQM31FRIFoldConfigReport(config: config)
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let cpuOutput = try QM31FRIFoldOracle.fold(
+            evaluations: evaluations,
+            inverseDomainPoints: inverseDomainPoints,
+            challenge: challenge
+        )
+        let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+        return QM31FRIFoldBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            fold: nil,
+            verification: QM31FRIFoldVerificationReport(
+                enabled: true,
+                matchedCPU: true,
+                outputDigestHex: digest,
+                cpuOutputDigestHex: digest
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let plan = try QM31FRIFoldPlan(context: context, inputCount: config.leafCount)
+    try context.serializePipelineArchiveIfNeeded()
+
+    let evaluationBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: packQM31LittleEndian(evaluations),
+        label: "zkmetal-bench.QM31FRIFold.Evaluations"
+    )
+    let inverseDomainBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: packQM31LittleEndian(inverseDomainPoints),
+        label: "zkmetal-bench.QM31FRIFold.InverseDomain"
+    )
+    let outputBuffer = try makeSharedMetalBuffer(
+        device: device,
+        length: outputCount * 4 * MemoryLayout<UInt32>.stride,
+        label: "zkmetal-bench.QM31FRIFold.Output"
+    )
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try plan.executeResident(
+                evaluationsBuffer: evaluationBuffer,
+                inverseDomainBuffer: inverseDomainBuffer,
+                outputBuffer: outputBuffer,
+                challenge: challenge
+            )
+        }
+    }
+
+    var wallSeconds: [Double] = []
+    var gpuSeconds: [Double?] = []
+    for _ in 0..<config.iterations {
+        let stats = try plan.executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: inverseDomainBuffer,
+            outputBuffer: outputBuffer,
+            challenge: challenge
+        )
+        wallSeconds.append(stats.cpuWallSeconds)
+        gpuSeconds.append(stats.gpuSeconds)
+    }
+
+    let output = readQM31Buffer(outputBuffer, count: outputCount)
+    let cpuOutput = config.verifyWithCPU
+        ? try QM31FRIFoldOracle.fold(
+            evaluations: evaluations,
+            inverseDomainPoints: inverseDomainPoints,
+            challenge: challenge
+        )
+        : nil
+    let matchedCPU = cpuOutput.map { $0 == output }
+    let outputDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(output)).hexString
+    let cpuOutputDigest = cpuOutput.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
+    let inputBytes = Double(config.leafCount) * Double(4 * MemoryLayout<UInt32>.stride)
+        + Double(outputCount) * Double(4 * MemoryLayout<UInt32>.stride)
+    return QM31FRIFoldBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        fold: makeFieldMeasurement(
+            wallSeconds: wallSeconds,
+            gpuSeconds: gpuSeconds,
+            elements: outputCount,
+            inputBytes: inputBytes
+        ),
+        verification: QM31FRIFoldVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            outputDigestHex: outputDigest,
+            cpuOutputDigestHex: cpuOutputDigest
+        )
+    )
+    #else
+    let cpuOutput = try QM31FRIFoldOracle.fold(
+        evaluations: evaluations,
+        inverseDomainPoints: inverseDomainPoints,
+        challenge: challenge
+    )
+    let digest = SHA3Oracle.sha3_256(packQM31LittleEndian(cpuOutput)).hexString
+    return QM31FRIFoldBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        fold: nil,
+        verification: QM31FRIFoldVerificationReport(
             enabled: true,
             matchedCPU: true,
             outputDigestHex: digest,
@@ -2411,6 +3022,35 @@ func runCLI() -> Int32 {
             }
         } else if config.cm31VectorMultiply {
             let report = try runCM31VectorMultiplyBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.qm31VectorMultiply || config.qm31VectorInverse {
+            let operation: QM31VectorOperation = config.qm31VectorInverse ? .inverse : .multiply
+            let report = try runQM31VectorBenchmark(config, operation: operation)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.qm31FRIFold {
+            let report = try runQM31FRIFoldBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

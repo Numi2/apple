@@ -2,6 +2,59 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-13: QM31 Resident FRI Fold Composition Primitive
+
+Finding:
+
+- The QM31 field lane closed the secure-field arithmetic gap, but the next trust boundary was composition: higher-level codeword/FRI work still needed a way to consume resident QM31 buffers and write the next layer without forcing CPU readback. Without a verified fold primitive, FRI/PCS integration would either copy intermediate layers to the host or duplicate unaudited field formulas inside future command plans.
+
+Work completed:
+
+- Added `QM31FRIFoldOracle`, an independent CPU oracle for one radix-2 FRI fold layer over QM31. The oracle validates canonical limbs, requires an even non-empty input, rejects zero inverse-domain points, and computes `(f(x) + f(-x))/2 + alpha * (f(x) - f(-x)) * inv(point) / 2` for each adjacent pair.
+- Added `QM31FRIFoldPlan`, a reusable Metal command plan backed by a private `ResidencyArena`, ring-buffered staging for public array execution, and a caller-owned resident execution path. `executeVerified` compares GPU output against the CPU oracle; `executeResident` accepts caller `MTLBuffer` inputs and writes a caller `MTLBuffer` output while returning only timing stats.
+- Added the `qm31_fri_fold` Metal kernel. It reuses the existing QM31 add/subtract/multiply primitives and multiplies by `1/2 = 1073741824 mod 2^31 - 1`.
+- Added deterministic regression coverage for the closed-form pair `(1,2,3,4),(4,5,6,7)` with scalar challenge `2`, identical-pair folding, malformed canonical limbs, odd/mismatched layouts, zero inverse-domain rejection, GPU/CPU equality, plan clear/reuse, and the no-readback resident-buffer path.
+- Added `zkmetal-bench --qm31-fri-fold`, with schema v1 JSON/text output, CPU digest verification, folded-elements/sec, and input bandwidth reporting. The timed benchmark path uses `executeResident`, so it measures the composition API rather than the public convenience array/readback path.
+
+Residual risk:
+
+- This is one radix-2 fold layer, not a complete Circle FFT, full multi-round FRI protocol, PCS commitment scheme, query/decommitment flow, or verifier-facing proof format.
+- `executeResident` assumes the caller already owns canonical QM31 buffers and supplies inverse-domain points in the exact pair order expected by the surrounding domain layout. It rejects output ranges that overlap either input range, but it does not validate canonical limbs inside resident buffers. Callers that cannot prove those invariants must use the public array API or an independent CPU witness during integration.
+- The primitive currently accepts precomputed inverse-domain points. A full Circle FFT/FRI composition plan still needs audited domain/twiddle generation, bit-reversal policy, transcript framing, Merkle commitment chaining, and query opening integration.
+
+References:
+
+- Stwo CPU FRI folding source, using inverse butterflies and `f0 + alpha * f1` for line and circle-to-line folds: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/prover/backend/cpu/fri.rs
+- Stwo core FRI verifier/config source, including secure-field challenges and fold-step structure: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fri.rs
+- Stwo QM31 source, defining `SECURE_EXTENSION_DEGREE = 2`, `R = 2 + i`, and `CM31[x] / (x^2 - R)`: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fields/qm31.rs
+
+## 2026-04-13: QM31 Quartic Secure-Field Primitive
+
+Finding:
+
+- CM31 closed the first quadratic extension-field gap, but Stwo/Circle-STARK verifier-facing challenge arithmetic uses the quartic secure field QM31. Without a first-class QM31 oracle and GPU lane, future Circle FFT, FRI, PCS, and verifier transcript work would either fall back to CPU code or risk implementing incompatible ad hoc field formulas.
+
+Work completed:
+
+- Added `QM31Element` and `QM31Field` for `CM31[u] / (u^2 - 2 - i)`, represented as `(a + bi) + (c + di)u`. The CPU oracle validates canonical M31 limbs and implements add, subtract, negate, multiply, square, inverse, and prefix/suffix batch inversion.
+- Added `CM31Field.inverse(_:)` because QM31 inversion reduces through a CM31 denominator.
+- Added `QM31VectorOperation` and `QM31VectorArithmeticPlan`, a reusable Metal plan for interleaved four-limb QM31 vectors. The public array path validates canonical input and rejects zero for inversion; `executeUploadedVectors` provides the first resident-buffer hot path for QM31 composition when a caller already owns canonical GPU buffers.
+- Added a Metal `qm31_vector_arithmetic` kernel covering add, subtract, negate, multiply, square, and inverse. Multiplication follows the Stwo field model with nonresidue `2 + i`; inversion uses `(A - Bu) / (A^2 - (2+i)B^2)`.
+- Added deterministic regression coverage using Stwo-style edge vectors, including `(1,2,3,4) * (4,5,6,7) = (-71,93,-16,50)`, inverse identity checks, batch inversion checks, malformed canonical limbs, zero-inverse rejection, GPU/CPU equality for every QM31 vector operation, explicit clear/reuse, and uploaded-buffer execution.
+- Added `zkmetal-bench --qm31-multiply` and `zkmetal-bench --qm31-inverse`, with schema v1 JSON/text output, CPU digest verification, QM31 elements/sec, and input bandwidth reporting.
+
+Residual risk:
+
+- This is a standalone secure-field primitive plus uploaded-vector hot path. A separate resident radix-2 FRI fold primitive now exists, but the project still does not implement Circle FFT, a full multi-round FRI protocol, PCS commitment composition, query/decommitment flow, or verifier-facing proof serialization.
+- The GPU inverse path is per-lane. Future FRI/PCS code should compare it against a resident batch-inversion scan once denominator layout and batching are fixed.
+- Uploaded-buffer execution assumes canonical QM31 limbs. Callers that cannot prove canonicality must use the public array API or carry an independent CPU witness for verification.
+
+References:
+
+- Stwo QM31 source, defining `SECURE_EXTENSION_DEGREE = 2`, `R = 2 + i`, and `CM31[x] / (x^2 - R)`: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fields/qm31.rs
+- Stwo CM31 source, defining `M31[x] / (x^2 + 1)`: https://github.com/starkware-libs/stwo/blob/dev/crates/stwo/src/core/fields/cm31.rs
+- Stwo Book, "Mersenne Primes", sections on M31, CM31, and QM31: https://zksecurity.github.io/stwo-book/how-it-works/mersenne-prime.html
+
 ## 2026-04-13: CM31 Extension Field Multiplication Primitive
 
 Finding:

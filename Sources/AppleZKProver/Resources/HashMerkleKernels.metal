@@ -80,6 +80,21 @@ struct CM31VectorParams {
     uint fieldModulus;
 };
 
+struct QM31VectorParams {
+    uint count;
+    uint operation;
+    uint fieldModulus;
+};
+
+struct QM31FRIFoldParams {
+    uint pairCount;
+    uint fieldModulus;
+    uint challengeA;
+    uint challengeB;
+    uint challengeC;
+    uint challengeD;
+};
+
 struct M31DotProductParams {
     uint count;
     uint fieldModulus;
@@ -1449,6 +1464,15 @@ inline uint2 cm31_square_mod(uint2 value) {
     return uint2(m31_mul_mod(sum, difference), m31_add_mod(cross, cross));
 }
 
+inline uint2 cm31_inverse_mod(uint2 value) {
+    const uint denominator = m31_add_mod(m31_mul_mod(value.x, value.x), m31_mul_mod(value.y, value.y));
+    const uint denominatorInverse = m31_inverse_mod(denominator);
+    return uint2(
+        m31_mul_mod(value.x, denominatorInverse),
+        m31_mul_mod(m31_neg_mod(value.y), denominatorInverse)
+    );
+}
+
 kernel void cm31_vector_arithmetic(
     const device uint2 *lhs [[buffer(0)]],
     const device uint2 *rhs [[buffer(1)]],
@@ -1481,6 +1505,130 @@ kernel void cm31_vector_arithmetic(
         output[gid] = uint2(0u, 0u);
         break;
     }
+}
+
+inline uint2 qm31_non_residue_mul_mod(uint2 value) {
+    return cm31_mul_mod(uint2(2u, 1u), value);
+}
+
+inline uint4 qm31_from_pairs(uint2 constantPart, uint2 uPart) {
+    return uint4(constantPart.x, constantPart.y, uPart.x, uPart.y);
+}
+
+inline uint4 qm31_add_mod(uint4 a, uint4 b) {
+    return qm31_from_pairs(cm31_add_mod(a.xy, b.xy), cm31_add_mod(a.zw, b.zw));
+}
+
+inline uint4 qm31_sub_mod(uint4 a, uint4 b) {
+    return qm31_from_pairs(cm31_sub_mod(a.xy, b.xy), cm31_sub_mod(a.zw, b.zw));
+}
+
+inline uint4 qm31_neg_mod(uint4 value) {
+    return qm31_from_pairs(cm31_neg_mod(value.xy), cm31_neg_mod(value.zw));
+}
+
+inline uint4 qm31_mul_mod(uint4 a, uint4 b) {
+    const uint2 ac = cm31_mul_mod(a.xy, b.xy);
+    const uint2 bd = cm31_mul_mod(a.zw, b.zw);
+    const uint2 ad = cm31_mul_mod(a.xy, b.zw);
+    const uint2 bc = cm31_mul_mod(a.zw, b.xy);
+    return qm31_from_pairs(
+        cm31_add_mod(ac, qm31_non_residue_mul_mod(bd)),
+        cm31_add_mod(ad, bc)
+    );
+}
+
+inline uint4 qm31_square_mod(uint4 value) {
+    const uint2 aa = cm31_square_mod(value.xy);
+    const uint2 bb = cm31_square_mod(value.zw);
+    const uint2 ab = cm31_mul_mod(value.xy, value.zw);
+    return qm31_from_pairs(
+        cm31_add_mod(aa, qm31_non_residue_mul_mod(bb)),
+        cm31_add_mod(ab, ab)
+    );
+}
+
+inline uint4 qm31_inverse_mod(uint4 value) {
+    const uint2 aa = cm31_square_mod(value.xy);
+    const uint2 bb = cm31_square_mod(value.zw);
+    const uint2 denominator = cm31_sub_mod(aa, qm31_non_residue_mul_mod(bb));
+    const uint2 denominatorInverse = cm31_inverse_mod(denominator);
+    return qm31_from_pairs(
+        cm31_mul_mod(value.xy, denominatorInverse),
+        cm31_mul_mod(cm31_neg_mod(value.zw), denominatorInverse)
+    );
+}
+
+inline uint4 qm31_mul_m31_mod(uint4 value, uint scalar) {
+    return uint4(
+        m31_mul_mod(value.x, scalar),
+        m31_mul_mod(value.y, scalar),
+        m31_mul_mod(value.z, scalar),
+        m31_mul_mod(value.w, scalar)
+    );
+}
+
+kernel void qm31_vector_arithmetic(
+    const device uint4 *lhs [[buffer(0)]],
+    const device uint4 *rhs [[buffer(1)]],
+    device uint4 *output [[buffer(2)]],
+    constant QM31VectorParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.count || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint4 a = lhs[gid];
+    switch (params.operation) {
+    case 0u:
+        output[gid] = qm31_add_mod(a, rhs[gid]);
+        break;
+    case 1u:
+        output[gid] = qm31_sub_mod(a, rhs[gid]);
+        break;
+    case 2u:
+        output[gid] = qm31_neg_mod(a);
+        break;
+    case 3u:
+        output[gid] = qm31_mul_mod(a, rhs[gid]);
+        break;
+    case 4u:
+        output[gid] = qm31_square_mod(a);
+        break;
+    case 5u:
+        output[gid] = qm31_inverse_mod(a);
+        break;
+    default:
+        output[gid] = uint4(0u, 0u, 0u, 0u);
+        break;
+    }
+}
+
+kernel void qm31_fri_fold(
+    const device uint4 *evaluations [[buffer(0)]],
+    const device uint4 *inverseDomainPoints [[buffer(1)]],
+    device uint4 *output [[buffer(2)]],
+    constant QM31FRIFoldParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.pairCount || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint4 positive = evaluations[gid * 2u];
+    const uint4 negative = evaluations[gid * 2u + 1u];
+    const uint4 evenNumerator = qm31_add_mod(positive, negative);
+    const uint4 oddNumerator = qm31_sub_mod(positive, negative);
+    const uint4 oddAtSquare = qm31_mul_mod(oddNumerator, inverseDomainPoints[gid]);
+    const uint4 challenge = uint4(
+        params.challengeA,
+        params.challengeB,
+        params.challengeC,
+        params.challengeD
+    );
+    const uint4 mixed = qm31_add_mod(evenNumerator, qm31_mul_mod(challenge, oddAtSquare));
+    output[gid] = qm31_mul_m31_mod(mixed, 1073741824u);
 }
 
 inline uint m31_threadgroup_sum(threadgroup uint *scratch, uint tid, uint threadCount) {

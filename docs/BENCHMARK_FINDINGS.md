@@ -25,6 +25,8 @@ Host used for the smoke run: Apple M4, Apple9 Metal family available.
 - Added a dedicated M31 dot-product benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, records threadgroup geometry, and verifies the one-word GPU reduction against the CPU M31 oracle.
 - Added a dedicated M31 vector inverse benchmark mode. It emits schema v1 JSON reports with field-specific elements/sec and input bandwidth, and verifies the GPU output digest against the CPU M31 batch-inversion oracle.
 - Added a dedicated CM31 vector multiplication benchmark mode. It emits schema v1 JSON reports with CM31 elements/sec and input bandwidth, and verifies the GPU output digest against the independent CPU CM31 oracle.
+- Added dedicated QM31 vector multiplication and inverse benchmark modes. They emit schema v1 JSON reports with QM31 elements/sec and input bandwidth, and verify GPU output digests against the independent CPU QM31 oracle.
+- Added a dedicated QM31 radix-2 FRI fold benchmark mode. It emits schema v1 JSON reports with folded-elements/sec and input bandwidth, verifies the resident fold output digest against the independent CPU FRI fold oracle, and times the no-internal-readback `executeResident` command path.
 - Extended the lower Merkle treelet path from 32-byte leaves to the full fixed-rate SHA3 leaf contract (`0...136` bytes). The new treelet remains a SHA3 Merkle commitment path: standalone Keccak-256 suite rows still use SHA3 for the Merkle root, matching the existing commitment API.
 - Added `zkmetal-bench --merkle-opening` for raw-leaf SHA3 opening extraction. It emits a schema v1 opening report with root, proof digest, sibling count, CPU proof match, and opening timing without dumping proof nodes.
 - Reworked threadgroup-local Merkle treelet and fused-upper reductions to use ping-pong scratch halves, eliminating the intra-threadgroup read/write overlap that parent compaction could otherwise create.
@@ -49,6 +51,12 @@ swift run zkmetal-bench --m31-inverse --leaves 4097 --iterations 1 --warmups 0 -
 .build/release/zkmetal-bench --m31-inverse --leaves 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-m31-inverse.json
 swift run zkmetal-bench --cm31-multiply --elements 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-cm31-multiply.json
 .build/release/zkmetal-bench --cm31-multiply --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-cm31-multiply.json
+swift run zkmetal-bench --qm31-multiply --elements 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-qm31-multiply.json
+swift run zkmetal-bench --qm31-inverse --elements 4097 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-qm31-inverse.json
+swift run zkmetal-bench --qm31-fri-fold --elements 4096 --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-qm31-fri-fold-debug.json
+.build/release/zkmetal-bench --qm31-multiply --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-qm31-multiply.json
+.build/release/zkmetal-bench --qm31-inverse --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-qm31-inverse.json
+.build/release/zkmetal-bench --qm31-fri-fold --elements 16384 --iterations 5 --warmups 1 --no-pipeline-archive --json > /tmp/applezk-release-qm31-fri-fold.json
 swift run zkmetal-bench --suite --suite-leaf-bytes 64,128,135,136 --suite-hashes sha3-256,keccak-256 --leaves 256 --iterations 1 --warmups 0 --no-pipeline-archive --merkle-subtree-leaves 16 --json > /tmp/applezk-treelet-fixedrate-suite.json
 swift run zkmetal-bench --merkle-opening --leaves 1024 --leaf-bytes 135 --opening-leaf-index 777 --merkle-subtree-auto --iterations 1 --warmups 0 --no-pipeline-archive --json > /tmp/applezk-merkle-opening.json
 swift build -c release -Xswiftc -Osize
@@ -73,6 +81,10 @@ After the M31 dot-product primitive, `swift test` and `swift test -c release -Xs
 After the M31 vector inverse primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 73 tests. The debug inverse smoke report for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 elements had `verification.matchedCPU == true`, 167,825,862.18 elements/sec, and 671,303,448.74 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
 
 After the CM31 vector multiplication primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 76 tests. The debug CM31 multiply smoke report for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 CM31 elements had `verification.matchedCPU == true`, 398,395,134.07 elements/sec, and 6,374,322,145.07 input bytes/sec. This is a smoke measurement, not a checked-in release baseline.
+
+After the QM31 secure-field primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 79 tests. The debug QM31 multiply and inverse smoke reports for 4,097 elements had `verification.matchedCPU == true` and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 QM31 multiplications had `verification.matchedCPU == true`, 272,877,163.06 elements/sec, and 8,732,069,217.83 input bytes/sec. The release `-Osize` smoke report for 16,384 QM31 inversions had `verification.matchedCPU == true`, 124,121,211.15 elements/sec, and 1,985,939,378.43 input bytes/sec. These are smoke measurements, not checked-in release baselines.
+
+After the QM31 radix-2 FRI fold primitive, `swift test` and `swift test -c release -Xswiftc -Osize` passed 82 tests. The debug FRI fold smoke report for 4,096 input QM31 elements produced 2,048 folded outputs, had `verification.matchedCPU == true`, and matching CPU/GPU output digests. The release `-Osize` smoke report for 16,384 input QM31 elements produced 8,192 folded outputs, had `verification.matchedCPU == true`, 228,348,453.17 folded elements/sec, and 10,960,725,751.93 input bytes/sec. This is a smoke measurement of the resident `executeResident` command path, not a checked-in release baseline.
 
 The default SwiftPM release optimization mode (`-O`) currently triggers a Swift optimized-codegen failure on this host around throwing-return handling in the benchmark executable and release test bundle. The optimized verification command therefore uses `-Osize` until the toolchain issue is either isolated further or no longer reproduces. This is an explicit measurement constraint, not a cryptographic relaxation.
 
@@ -125,6 +137,27 @@ The CM31 smoke used release `-Osize`, 16,384 CM31 elements, one warmup, five tim
 | 16,384 | multiply | 0.000418166 | 0.000041125 | 398,395,134.07 | 6,374,322,145.07 | true |
 
 Interpretation: this is the first measurement gate for extension-field multiplication. It validates the benchmark harness, kernel dispatch, and CPU digest check, but it is not a checked-in release baseline and does not yet measure resident composition with FRI or PCS kernels.
+
+## QM31 Vector Smoke
+
+The QM31 smoke used release `-Osize`, 16,384 QM31 elements, one warmup, five timed iterations, CPU verification enabled, and pipeline archives disabled. Multiplication input bandwidth counts both QM31 input vectors; inverse input bandwidth counts one QM31 input vector.
+
+| Elements | Operation | Min wall seconds | Min GPU seconds | Elements/sec | Input bytes/sec | CPU digest match |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 16,384 | multiply | 0.000332125 | 0.000060042 | 272,877,163.06 | 8,732,069,217.83 | true |
+| 16,384 | inverse | 0.000578833 | 0.000132000 | 124,121,211.15 | 1,985,939,378.43 | true |
+
+Interpretation: this is the first measurement gate for the quartic secure-field lane. It proves the kernel, CPU oracle, and digest verification path execute end to end, while the separate FRI fold smoke below measures the first resident composition layer.
+
+## QM31 FRI Fold Smoke
+
+The QM31 FRI fold smoke used release `-Osize`, 16,384 input QM31 elements, 8,192 folded output elements, one warmup, five timed iterations, CPU verification enabled, and pipeline archives disabled. Input bandwidth counts the input evaluation vector plus the inverse-domain vector; the timed path calls `executeResident`, so it does not use the public array/readback convenience path.
+
+| Input elements | Output elements | Min wall seconds | Min GPU seconds | Folded elements/sec | Input bytes/sec | CPU digest match |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 16,384 | 8,192 | 0.000300292 | 0.000035875 | 228,348,453.17 | 10,960,725,751.93 | true |
+
+Interpretation: this is the first measurement gate for resident QM31 FRI composition. It proves one radix-2 fold layer can consume caller-owned field buffers and write the next layer without an internal CPU readback. It is not a full Circle FFT, multi-round FRI protocol, PCS commitment flow, or proof/query benchmark.
 
 ## Release Baseline
 
