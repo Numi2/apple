@@ -8,7 +8,7 @@ reductions, resident QM31 FRI fold layers, linear QM31 FRI proof
 serialization, canonical Circle-domain descriptors, the first resident Circle
 FRI fold layer, resident multi-layer Circle FRI fold chains with explicit or
 Circle V1 Merkle-transcript challenges, multi-layer CPU Circle FRI proof
-verification, direct Circle codeword generation feeding resident PCS/FRI proof
+verification, Circle FFT codeword generation feeding resident PCS/FRI proof
 emission, and early M31 sum-check execution.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
@@ -26,7 +26,7 @@ round-trips.
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
-| M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, canonical Circle first-fold and multi-layer fold plans with explicit or Circle V1 Merkle-transcript challenges, direct Circle codeword generation over `P(x) + yQ(x)` into resident buffers, a multi-layer CPU Circle FRI proof verifier, and a linear QM31 FRI proof/decommitment verifier |
+| M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, canonical Circle first-fold and multi-layer fold plans with explicit or Circle V1 Merkle-transcript challenges, Circle FFT codeword generation over `P(x) + yQ(x)` into resident buffers, a multi-layer CPU Circle FRI proof verifier, and a linear QM31 FRI proof/decommitment verifier |
 | Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
 | Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
@@ -99,8 +99,9 @@ Implemented today:
   first-fold and three-round deterministic vectors, a multi-layer first
   Circle-to-line plus line-domain fold schedule, and an independent CPU
   verifier. `CircleFRIFoldChainPlan` executes the same multi-round schedule on
-  Metal with a resident inverse-domain buffer, private scratch ping-pong between
-  layers, caller-owned input/output buffers, and no intermediate CPU readback.
+  Metal with a GPU-materialized resident inverse-domain buffer, private scratch
+  ping-pong between layers, caller-owned input/output buffers, and no
+  intermediate CPU readback.
   `CircleFRIMerkleTranscriptFoldChainPlan` composes current-layer SHA3 Merkle
   root generation, Circle proof V1 transcript absorption/squeeze, and each fold
   round in the resident GPU command path; only final folded values and optional
@@ -111,12 +112,19 @@ Implemented today:
   commitment-root, and final-layer buffers needed to emit a canonical
   `CirclePCSFRIProofV1` from an already-resident Circle evaluation/codeword
   buffer, with an independent CPU verifier gate available through
-  `proveVerified`. `CircleCodewordPlan` evaluates canonical Circle codewords
-  of the form `P(x) + yQ(x)` directly into caller-owned Metal buffers, and
-  `CircleCodewordPCSFRIProverV1` composes that resident codeword generation
-  with resident proof emission without reading the full codeword back to the
-  CPU. This is a direct evaluator, not the optimized Circle FFT path; committed
-  polynomial PCS verification is still pending.
+  `proveVerified`. `CircleDomainMaterializationPlan` materializes canonical
+  domain points, Circle FFT twiddles, and FRI inverse-domain schedules on GPU.
+  `CircleCodewordPlan` converts bounded monomial `P(x) + yQ(x)` inputs into
+  the Circle FFT basis, then uses resident GPU-generated twiddles and staged
+  butterfly kernels to write canonical Circle codewords into caller-owned Metal
+  buffers. `CircleCodewordPCSFRIProverV1` is the explicit resident command-plan
+  surface for Circle FFT-basis coefficients through proof bytes: coefficient
+  input, codeword generation, Merkle roots, transcript challenges, FRI folds,
+  query extraction, and proof serialization. It keeps the generated codeword
+  and materialized FRI layers private, with readback limited to public proof
+  material. A structured `CirclePCSFRIPolynomialClaimV1` plus
+  `CirclePCSFRIPolynomialVerifierV1` now binds polynomial coefficients, domain
+  points, claimed evaluations, and first-layer Merkle openings on the CPU.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
   buffer plus concatenated per-round inverse-domain buffers, encodes every fold
   round into one command buffer, ping-pongs private scratch between intermediate

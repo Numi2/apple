@@ -221,6 +221,7 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
     public let commitments: [Data]
     public let finalLayer: [QM31Element]
     public let queries: [CircleFRIQueryV1]
+    public let claimedEvaluationOpenings: [CircleFRIValueOpeningV1]
 
     public init(
         version: UInt32 = proofVersion,
@@ -230,7 +231,8 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
         publicInputDigest: Data,
         commitments: [Data],
         finalLayer: [QM31Element],
-        queries: [CircleFRIQueryV1]
+        queries: [CircleFRIQueryV1],
+        claimedEvaluationOpenings: [CircleFRIValueOpeningV1] = []
     ) throws {
         guard version == Self.proofVersion,
               transcriptVersion == Self.currentTranscriptVersion,
@@ -254,10 +256,15 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
         self.commitments = commitments
         self.finalLayer = finalLayer
         self.queries = queries
+        self.claimedEvaluationOpenings = claimedEvaluationOpenings
         try Self.validateQueryShape(
             queries: queries,
             domain: domain,
             commitmentCount: commitments.count
+        )
+        try Self.validateClaimedEvaluationOpenings(
+            claimedEvaluationOpenings,
+            domain: domain
         )
     }
 
@@ -303,6 +310,21 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
         }
         return result
     }
+
+    private static func validateClaimedEvaluationOpenings(
+        _ openings: [CircleFRIValueOpeningV1],
+        domain: CircleDomainDescriptor
+    ) throws {
+        var previousLeafIndex: UInt64?
+        for opening in openings {
+            guard opening.leafIndex < UInt64(domain.size),
+                  opening.siblingHashes.count == log2(domain.size),
+                  previousLeafIndex.map({ $0 < opening.leafIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previousLeafIndex = opening.leafIndex
+        }
+    }
 }
 
 public enum CirclePCSFRIProofCodecV1 {
@@ -343,6 +365,12 @@ public enum CirclePCSFRIProofCodecV1 {
                 CanonicalBinary.appendUInt64(layer.pairIndex, to: &data)
                 try encodeOpening(layer.left, to: &data)
                 try encodeOpening(layer.right, to: &data)
+            }
+        }
+        if !proof.claimedEvaluationOpenings.isEmpty {
+            CanonicalBinary.appendUInt32(try checkedUInt32(proof.claimedEvaluationOpenings.count), to: &data)
+            for opening in proof.claimedEvaluationOpenings {
+                try encodeOpening(opening, to: &data)
             }
         }
         return data
@@ -410,6 +438,14 @@ public enum CirclePCSFRIProofCodecV1 {
                 layers: layers
             ))
         }
+        var claimedEvaluationOpenings: [CircleFRIValueOpeningV1] = []
+        if !reader.isAtEnd {
+            let openingCount = Int(try reader.readUInt32())
+            claimedEvaluationOpenings.reserveCapacity(openingCount)
+            for _ in 0..<openingCount {
+                claimedEvaluationOpenings.append(try decodeOpening(from: &reader))
+            }
+        }
         try reader.finish()
         return try CirclePCSFRIProofV1(
             version: version,
@@ -419,7 +455,8 @@ public enum CirclePCSFRIProofCodecV1 {
             publicInputDigest: publicInputDigest,
             commitments: commitments,
             finalLayer: finalLayer,
-            queries: queries
+            queries: queries,
+            claimedEvaluationOpenings: claimedEvaluationOpenings
         )
     }
 
@@ -653,6 +690,163 @@ public struct CirclePCSFRIPublicInputsV1: Equatable, Sendable {
         }
         self.publicInputDigest = publicInputDigest
     }
+
+    public init(polynomialClaim: CirclePCSFRIPolynomialClaimV1) throws {
+        self.publicInputDigest = try CirclePCSFRIPolynomialClaimDigestV1.digest(polynomialClaim)
+    }
+}
+
+public struct CirclePCSFRIEvaluationClaimV1: Equatable, Sendable {
+    public let storageIndex: UInt64
+    public let point: CirclePointM31
+    public let value: QM31Element
+
+    public init(
+        storageIndex: UInt64,
+        point: CirclePointM31,
+        value: QM31Element
+    ) throws {
+        try CircleDomainOracle.validatePoint(point)
+        try QM31Field.validateCanonical([value])
+        self.storageIndex = storageIndex
+        self.point = point
+        self.value = value
+    }
+}
+
+public struct CirclePCSFRIPolynomialClaimV1: Equatable, Sendable {
+    public let domain: CircleDomainDescriptor
+    public let polynomial: CircleCodewordPolynomial
+    public let evaluationClaims: [CirclePCSFRIEvaluationClaimV1]
+
+    public init(
+        domain: CircleDomainDescriptor,
+        polynomial: CircleCodewordPolynomial,
+        evaluationClaims: [CirclePCSFRIEvaluationClaimV1]
+    ) throws {
+        guard domain.storageOrder == .circleDomainBitReversed,
+              domain.isCanonical,
+              !evaluationClaims.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var previousStorageIndex: UInt64?
+        for claim in evaluationClaims {
+            guard claim.storageIndex < UInt64(domain.size),
+                  previousStorageIndex.map({ $0 < claim.storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previousStorageIndex = claim.storageIndex
+        }
+        self.domain = domain
+        self.polynomial = polynomial
+        self.evaluationClaims = evaluationClaims
+    }
+
+    public static func make(
+        domain: CircleDomainDescriptor,
+        polynomial: CircleCodewordPolynomial,
+        storageIndices: [Int]
+    ) throws -> CirclePCSFRIPolynomialClaimV1 {
+        let normalizedIndices = try normalizeStorageIndices(storageIndices, domain: domain)
+        let claims = try normalizedIndices.map { storageIndex in
+            let naturalIndex = try CircleDomainOracle.naturalDomainIndex(
+                forStorageIndex: storageIndex,
+                descriptor: domain
+            )
+            let point = try CircleDomainOracle.point(
+                in: domain,
+                naturalDomainIndex: naturalIndex
+            )
+            return try CirclePCSFRIEvaluationClaimV1(
+                storageIndex: UInt64(storageIndex),
+                point: point,
+                value: try CircleCodewordOracle.evaluate(polynomial: polynomial, at: point)
+            )
+        }
+        return try CirclePCSFRIPolynomialClaimV1(
+            domain: domain,
+            polynomial: polynomial,
+            evaluationClaims: claims
+        )
+    }
+
+    private static func normalizeStorageIndices(
+        _ storageIndices: [Int],
+        domain: CircleDomainDescriptor
+    ) throws -> [Int] {
+        guard !storageIndices.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let sorted = storageIndices.sorted()
+        var previous: Int?
+        for storageIndex in sorted {
+            guard storageIndex >= 0,
+                  storageIndex < domain.size,
+                  previous.map({ $0 < storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previous = storageIndex
+        }
+        return sorted
+    }
+}
+
+public enum CirclePCSFRIPolynomialClaimDigestV1 {
+    private static let domain = Data("AppleZKProver.CirclePCS.PolynomialClaim.V1".utf8)
+
+    public static func digest(_ claim: CirclePCSFRIPolynomialClaimV1) throws -> Data {
+        var data = Data()
+        data.append(try domainFrame())
+        data.append(try CircleDomainDescriptorCodecV1.encode(claim.domain))
+        data.append(try polynomialFrame(
+            xCoefficientCount: claim.polynomial.xCoefficients.count,
+            yCoefficientCount: claim.polynomial.yCoefficients.count
+        ))
+        data.append(QM31CanonicalEncoding.pack(claim.polynomial.xCoefficients))
+        data.append(QM31CanonicalEncoding.pack(claim.polynomial.yCoefficients))
+        data.append(try evaluationClaimFrame(count: claim.evaluationClaims.count))
+        for evaluationClaim in claim.evaluationClaims {
+            CanonicalBinary.appendUInt64(evaluationClaim.storageIndex, to: &data)
+            CanonicalBinary.appendUInt32(evaluationClaim.point.x, to: &data)
+            CanonicalBinary.appendUInt32(evaluationClaim.point.y, to: &data)
+            data.append(QM31CanonicalEncoding.pack(evaluationClaim.value))
+        }
+        return SHA3Oracle.sha3_256(data)
+    }
+
+    private static func domainFrame() throws -> Data {
+        var frame = baseFrame(type: 0)
+        CanonicalBinary.appendUInt32(try checkedUInt32(domain.count), to: &frame)
+        frame.append(domain)
+        CanonicalBinary.appendUInt32(CirclePCSFRIProofV1.proofVersion, to: &frame)
+        CanonicalBinary.appendUInt32(CirclePCSFRIProofV1.currentTranscriptVersion, to: &frame)
+        return frame
+    }
+
+    private static func polynomialFrame(
+        xCoefficientCount: Int,
+        yCoefficientCount: Int
+    ) throws -> Data {
+        var frame = baseFrame(type: 1)
+        CanonicalBinary.appendUInt32(try checkedUInt32(xCoefficientCount), to: &frame)
+        CanonicalBinary.appendUInt32(try checkedUInt32(yCoefficientCount), to: &frame)
+        CanonicalBinary.appendUInt32(try checkedUInt32(QM31CanonicalEncoding.elementByteCount), to: &frame)
+        return frame
+    }
+
+    private static func evaluationClaimFrame(count: Int) throws -> Data {
+        var frame = baseFrame(type: 2)
+        CanonicalBinary.appendUInt32(try checkedUInt32(count), to: &frame)
+        return frame
+    }
+
+    private static func baseFrame(type: UInt8) -> Data {
+        var frame = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &frame)
+        frame.append(domain)
+        frame.append(type)
+        return frame
+    }
 }
 
 public enum CircleFirstFoldPCSProofBuilderV1 {
@@ -660,14 +854,16 @@ public enum CircleFirstFoldPCSProofBuilderV1 {
         evaluations: [QM31Element],
         domain: CircleDomainDescriptor,
         securityParameters: CircleFRISecurityParametersV1,
-        publicInputs: CirclePCSFRIPublicInputsV1
+        publicInputs: CirclePCSFRIPublicInputsV1,
+        claimedEvaluationIndices: [Int] = []
     ) throws -> CirclePCSFRIProofV1 {
         try CircleFRIProofBuilderV1.prove(
             evaluations: evaluations,
             domain: domain,
             securityParameters: securityParameters,
             publicInputs: publicInputs,
-            roundCount: 1
+            roundCount: 1,
+            claimedEvaluationIndices: claimedEvaluationIndices
         )
     }
 }
@@ -678,7 +874,8 @@ public enum CircleFRIProofBuilderV1 {
         domain: CircleDomainDescriptor,
         securityParameters: CircleFRISecurityParametersV1,
         publicInputs: CirclePCSFRIPublicInputsV1,
-        roundCount: Int
+        roundCount: Int,
+        claimedEvaluationIndices: [Int] = []
     ) throws -> CirclePCSFRIProofV1 {
         guard domain.storageOrder == .circleDomainBitReversed,
               domain.isCanonical,
@@ -689,6 +886,10 @@ public enum CircleFRIProofBuilderV1 {
             throw AppleZKProverError.invalidInputLayout
         }
         try QM31Field.validateCanonical(evaluations)
+        let normalizedClaimedIndices = try normalizeClaimedEvaluationIndices(
+            claimedEvaluationIndices,
+            domain: domain
+        )
 
         let inverseDomainLayers = try CircleFRILayerOracleV1.inverseDomainLayers(
             for: domain,
@@ -757,13 +958,18 @@ public enum CircleFRIProofBuilderV1 {
                 layers: committedLayers
             )
         }
+        let claimedEvaluationOpenings = try makeClaimedEvaluationOpenings(
+            storageIndices: normalizedClaimedIndices,
+            evaluations: evaluations
+        )
         return try CirclePCSFRIProofV1(
             domain: domain,
             securityParameters: securityParameters,
             publicInputDigest: publicInputs.publicInputDigest,
             commitments: commitments,
             finalLayer: finalLayer,
-            queries: queries
+            queries: queries,
+            claimedEvaluationOpenings: claimedEvaluationOpenings
         )
     }
 
@@ -836,6 +1042,44 @@ public enum CircleFRIProofBuilderV1 {
             value: value,
             siblingHashes: opening.siblingHashes
         )
+    }
+
+    private static func makeClaimedEvaluationOpenings(
+        storageIndices: [Int],
+        evaluations: [QM31Element]
+    ) throws -> [CircleFRIValueOpeningV1] {
+        guard !storageIndices.isEmpty else {
+            return []
+        }
+        let layerBytes = QM31CanonicalEncoding.pack(evaluations)
+        return try storageIndices.map { storageIndex in
+            try makeOpening(
+                leafIndex: storageIndex,
+                value: evaluations[storageIndex],
+                layerBytes: layerBytes,
+                leafCount: evaluations.count
+            )
+        }
+    }
+
+    private static func normalizeClaimedEvaluationIndices(
+        _ storageIndices: [Int],
+        domain: CircleDomainDescriptor
+    ) throws -> [Int] {
+        guard !storageIndices.isEmpty else {
+            return []
+        }
+        let sorted = storageIndices.sorted()
+        var previous: Int?
+        for storageIndex in sorted {
+            guard storageIndex >= 0,
+                  storageIndex < domain.size,
+                  previous.map({ $0 < storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previous = storageIndex
+        }
+        return sorted
     }
 }
 
@@ -988,6 +1232,118 @@ public enum CirclePCSFRIProofVerifierV1 {
     }
 }
 
+public enum CirclePCSFRIPolynomialVerifierV1 {
+    public static func verify(
+        proof: CirclePCSFRIProofV1,
+        polynomialClaim: CirclePCSFRIPolynomialClaimV1
+    ) throws -> Bool {
+        let publicInputs = try CirclePCSFRIPublicInputsV1(polynomialClaim: polynomialClaim)
+        guard proof.publicInputDigest == publicInputs.publicInputDigest,
+              proof.domain == polynomialClaim.domain,
+              proof.claimedEvaluationOpenings.count == polynomialClaim.evaluationClaims.count,
+              coefficientCountsFitDomainAndSecurity(
+                polynomialClaim.polynomial,
+                proof: proof
+              ),
+              try CirclePCSFRIProofVerifierV1.verify(
+                proof: proof,
+                publicInputs: publicInputs
+              ) else {
+            return false
+        }
+
+        for (claim, opening) in zip(polynomialClaim.evaluationClaims, proof.claimedEvaluationOpenings) {
+            guard try claimMatchesDomainAndPolynomial(
+                claim,
+                polynomial: polynomialClaim.polynomial,
+                domain: proof.domain
+            ),
+            opening.leafIndex == claim.storageIndex,
+            opening.value == claim.value,
+            try verifyClaimOpening(
+                opening,
+                expectedRoot: proof.commitments[0],
+                domain: proof.domain
+            ) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func coefficientCountsFitDomainAndSecurity(
+        _ polynomial: CircleCodewordPolynomial,
+        proof: CirclePCSFRIProofV1
+    ) -> Bool {
+        guard proof.securityParameters.logBlowupFactor <= proof.domain.logSize else {
+            return false
+        }
+        let maxCoefficientCount = max(
+            1,
+            proof.domain.size >> Int(proof.securityParameters.logBlowupFactor)
+        )
+        return polynomial.xCoefficients.count <= maxCoefficientCount
+            && polynomial.yCoefficients.count <= maxCoefficientCount
+    }
+
+    private static func claimMatchesDomainAndPolynomial(
+        _ claim: CirclePCSFRIEvaluationClaimV1,
+        polynomial: CircleCodewordPolynomial,
+        domain: CircleDomainDescriptor
+    ) throws -> Bool {
+        guard claim.storageIndex < UInt64(domain.size),
+              claim.storageIndex <= UInt64(Int.max) else {
+            return false
+        }
+        let storageIndex = Int(claim.storageIndex)
+        let naturalIndex = try CircleDomainOracle.naturalDomainIndex(
+            forStorageIndex: storageIndex,
+            descriptor: domain
+        )
+        let expectedPoint = try CircleDomainOracle.point(
+            in: domain,
+            naturalDomainIndex: naturalIndex
+        )
+        guard claim.point == expectedPoint else {
+            return false
+        }
+        return try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            at: claim.point
+        ) == claim.value
+    }
+
+    private static func verifyClaimOpening(
+        _ opening: CircleFRIValueOpeningV1,
+        expectedRoot: Data,
+        domain: CircleDomainDescriptor
+    ) throws -> Bool {
+        guard expectedRoot.count == 32,
+              opening.leafIndex <= UInt64(Int.max),
+              opening.leafIndex < UInt64(domain.size),
+              opening.siblingHashes.count == log2(domain.size) else {
+            return false
+        }
+        let merkleOpening = MerkleOpeningProof(
+            leafIndex: Int(opening.leafIndex),
+            leaf: QM31CanonicalEncoding.pack(opening.value),
+            siblingHashes: opening.siblingHashes,
+            root: expectedRoot
+        )
+        return try MerkleOracle.verifySHA3_256(opening: merkleOpening)
+    }
+
+    private static func log2(_ value: Int) -> Int {
+        var remaining = max(1, value)
+        var result = 0
+        while remaining > 1 {
+            remaining >>= 1
+            result += 1
+        }
+        return result
+    }
+}
+
 enum CanonicalBinary {
     static func appendUInt32(_ value: UInt32, to data: inout Data) {
         data.append(UInt8(value & 0xff))
@@ -1020,6 +1376,10 @@ struct CanonicalByteReader {
     init(_ data: Data) {
         self.bytes = Array(data)
         self.offset = 0
+    }
+
+    var isAtEnd: Bool {
+        offset == bytes.count
     }
 
     mutating func readUInt32() throws -> UInt32 {

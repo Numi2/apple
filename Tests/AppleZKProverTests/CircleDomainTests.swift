@@ -125,6 +125,27 @@ final class CircleDomainTests: XCTestCase {
         }
     }
 
+    func testCircleDomainAndTwiddleStableVectorDigests() throws {
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let inverseLayers = try CircleFRILayerOracleV1.inverseDomainLayers(
+            for: domain,
+            roundCount: 4
+        )
+
+        XCTAssertEqual(
+            SHA3Oracle.sha3_256(try Self.packCircleDomainPoints(domain)).hexString,
+            "c1180832e84facb97aabb6d64b41699042978bd5593a228ecf75b7ca598e854a"
+        )
+        XCTAssertEqual(
+            SHA3Oracle.sha3_256(try Self.packM31Words(CircleCodewordOracle.circleFFTTwiddles(for: domain))).hexString,
+            "714863014a573e4b80fbacb4db39e5fb953e26a61a8d8a2044076ec4795ff3e3"
+        )
+        XCTAssertEqual(
+            SHA3Oracle.sha3_256(QM31CanonicalEncoding.pack(inverseLayers.flatMap { $0 })).hexString,
+            "ba4342a7f6493e287af7ada7ceb4b162513e85f89518d07609a6810a99316db7"
+        )
+    }
+
     func testCircleProofV1BinaryRoundTripsAndRejectsNonCanonicalFields() throws {
         let proof = try Self.makeProof(queryCount: 2)
         let encoded = try CirclePCSFRIProofCodecV1.encode(proof)
@@ -359,6 +380,145 @@ final class CircleDomainTests: XCTestCase {
         ))
     }
 
+    func testCirclePCSPolynomialVerifierBindsDomainOpeningsAndClaimedEvaluations() throws {
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 5,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let polynomial = try Self.makeStableCircleCodewordPolynomial()
+        let claimedStorageIndices = [0, 7, 18]
+        let claim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: polynomial,
+            storageIndices: claimedStorageIndices
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(polynomialClaim: claim)
+        let evaluations = try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            domain: domain
+        )
+        let proof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 3,
+            claimedEvaluationIndices: claimedStorageIndices
+        )
+
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(
+            proof: proof,
+            publicInputs: publicInputs
+        ))
+        XCTAssertTrue(try CirclePCSFRIPolynomialVerifierV1.verify(
+            proof: proof,
+            polynomialClaim: claim
+        ))
+        XCTAssertEqual(proof.claimedEvaluationOpenings.map(\.leafIndex), claimedStorageIndices.map(UInt64.init))
+        XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(try CirclePCSFRIProofCodecV1.encode(proof)), proof)
+
+        var badClaims = claim.evaluationClaims
+        let originalClaim = badClaims[0]
+        badClaims[0] = try CirclePCSFRIEvaluationClaimV1(
+            storageIndex: originalClaim.storageIndex,
+            point: originalClaim.point,
+            value: QM31Field.add(originalClaim.value, QM31Element(a: 1, b: 0, c: 0, d: 0))
+        )
+        let badValueClaim = try CirclePCSFRIPolynomialClaimV1(
+            domain: domain,
+            polynomial: polynomial,
+            evaluationClaims: badClaims
+        )
+        let badValuePublicInputs = try CirclePCSFRIPublicInputsV1(polynomialClaim: badValueClaim)
+        let badValueProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: badValuePublicInputs,
+            roundCount: 3,
+            claimedEvaluationIndices: claimedStorageIndices
+        )
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(
+            proof: badValueProof,
+            publicInputs: badValuePublicInputs
+        ))
+        XCTAssertFalse(try CirclePCSFRIPolynomialVerifierV1.verify(
+            proof: badValueProof,
+            polynomialClaim: badValueClaim
+        ))
+
+        var badOpenings = proof.claimedEvaluationOpenings
+        var badSiblings = badOpenings[0].siblingHashes
+        badSiblings[0][0] ^= 0x01
+        badOpenings[0] = try CircleFRIValueOpeningV1(
+            leafIndex: badOpenings[0].leafIndex,
+            value: badOpenings[0].value,
+            siblingHashes: badSiblings
+        )
+        let badOpeningProof = try CirclePCSFRIProofV1(
+            domain: proof.domain,
+            securityParameters: proof.securityParameters,
+            publicInputDigest: proof.publicInputDigest,
+            commitments: proof.commitments,
+            finalLayer: proof.finalLayer,
+            queries: proof.queries,
+            claimedEvaluationOpenings: badOpenings
+        )
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(
+            proof: badOpeningProof,
+            publicInputs: publicInputs
+        ))
+        XCTAssertFalse(try CirclePCSFRIPolynomialVerifierV1.verify(
+            proof: badOpeningProof,
+            polynomialClaim: claim
+        ))
+    }
+
+    func testCircleCodewordFFTOracleMatchesDirectEvaluatorAcrossEdgeDegrees() throws {
+        for logSize in UInt32(1)...6 {
+            let domain = try CircleDomainDescriptor.canonical(logSize: logSize)
+            let halfSize = domain.halfSize
+            let cases = [
+                try CircleCodewordPolynomial(
+                    xCoefficients: [QM31Element(a: 7, b: 11, c: 13, d: 17)]
+                ),
+                try CircleCodewordPolynomial(
+                    xCoefficients: [],
+                    yCoefficients: [QM31Element(a: 19, b: 23, c: 29, d: 31)]
+                ),
+                try CircleCodewordPolynomial(
+                    xCoefficients: Self.makeDeterministicQM31Coefficients(count: halfSize, salt: 0x40),
+                    yCoefficients: Self.makeDeterministicQM31Coefficients(count: halfSize, salt: 0x80)
+                ),
+            ]
+
+            XCTAssertEqual(try CircleCodewordOracle.circleFFTTwiddles(for: domain).count, domain.size - 1)
+            for polynomial in cases {
+                XCTAssertEqual(
+                    try CircleCodewordOracle.evaluateWithCircleFFT(
+                        polynomial: polynomial,
+                        domain: domain
+                    ),
+                    try CircleCodewordOracle.evaluate(
+                        polynomial: polynomial,
+                        domain: domain
+                    ),
+                    "logSize=\(logSize)"
+                )
+                XCTAssertEqual(
+                    try CircleCodewordOracle.circleFFTCoefficients(
+                        polynomial: polynomial,
+                        domain: domain
+                    ).count,
+                    domain.size
+                )
+            }
+        }
+    }
+
     func testCircleTranscriptBindsDomainSecurityCommitmentsPublicInputsAndFinalLayer() throws {
         let proof = try Self.makeProof(queryCount: 2)
         let base = try CircleFRITranscriptV1.derive(proof: proof)
@@ -435,6 +595,36 @@ final class CircleDomainTests: XCTestCase {
     }
 
 #if canImport(Metal)
+    func testCircleDomainMaterializationMatchesCPUCanonicalVectors() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        for (logSize, roundCount) in [(UInt32(1), 1), (UInt32(3), 2), (UInt32(5), 4), (UInt32(6), 5)] {
+            let domain = try CircleDomainDescriptor.canonical(logSize: logSize)
+            let materialization = try CircleDomainMaterializationPlan(
+                context: context,
+                domain: domain,
+                materializeDomainPoints: true,
+                materializeCodewordTwiddles: true,
+                inverseDomainRoundCount: roundCount
+            )
+
+            XCTAssertEqual(materialization.outputCount, domain.size >> roundCount)
+            XCTAssertEqual(materialization.totalInverseDomainCount, domain.size - materialization.outputCount)
+            XCTAssertEqual(try materialization.readDomainPoints(), try Self.circleDomainPoints(domain))
+            XCTAssertEqual(
+                try materialization.readCodewordTwiddles(),
+                try CircleCodewordOracle.circleFFTTwiddles(for: domain)
+            )
+            XCTAssertEqual(
+                try materialization.readInverseDomainLayers(),
+                try CircleFRILayerOracleV1.inverseDomainLayers(for: domain, roundCount: roundCount)
+            )
+        }
+    }
+
     func testCircleFRIFoldPlanMatchesCPUOracleAndResidentHotPath() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -462,7 +652,7 @@ final class CircleDomainTests: XCTestCase {
         let plan = try CircleFRIFoldPlan(context: context, domain: domain)
         XCTAssertEqual(plan.inputCount, domain.size)
         XCTAssertEqual(plan.outputCount, domain.halfSize)
-        XCTAssertEqual(plan.inverseYTwiddles, try CircleDomainOracle.firstFoldInverseYTwiddles(for: domain))
+        XCTAssertEqual(try plan.readInverseYTwiddles(), try CircleDomainOracle.firstFoldInverseYTwiddles(for: domain))
 
         let measured = try plan.executeVerified(evaluations: evaluations, challenge: challenge)
         XCTAssertEqual(measured.values, expected)
@@ -538,7 +728,7 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(plan.outputCount, domain.size >> roundCount)
         XCTAssertEqual(plan.totalInverseDomainCount, domain.size - plan.outputCount)
         XCTAssertEqual(
-            plan.inverseDomainLayers,
+            try plan.readInverseDomainLayers(),
             try CircleFRILayerOracleV1.inverseDomainLayers(for: domain, roundCount: roundCount)
         )
 
@@ -628,7 +818,7 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(plan.outputCount, proof.finalLayer.count)
         XCTAssertEqual(plan.totalInverseDomainCount, domain.size - proof.finalLayer.count)
         XCTAssertEqual(
-            plan.inverseDomainLayers,
+            try plan.readInverseDomainLayers(),
             try CircleFRILayerOracleV1.inverseDomainLayers(for: domain, roundCount: roundCount)
         )
 
@@ -864,6 +1054,15 @@ final class CircleDomainTests: XCTestCase {
         )
 
         let codewordPlan = try CircleCodewordPlan(context: context, domain: domain)
+        XCTAssertEqual(
+            try codewordPlan.readCodewordTwiddles(),
+            try CircleCodewordOracle.circleFFTTwiddles(for: domain)
+        )
+        let measuredCodeword = try codewordPlan.execute(polynomial: polynomial)
+        XCTAssertEqual(
+            Array(measuredCodeword.evaluations.prefix(8)),
+            Array(expectedCodeword.prefix(8))
+        )
         let measured = try codewordPlan.executeVerified(polynomial: polynomial)
         XCTAssertEqual(measured.evaluations, expectedCodeword)
 
@@ -968,6 +1167,17 @@ final class CircleDomainTests: XCTestCase {
             publicInputs: publicInputs,
             roundCount: roundCount
         )
+        XCTAssertEqual(
+            codewordProver.commandPlan.phases,
+            CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPhases
+        )
+        XCTAssertEqual(
+            codewordProver.commandPlan.publicReadbacks,
+            CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPublicReadbacks
+        )
+        XCTAssertTrue(codewordProver.commandPlan.forbidsFullCodewordReadback)
+        XCTAssertTrue(codewordProver.commandPlan.forbidsIntermediateFRILayerReadback)
+        XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentCircleFFTBasisBuffer))
         let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
         XCTAssertEqual(proofResult.proof, expectedProof)
         XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(proofResult.encodedProof), expectedProof)
@@ -981,6 +1191,26 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(residentCoefficientProof.proof, expectedProof)
         XCTAssertEqual(
             try CirclePCSFRIProofCodecV1.decode(residentCoefficientProof.encodedProof),
+            expectedProof
+        )
+        let circleCoefficientBytes = try QM31CanonicalEncoding.pack(
+            CircleCodewordOracle.circleFFTCoefficients(
+                polynomial: polynomial,
+                domain: domain
+            )
+        )
+        let circleCoefficientBuffer = try Self.makePrivateBuffer(
+            context: context,
+            bytes: circleCoefficientBytes,
+            label: "CircleDomainTests.CircleCodewordCircleFFTCoefficients"
+        )
+        let residentFFTCoefficientProof = try codewordProver.proveCircleFFTCoefficientsResidentVerified(
+            polynomial: polynomial,
+            circleCoefficientBuffer: circleCoefficientBuffer
+        )
+        XCTAssertEqual(residentFFTCoefficientProof.proof, expectedProof)
+        XCTAssertEqual(
+            try CirclePCSFRIProofCodecV1.decode(residentFFTCoefficientProof.encodedProof),
             expectedProof
         )
         try codewordProver.clearReusableBuffers()
@@ -1339,6 +1569,26 @@ final class CircleDomainTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
+        let oversizedPolynomial = try CircleCodewordPolynomial(
+            xCoefficients: Array(repeating: one, count: domain.halfSize + 1),
+            yCoefficients: []
+        )
+        XCTAssertThrowsError(
+            try CircleCodewordOracle.evaluateWithCircleFFT(
+                polynomial: oversizedPolynomial,
+                domain: domain
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try codewordPlan.executeResident(
+                polynomial: oversizedPolynomial,
+                outputBuffer: fullEvaluationBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
         let coefficientBytes = QM31CanonicalEncoding.pack(polynomial.xCoefficients)
         let aliasedCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
             device: device,
@@ -1471,6 +1721,18 @@ final class CircleDomainTests: XCTestCase {
         return evaluations
     }
 
+    private static func makeDeterministicQM31Coefficients(count: Int, salt: UInt32) -> [QM31Element] {
+        (0..<count).map { index in
+            let value = UInt32(index)
+            return QM31Element(
+                a: 3 &+ salt &+ value &* 5,
+                b: 7 &+ salt &+ value &* 11,
+                c: 13 &+ salt &+ value &* 17,
+                d: 19 &+ salt &+ value &* 23
+            )
+        }
+    }
+
     private static func makeStableCircleCodewordPolynomial() throws -> CircleCodewordPolynomial {
         try CircleCodewordPolynomial(
             xCoefficients: [
@@ -1485,6 +1747,41 @@ final class CircleDomainTests: XCTestCase {
                 QM31Element(a: 101, b: 103, c: 107, d: 109),
             ]
         )
+    }
+
+    private static func circleDomainPoints(_ domain: CircleDomainDescriptor) throws -> [CirclePointM31] {
+        try (0..<domain.size).map { storageIndex in
+            let naturalIndex = try CircleDomainOracle.naturalDomainIndex(
+                forStorageIndex: storageIndex,
+                descriptor: domain
+            )
+            let point = try CircleDomainOracle.point(
+                in: domain,
+                naturalDomainIndex: naturalIndex
+            )
+            try CircleDomainOracle.validatePoint(point)
+            return point
+        }
+    }
+
+    private static func packCircleDomainPoints(_ domain: CircleDomainDescriptor) throws -> Data {
+        var data = Data()
+        data.reserveCapacity(try checkedBufferLength(domain.size, 2 * MemoryLayout<UInt32>.stride))
+        for point in try circleDomainPoints(domain) {
+            CanonicalBinary.appendUInt32(point.x, to: &data)
+            CanonicalBinary.appendUInt32(point.y, to: &data)
+        }
+        return data
+    }
+
+    private static func packM31Words(_ words: [UInt32]) throws -> Data {
+        try M31Field.validateCanonical(words)
+        var data = Data()
+        data.reserveCapacity(try checkedBufferLength(words.count, MemoryLayout<UInt32>.stride))
+        for word in words {
+            CanonicalBinary.appendUInt32(word, to: &data)
+        }
+        return data
     }
 
 #if canImport(Metal)
@@ -1510,6 +1807,42 @@ final class CircleDomainTests: XCTestCase {
         return (0..<count).map { index in
             Data(bytes: bytes.advanced(by: index * commitmentByteCount), count: commitmentByteCount)
         }
+    }
+
+    private static func makePrivateBuffer(
+        context: MetalContext,
+        bytes: Data,
+        label: String
+    ) throws -> MTLBuffer {
+        let buffer = try MetalBufferFactory.makePrivateBuffer(
+            device: context.device,
+            length: bytes.count,
+            label: label
+        )
+        let staging = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            bytes: bytes,
+            declaredLength: bytes.count,
+            label: "\(label).Staging"
+        )
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "\(label).Upload"
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        blit.label = "\(label).Upload.Copy"
+        if bytes.count > 0 {
+            blit.copy(from: staging, sourceOffset: 0, to: buffer, destinationOffset: 0, size: bytes.count)
+        }
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+        return buffer
     }
 #endif
 }

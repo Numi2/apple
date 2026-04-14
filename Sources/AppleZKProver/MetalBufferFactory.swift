@@ -25,11 +25,24 @@ enum MetalBufferFactory {
         declaredLength: Int,
         label: String
     ) throws -> MTLBuffer {
-        guard bytes.count >= declaredLength else {
+        guard declaredLength >= 0,
+              bytes.count >= declaredLength else {
             throw AppleZKProverError.invalidInputLayout
         }
-        let buffer = try makeSharedBuffer(device: device, length: declaredLength, label: label)
-        try copy(bytes, into: buffer, byteCount: declaredLength)
+        let buffer: MTLBuffer?
+        if declaredLength == 0 {
+            buffer = device.makeBuffer(length: 1, options: .storageModeShared)
+        } else {
+            buffer = bytes.withUnsafeBytes { rawBuffer in
+                rawBuffer.baseAddress.flatMap {
+                    device.makeBuffer(bytes: $0, length: declaredLength, options: .storageModeShared)
+                }
+            }
+        }
+        guard let buffer else {
+            throw AppleZKProverError.failedToCreateBuffer(label: label, length: declaredLength)
+        }
+        buffer.label = label
         return buffer
     }
 

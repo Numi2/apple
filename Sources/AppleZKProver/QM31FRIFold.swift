@@ -946,8 +946,15 @@ public struct QM31FRIMerkleFoldChainResult: Sendable {
 }
 
 private struct QM31FRIFoldTranscriptFrameUpload {
-    let buffer: MTLBuffer
+    let offset: Int
     let byteCount: Int
+}
+
+private struct QM31FRIFoldTranscriptFrameUploads {
+    let buffer: MTLBuffer
+    let prefix: [QM31FRIFoldTranscriptFrameUpload]
+    let rounds: [QM31FRIFoldTranscriptFrameUpload]
+    let challenges: [QM31FRIFoldTranscriptFrameUpload]
 }
 
 public final class QM31FRIFoldPlan: @unchecked Sendable {
@@ -1360,6 +1367,7 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
     private let outputReadback: MTLBuffer
     private let challengeReadback: MTLBuffer
     private let commitmentRootReadback: MTLBuffer
+    private let transcriptFrameBuffer: MTLBuffer
     private let transcriptPrefixFrames: [QM31FRIFoldTranscriptFrameUpload]
     private let transcriptRoundFrames: [QM31FRIFoldTranscriptFrameUpload]
     private let transcriptChallengeFrames: [QM31FRIFoldTranscriptFrameUpload]
@@ -1521,27 +1529,16 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             length: commitmentRootLogByteCount,
             label: "AppleZKProver.QM31FRIFoldChainCommitmentRootReadback"
         )
-        self.transcriptPrefixFrames = try transcriptFrameData.prefix.enumerated().map { index, data in
-            try Self.makeFrameUpload(
-                device: context.device,
-                data: data,
-                label: "AppleZKProver.QM31FRIFoldChainTranscriptPrefix.\(index)"
-            )
-        }
-        self.transcriptRoundFrames = try transcriptFrameData.rounds.enumerated().map { index, data in
-            try Self.makeFrameUpload(
-                device: context.device,
-                data: data,
-                label: "AppleZKProver.QM31FRIFoldChainTranscriptRound.\(index)"
-            )
-        }
-        self.transcriptChallengeFrames = try transcriptFrameData.challenges.enumerated().map { index, data in
-            try Self.makeFrameUpload(
-                device: context.device,
-                data: data,
-                label: "AppleZKProver.QM31FRIFoldChainTranscriptChallenge.\(index)"
-            )
-        }
+        let transcriptFrameUploads = try Self.makeFrameUploads(
+            device: context.device,
+            prefix: transcriptFrameData.prefix,
+            rounds: transcriptFrameData.rounds,
+            challenges: transcriptFrameData.challenges
+        )
+        self.transcriptFrameBuffer = transcriptFrameUploads.buffer
+        self.transcriptPrefixFrames = transcriptFrameUploads.prefix
+        self.transcriptRoundFrames = transcriptFrameUploads.rounds
+        self.transcriptChallengeFrames = transcriptFrameUploads.challenges
     }
 
     public func execute(
@@ -1781,6 +1778,32 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             readOutput: false
         )
         return result.stats
+    }
+
+    public func executeMerkleTranscriptDerivedReadback(
+        evaluationsBuffer: MTLBuffer,
+        evaluationsOffset: Int = 0,
+        inverseDomainBuffer: MTLBuffer,
+        inverseDomainOffset: Int = 0
+    ) throws -> QM31FRIMerkleFoldChainResult {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        _ = try ensureMerkleCommitPlans()
+        return try executeMerkleTranscriptDerivedLocked(
+            evaluationsBuffer: evaluationsBuffer,
+            evaluationsOffset: evaluationsOffset,
+            inverseDomainBuffer: inverseDomainBuffer,
+            inverseDomainOffset: inverseDomainOffset,
+            outputBuffer: outputVector.buffer,
+            outputOffset: outputVector.offset,
+            commitmentOutputBuffer: nil,
+            commitmentOutputOffset: 0,
+            commitmentOutputStride: roundCommitmentByteCount,
+            materializedLayerBuffer: nil,
+            materializedLayerOffset: 0,
+            readOutput: true
+        )
     }
 
     public func clearReusableBuffers() throws {
@@ -2499,7 +2522,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         on commandBuffer: MTLCommandBuffer
     ) throws {
         try transcript.encodeCanonicalPack(
-            input: frame.buffer,
+            input: transcriptFrameBuffer,
+            inputOffset: frame.offset,
             output: transcriptFrameScratch,
             byteCount: frame.byteCount,
             on: commandBuffer
@@ -2895,18 +2919,65 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         )
     }
 
-    private static func makeFrameUpload(
+    private static func makeFrameUploads(
         device: MTLDevice,
-        data: Data,
-        label: String
-    ) throws -> QM31FRIFoldTranscriptFrameUpload {
-        let buffer = try MetalBufferFactory.makeSharedBuffer(
-            device: device,
-            bytes: data,
-            declaredLength: data.count,
-            label: label
+        prefix: [Data],
+        rounds: [Data],
+        challenges: [Data]
+    ) throws -> QM31FRIFoldTranscriptFrameUploads {
+        var bytes = Data()
+        var prefixUploads: [QM31FRIFoldTranscriptFrameUpload] = []
+        var roundUploads: [QM31FRIFoldTranscriptFrameUpload] = []
+        var challengeUploads: [QM31FRIFoldTranscriptFrameUpload] = []
+        prefixUploads.reserveCapacity(prefix.count)
+        roundUploads.reserveCapacity(rounds.count)
+        challengeUploads.reserveCapacity(challenges.count)
+
+        try Self.appendFrameUploads(frames: prefix, into: &bytes, uploads: &prefixUploads)
+        try Self.appendFrameUploads(frames: rounds, into: &bytes, uploads: &roundUploads)
+        try Self.appendFrameUploads(frames: challenges, into: &bytes, uploads: &challengeUploads)
+
+        guard let buffer = device.makeBuffer(length: max(1, bytes.count), options: .storageModeShared) else {
+            throw AppleZKProverError.failedToCreateBuffer(
+                label: "AppleZKProver.QM31FRIFoldChainTranscriptFrames",
+                length: bytes.count
+            )
+        }
+        buffer.label = "AppleZKProver.QM31FRIFoldChainTranscriptFrames"
+        if !bytes.isEmpty {
+            bytes.withUnsafeBytes { rawBuffer in
+                guard let source = rawBuffer.baseAddress else {
+                    return
+                }
+                buffer.contents().copyMemory(from: source, byteCount: bytes.count)
+            }
+        }
+        return QM31FRIFoldTranscriptFrameUploads(
+            buffer: buffer,
+            prefix: prefixUploads,
+            rounds: roundUploads,
+            challenges: challengeUploads
         )
-        return QM31FRIFoldTranscriptFrameUpload(buffer: buffer, byteCount: data.count)
+    }
+
+    private static func appendFrameUploads(
+        frames: [Data],
+        into bytes: inout Data,
+        uploads: inout [QM31FRIFoldTranscriptFrameUpload]
+    ) throws {
+        let alignment = 256
+        for frame in frames {
+            let remainder = bytes.count % alignment
+            if remainder != 0 {
+                let padding = alignment - remainder
+                _ = try checkedAdd(bytes.count, padding)
+                bytes.append(contentsOf: repeatElement(UInt8(0), count: padding))
+            }
+            let offset = bytes.count
+            _ = try checkedAdd(offset, frame.count)
+            bytes.append(frame)
+            uploads.append(QM31FRIFoldTranscriptFrameUpload(offset: offset, byteCount: frame.count))
+        }
     }
 
     private func ensureMerkleCommitPlans() throws -> [SHA3RawLeavesMerkleCommitPlan] {

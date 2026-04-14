@@ -8,10 +8,12 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
     public let domain: CircleDomainDescriptor
     public let inputCount: Int
     public let outputCount: Int
-    public let inverseYTwiddles: [QM31Element]
+    public let domainMaterializationStats: GPUExecutionStats
 
     private let foldPlan: QM31FRIFoldPlan
-    private let inverseYTwiddleBuffer: MTLBuffer
+    private let domainMaterialization: CircleDomainMaterializationPlan
+    private let outputReadback: MTLBuffer
+    private let executionLock = NSLock()
 
     public init(context: MetalContext, domain: CircleDomainDescriptor) throws {
         guard domain.isCanonical,
@@ -20,22 +22,21 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
             throw AppleZKProverError.invalidInputLayout
         }
 
-        let inverseYTwiddles = try CircleDomainOracle.firstFoldInverseYTwiddles(for: domain)
-        guard inverseYTwiddles.count == domain.halfSize,
-              inverseYTwiddles.allSatisfy({ !QM31Field.isZero($0) }) else {
-            throw AppleZKProverError.invalidInputLayout
-        }
-
         self.domain = domain
         self.inputCount = domain.size
         self.outputCount = domain.halfSize
-        self.inverseYTwiddles = inverseYTwiddles
         self.foldPlan = try QM31FRIFoldPlan(context: context, inputCount: domain.size)
-        self.inverseYTwiddleBuffer = try MetalBufferFactory.makeSharedBuffer(
+        self.domainMaterialization = try CircleDomainMaterializationPlan(
+            context: context,
+            domain: domain,
+            materializeDomainPoints: false,
+            inverseDomainRoundCount: 1
+        )
+        self.domainMaterializationStats = domainMaterialization.materializationStats
+        self.outputReadback = try MetalBufferFactory.makeSharedBuffer(
             device: context.device,
-            bytes: QM31FRILeafEncoding.packLittleEndian(inverseYTwiddles),
-            declaredLength: try checkedBufferLength(domain.halfSize, Self.elementByteCount),
-            label: "AppleZKProver.CircleFRIFoldInverseYTwiddles"
+            length: try checkedBufferLength(domain.halfSize, Self.elementByteCount),
+            label: "AppleZKProver.CircleFRIFoldReadback"
         )
     }
 
@@ -44,11 +45,23 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
         challenge: QM31Element
     ) throws -> QM31FRIFoldResult {
         try validateInputs(evaluations: evaluations, challenge: challenge)
-        return try foldPlan.execute(
-            evaluations: evaluations,
-            inverseDomainPoints: inverseYTwiddles,
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: domainMaterialization.requireInverseDomainBuffer().device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: try checkedBufferLength(inputCount, Self.elementByteCount),
+            label: "AppleZKProver.CircleFRIFoldEvaluations"
+        )
+
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let stats = try executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            outputBuffer: outputReadback,
             challenge: challenge
         )
+        let values = try Self.readQM31Buffer(outputReadback, count: outputCount)
+        return QM31FRIFoldResult(values: values, stats: stats)
     }
 
     public func executeVerified(
@@ -79,7 +92,7 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
         try foldPlan.executeResident(
             evaluationsBuffer: evaluationsBuffer,
             evaluationsOffset: evaluationsOffset,
-            inverseDomainBuffer: inverseYTwiddleBuffer,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer(),
             inverseDomainOffset: 0,
             outputBuffer: outputBuffer,
             outputOffset: outputOffset,
@@ -89,6 +102,11 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
 
     public func clearReusableBuffers() throws {
         try foldPlan.clearReusableBuffers()
+        MetalBufferFactory.zeroSharedBuffer(outputReadback)
+    }
+
+    public func readInverseYTwiddles() throws -> [QM31Element] {
+        try domainMaterialization.readFlatInverseDomain()
     }
 
     private func validateInputs(
@@ -101,6 +119,14 @@ public final class CircleFRIFoldPlan: @unchecked Sendable {
         try QM31Field.validateCanonical(evaluations)
         try QM31Field.validateCanonical([challenge])
     }
+
+    private static func readQM31Buffer(_ buffer: MTLBuffer, count: Int) throws -> [QM31Element] {
+        let byteCount = try checkedBufferLength(count, elementByteCount)
+        return try QM31CanonicalEncoding.unpackMany(
+            Data(bytes: buffer.contents(), count: byteCount),
+            count: count
+        )
+    }
 }
 
 public final class CircleFRIFoldChainPlan: @unchecked Sendable {
@@ -111,10 +137,12 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
     public let roundCount: Int
     public let outputCount: Int
     public let totalInverseDomainCount: Int
-    public let inverseDomainLayers: [[QM31Element]]
+    public let domainMaterializationStats: GPUExecutionStats
 
     private let foldChainPlan: QM31FRIFoldChainPlan
-    private let inverseDomainBuffer: MTLBuffer
+    private let domainMaterialization: CircleDomainMaterializationPlan
+    private let outputReadback: MTLBuffer
+    private let executionLock = NSLock()
 
     public init(
         context: MetalContext,
@@ -128,50 +156,29 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
             throw AppleZKProverError.invalidInputLayout
         }
 
-        let inverseDomainLayers = try CircleFRILayerOracleV1.inverseDomainLayers(
-            for: domain,
-            roundCount: roundCount
+        let domainMaterialization = try CircleDomainMaterializationPlan(
+            context: context,
+            domain: domain,
+            materializeDomainPoints: false,
+            inverseDomainRoundCount: roundCount
         )
-        guard inverseDomainLayers.count == roundCount else {
-            throw AppleZKProverError.invalidInputLayout
-        }
-
-        var currentCount = domain.size
-        var totalInverseDomainCount = 0
-        for layer in inverseDomainLayers {
-            guard currentCount > 1,
-                  currentCount.isMultiple(of: 2),
-                  layer.count == currentCount / 2 else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            try QM31Field.validateCanonical(layer)
-            guard layer.allSatisfy({ !QM31Field.isZero($0) }) else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            let nextTotal = totalInverseDomainCount.addingReportingOverflow(layer.count)
-            guard !nextTotal.overflow else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            totalInverseDomainCount = nextTotal.partialValue
-            currentCount /= 2
-        }
 
         self.domain = domain
         self.inputCount = domain.size
         self.roundCount = roundCount
-        self.outputCount = currentCount
-        self.totalInverseDomainCount = totalInverseDomainCount
-        self.inverseDomainLayers = inverseDomainLayers
+        self.outputCount = domainMaterialization.outputCount
+        self.totalInverseDomainCount = domainMaterialization.totalInverseDomainCount
+        self.domainMaterializationStats = domainMaterialization.materializationStats
+        self.domainMaterialization = domainMaterialization
         self.foldChainPlan = try QM31FRIFoldChainPlan(
             context: context,
             inputCount: domain.size,
             roundCount: roundCount
         )
-        self.inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
+        self.outputReadback = try MetalBufferFactory.makeSharedBuffer(
             device: context.device,
-            bytes: QM31FRILeafEncoding.packLittleEndian(inverseDomainLayers.flatMap { $0 }),
-            declaredLength: try checkedBufferLength(totalInverseDomainCount, Self.elementByteCount),
-            label: "AppleZKProver.CircleFRIFoldChainInverseDomain"
+            length: try checkedBufferLength(domainMaterialization.outputCount, Self.elementByteCount),
+            label: "AppleZKProver.CircleFRIFoldChainReadback"
         )
     }
 
@@ -180,10 +187,23 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
         challenges: [QM31Element]
     ) throws -> QM31FRIFoldChainResult {
         try validateInputs(evaluations: evaluations, challenges: challenges)
-        let rounds = zip(inverseDomainLayers, challenges).map {
-            QM31FRIFoldRound(inverseDomainPoints: $0.0, challenge: $0.1)
-        }
-        return try foldChainPlan.execute(evaluations: evaluations, rounds: rounds)
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: domainMaterialization.requireInverseDomainBuffer().device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: try checkedBufferLength(inputCount, Self.elementByteCount),
+            label: "AppleZKProver.CircleFRIFoldChainEvaluations"
+        )
+
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let stats = try executeResident(
+            evaluationsBuffer: evaluationBuffer,
+            outputBuffer: outputReadback,
+            challenges: challenges
+        )
+        let values = try Self.readQM31Buffer(outputReadback, count: outputCount)
+        return QM31FRIFoldChainResult(values: values, stats: stats)
     }
 
     public func executeVerified(
@@ -215,7 +235,7 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
         return try foldChainPlan.executeResident(
             evaluationsBuffer: evaluationsBuffer,
             evaluationsOffset: evaluationsOffset,
-            inverseDomainBuffer: inverseDomainBuffer,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer(),
             inverseDomainOffset: 0,
             outputBuffer: outputBuffer,
             outputOffset: outputOffset,
@@ -225,6 +245,11 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
 
     public func clearReusableBuffers() throws {
         try foldChainPlan.clearReusableBuffers()
+        MetalBufferFactory.zeroSharedBuffer(outputReadback)
+    }
+
+    public func readInverseDomainLayers() throws -> [[QM31Element]] {
+        try domainMaterialization.readInverseDomainLayers()
     }
 
     private func validateInputs(
@@ -243,6 +268,14 @@ public final class CircleFRIFoldChainPlan: @unchecked Sendable {
             throw AppleZKProverError.invalidInputLayout
         }
         try QM31Field.validateCanonical(challenges)
+    }
+
+    private static func readQM31Buffer(_ buffer: MTLBuffer, count: Int) throws -> [QM31Element] {
+        let byteCount = try checkedBufferLength(count, elementByteCount)
+        return try QM31CanonicalEncoding.unpackMany(
+            Data(bytes: buffer.contents(), count: byteCount),
+            count: count
+        )
     }
 }
 
@@ -276,13 +309,14 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
     public let roundCount: Int
     public let outputCount: Int
     public let totalInverseDomainCount: Int
-    public let inverseDomainLayers: [[QM31Element]]
+    public let inverseDomainLayerCounts: [Int]
     public let committedLayerCounts: [Int]
     public let committedLayerElementOffsets: [Int]
     public let totalCommittedLayerCount: Int
+    public let domainMaterializationStats: GPUExecutionStats
 
     private let foldChainPlan: QM31FRIFoldChainPlan
-    private let inverseDomainBuffer: MTLBuffer
+    private let domainMaterialization: CircleDomainMaterializationPlan
 
     public convenience init(
         context: MetalContext,
@@ -316,7 +350,12 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
             throw AppleZKProverError.invalidInputLayout
         }
 
-        let preparedLayers = try Self.prepareInverseDomainLayers(domain: domain, roundCount: roundCount)
+        let domainMaterialization = try CircleDomainMaterializationPlan(
+            context: context,
+            domain: domain,
+            materializeDomainPoints: false,
+            inverseDomainRoundCount: roundCount
+        )
         let committedLayerLayout = try Self.committedLayerLayout(
             inputCount: domain.size,
             roundCount: roundCount
@@ -333,31 +372,33 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
         self.publicInputDigest = publicInputDigest
         self.inputCount = domain.size
         self.roundCount = roundCount
-        self.outputCount = preparedLayers.outputCount
-        self.totalInverseDomainCount = preparedLayers.totalInverseDomainCount
-        self.inverseDomainLayers = preparedLayers.layers
+        self.outputCount = domainMaterialization.outputCount
+        self.totalInverseDomainCount = domainMaterialization.totalInverseDomainCount
+        self.inverseDomainLayerCounts = domainMaterialization.inverseDomainLayerCounts
         self.committedLayerCounts = committedLayerLayout.counts
         self.committedLayerElementOffsets = committedLayerLayout.offsets
         self.totalCommittedLayerCount = committedLayerLayout.totalElementCount
+        self.domainMaterializationStats = domainMaterialization.materializationStats
+        self.domainMaterialization = domainMaterialization
         self.foldChainPlan = try QM31FRIFoldChainPlan(
             context: context,
             inputCount: domain.size,
             roundCount: roundCount,
             transcriptFrameData: transcriptFrameData
         )
-        self.inverseDomainBuffer = try MetalBufferFactory.makeSharedBuffer(
-            device: context.device,
-            bytes: QM31FRILeafEncoding.packLittleEndian(preparedLayers.layers.flatMap { $0 }),
-            declaredLength: try checkedBufferLength(preparedLayers.totalInverseDomainCount, Self.elementByteCount),
-            label: "AppleZKProver.CircleFRIMerkleTranscriptInverseDomain"
-        )
     }
 
     public func execute(evaluations: [QM31Element]) throws -> CircleFRIMerkleTranscriptFoldChainResult {
         try validateEvaluations(evaluations)
-        let measured = try foldChainPlan.executeMerkleTranscriptDerived(
-            evaluations: evaluations,
-            inverseDomainLayers: inverseDomainLayers
+        let evaluationBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: domainMaterialization.requireInverseDomainBuffer().device,
+            bytes: QM31CanonicalEncoding.pack(evaluations),
+            declaredLength: try checkedBufferLength(inputCount, Self.elementByteCount),
+            label: "AppleZKProver.CircleFRIMerkleTranscriptEvaluations"
+        )
+        let measured = try foldChainPlan.executeMerkleTranscriptDerivedReadback(
+            evaluationsBuffer: evaluationBuffer,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer()
         )
         return CircleFRIMerkleTranscriptFoldChainResult(
             values: measured.values,
@@ -368,6 +409,10 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
     }
 
     public func executeVerified(evaluations: [QM31Element]) throws -> CircleFRIMerkleTranscriptFoldChainResult {
+        let inverseDomainLayers = try CircleFRILayerOracleV1.inverseDomainLayers(
+            for: domain,
+            roundCount: roundCount
+        )
         let expected = try Self.commitAndFoldOracle(
             evaluations: evaluations,
             domain: domain,
@@ -398,7 +443,7 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
         try foldChainPlan.executeMerkleTranscriptDerivedResident(
             evaluationsBuffer: evaluationsBuffer,
             evaluationsOffset: evaluationsOffset,
-            inverseDomainBuffer: inverseDomainBuffer,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer(),
             inverseDomainOffset: 0,
             commitmentOutputBuffer: commitmentOutputBuffer,
             commitmentOutputOffset: commitmentOutputOffset,
@@ -422,7 +467,7 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
         try foldChainPlan.executeMerkleTranscriptDerivedResident(
             evaluationsBuffer: evaluationsBuffer,
             evaluationsOffset: evaluationsOffset,
-            inverseDomainBuffer: inverseDomainBuffer,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer(),
             inverseDomainOffset: 0,
             commitmentOutputBuffer: commitmentOutputBuffer,
             commitmentOutputOffset: commitmentOutputOffset,
@@ -438,45 +483,15 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
         try foldChainPlan.clearReusableBuffers()
     }
 
+    public func readInverseDomainLayers() throws -> [[QM31Element]] {
+        try domainMaterialization.readInverseDomainLayers()
+    }
+
     private func validateEvaluations(_ evaluations: [QM31Element]) throws {
         guard evaluations.count == inputCount else {
             throw AppleZKProverError.invalidInputLayout
         }
         try QM31Field.validateCanonical(evaluations)
-    }
-
-    private static func prepareInverseDomainLayers(
-        domain: CircleDomainDescriptor,
-        roundCount: Int
-    ) throws -> (layers: [[QM31Element]], totalInverseDomainCount: Int, outputCount: Int) {
-        let layers = try CircleFRILayerOracleV1.inverseDomainLayers(
-            for: domain,
-            roundCount: roundCount
-        )
-        guard layers.count == roundCount else {
-            throw AppleZKProverError.invalidInputLayout
-        }
-
-        var currentCount = domain.size
-        var totalInverseDomainCount = 0
-        for layer in layers {
-            guard currentCount > 1,
-                  currentCount.isMultiple(of: 2),
-                  layer.count == currentCount / 2 else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            try QM31Field.validateCanonical(layer)
-            guard layer.allSatisfy({ !QM31Field.isZero($0) }) else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            let nextTotal = totalInverseDomainCount.addingReportingOverflow(layer.count)
-            guard !nextTotal.overflow else {
-                throw AppleZKProverError.invalidInputLayout
-            }
-            totalInverseDomainCount = nextTotal.partialValue
-            currentCount /= 2
-        }
-        return (layers, totalInverseDomainCount, currentCount)
     }
 
     private static func committedLayerLayout(
@@ -695,7 +710,7 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
         self.totalCommittedLayerCount = foldPlan.totalCommittedLayerCount
         self.foldPlan = foldPlan
         self.queryExtractor = queryExtractor
-        self.committedLayerBuffer = try MetalBufferFactory.makeSharedBuffer(
+        self.committedLayerBuffer = try MetalBufferFactory.makePrivateBuffer(
             device: context.device,
             length: try checkedBufferLength(foldPlan.totalCommittedLayerCount, Self.elementByteCount),
             label: "AppleZKProver.CirclePCSFRIResidentProver.CommittedLayers"
@@ -816,9 +831,13 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
 
         try foldPlan.clearReusableBuffers()
         try queryExtractor.clearReusableBuffers()
-        MetalBufferFactory.zeroSharedBuffer(committedLayerBuffer)
         MetalBufferFactory.zeroSharedBuffer(commitmentOutputBuffer)
         MetalBufferFactory.zeroSharedBuffer(finalLayerBuffer)
+        try MetalBufferFactory.zeroPrivateBuffers(
+            [committedLayerBuffer],
+            context: context,
+            label: "AppleZKProver.CirclePCSFRIResidentProver.Clear"
+        )
     }
 
     private func verifyResult(_ result: CirclePCSFRIResidentProverV1Result) throws {

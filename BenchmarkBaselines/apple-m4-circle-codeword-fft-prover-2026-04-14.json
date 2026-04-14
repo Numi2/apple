@@ -1,0 +1,124 @@
+{
+  "codewordGeneration" : {
+    "bestSecondsForThroughput" : 6.587500683963299e-05,
+    "elementsPerSecond" : 15544590.416405413,
+    "gpuSeconds" : {
+      "max" : 6.604166992474347e-05,
+      "mean" : 6.595833838218823e-05,
+      "median" : 6.595833838218823e-05,
+      "min" : 6.587500683963299e-05,
+      "samples" : [
+        6.587500683963299e-05,
+        6.604166992474347e-05
+      ]
+    },
+    "inputBytesPerSecond" : 314474350.6506392,
+    "wallSeconds" : {
+      "max" : 0.006453708,
+      "mean" : 0.0046597915,
+      "median" : 0.0046597915,
+      "min" : 0.002865875,
+      "samples" : [
+        0.006453708,
+        0.002865875
+      ]
+    }
+  },
+  "configuration" : {
+    "codewordElementCount" : 1024,
+    "codewordEngine" : "circle-fft-butterfly-v1",
+    "domainLogSize" : 10,
+    "fftTwiddleCount" : 1023,
+    "finalLayerElementCount" : 128,
+    "iterations" : 2,
+    "queryCount" : 4,
+    "roundCount" : 3,
+    "storageOrder" : "circle-domain-bit-reversed",
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1,
+    "xCoefficientCount" : 8,
+    "yCoefficientCount" : 7
+  },
+  "device" : {
+    "hasUnifiedMemory" : true,
+    "maxThreadgroupMemoryLength" : 32768,
+    "maxThreadsPerThreadgroup" : 1024,
+    "name" : "Apple M4",
+    "registryID" : 4294968275,
+    "supports64BitAtomics" : true,
+    "supportsApple3" : true,
+    "supportsApple4" : true,
+    "supportsApple7" : true,
+    "supportsApple9" : true,
+    "supportsBinaryArchives" : true,
+    "supportsNonuniformThreadgroups" : true,
+    "supportsSIMDReductions" : true
+  },
+  "fullProver" : {
+    "bestSecondsForThroughput" : 0.019027874994208105,
+    "elementsPerSecond" : 52.5544760150248,
+    "gpuSeconds" : {
+      "max" : 0.020434499994735233,
+      "mean" : 0.01973118749447167,
+      "median" : 0.01973118749447167,
+      "min" : 0.019027874994208105,
+      "samples" : [
+        0.019027874994208105,
+        0.020434499994735233
+      ]
+    },
+    "inputBytesPerSecond" : 1616996.1180302831,
+    "wallSeconds" : {
+      "max" : 0.032101833,
+      "mean" : 0.031469208,
+      "median" : 0.031469208,
+      "min" : 0.030836583,
+      "samples" : [
+        0.030836583,
+        0.032101833
+      ]
+    }
+  },
+  "generatedAt" : "2026-04-14T10:22:16.516Z",
+  "pipelineArchive" : {
+    "enabled" : false,
+    "mode" : "disabled"
+  },
+  "proofEmission" : {
+    "bestSecondsForThroughput" : 0.021372124989284202,
+    "elementsPerSecond" : 46.78991913538739,
+    "gpuSeconds" : {
+      "max" : 0.022444541624281555,
+      "mean" : 0.02190833330678288,
+      "median" : 0.02190833330678288,
+      "min" : 0.021372124989284202,
+      "samples" : [
+        0.021372124989284202,
+        0.022444541624281555
+      ]
+    },
+    "inputBytesPerSecond" : 470332.2671489141,
+    "wallSeconds" : {
+      "max" : 0.064040875,
+      "mean" : 0.0476340625,
+      "median" : 0.0476340625,
+      "min" : 0.03122725,
+      "samples" : [
+        0.03122725,
+        0.064040875
+      ]
+    }
+  },
+  "proofSizeBytes" : 10052,
+  "schemaVersion" : 2,
+  "target" : "metal",
+  "verification" : {
+    "codewordDigestHex" : "1c59bed170630273457bc537023119fdce3c348c1ce2066d0901f5db4ab9fee3",
+    "cpuCodewordDigestHex" : "1c59bed170630273457bc537023119fdce3c348c1ce2066d0901f5db4ab9fee3",
+    "cpuProofDigestHex" : "b9a2107ad95ee6eeeba0e4e765751913c43f67ef7610af1319b4fb6bf9198fa2",
+    "enabled" : true,
+    "matchedCPU" : true,
+    "proofDigestHex" : "b9a2107ad95ee6eeeba0e4e765751913c43f67ef7610af1319b4fb6bf9198fa2",
+    "verifierAccepted" : true
+  }
+}

@@ -91,7 +91,7 @@ Required kernels:
 - extension-field multiply. The first CM31 CPU oracle and reusable Metal vector arithmetic plan are implemented for `M31[X]/(X^2 + 1)`. The first QM31 secure-field CPU oracle and reusable Metal vector plan are implemented for `CM31[U]/(U^2 - 2 - i)`, including multiply, square, inverse, uploaded-buffer execution, CPU/GPU differential tests, and JSON benchmark reporting,
 - batch inverse. A CPU Montgomery batch-inversion oracle and first GPU M31 vector inverse path are implemented with zero rejection, CPU/GPU differential tests, and JSON benchmark reporting,
 - dot products and reductions. The first reusable M31 dot-product plan is implemented with CPU oracle tests, uploaded-buffer execution, explicit clearing, and a benchmark report that records elements/sec plus input bandwidth,
-- layout transforms for FRI/codeword stages. QM31 radix-2 FRI folding now has a CPU oracle, Metal kernel, single-layer resident `executeResident` path, chained multi-round resident command plan, transcript-derived chain challenge mode, Merkle-bound layer-root challenge mode, linear query/decommitment proof serialization, independent verifier tests, and JSON benchmark reporting, but the broader Circle layout/twiddle generation and full PCS binding remain open.
+- layout transforms for FRI/codeword stages. QM31 radix-2 FRI folding now has a CPU oracle, Metal kernel, single-layer resident `executeResident` path, chained multi-round resident command plan, transcript-derived chain challenge mode, Merkle-bound layer-root challenge mode, linear query/decommitment proof serialization, independent verifier tests, and JSON benchmark reporting. Canonical Circle domain points, Circle FFT twiddles, and Circle FRI inverse-domain layers now have GPU-resident materialization with CPU/GPU parity gates; full production PCS parameterization remains open.
 
 Exit gate:
 
@@ -104,7 +104,7 @@ Exit gate:
 The project should then move from hashing trees to generating the data that those trees commit to.
 
 - Implement tiled matrix/codeword kernels.
-- Implement FRI fold kernels over the selected field. QM31 radix-2 folding is implemented for caller-supplied inverse-domain points with resident buffer output, including a multi-round command scheduler that keeps intermediate layers in private GPU scratch, a transcript-derived challenge path that consumes 32-byte per-round commitment roots without CPU challenge round-trips, and a Merkle-bound path that commits the actual current layer buffers before each challenge. Linear query sampling, Merkle decommitment extraction, verifier-facing proof serialization, an independent CPU verifier, and a proof/verifier benchmark mode are implemented for this radix-2 layout. Remaining work is Circle-domain twiddle/layout generation, Circle query mapping, a stable domain descriptor, and full PCS proof binding.
+- Implement FRI fold kernels over the selected field. QM31 radix-2 folding is implemented for caller-supplied inverse-domain points with resident buffer output, including a multi-round command scheduler that keeps intermediate layers in private GPU scratch, a transcript-derived challenge path that consumes 32-byte per-round commitment roots without CPU challenge round-trips, and a Merkle-bound path that commits the actual current layer buffers before each challenge. Linear query sampling, Merkle decommitment extraction, verifier-facing proof serialization, an independent CPU verifier, and a proof/verifier benchmark mode are implemented for this radix-2 layout. Circle-domain proof V1 now has GPU-resident domain/twiddle materialization, a resident Circle FFT codeword plan for `P(x) + yQ(x)`, a single explicit Circle FFT-basis coefficient-to-proof command-plan surface, and a claim-aware CPU PCS verifier including domain-point checks and claimed first-layer openings. Remaining work is fused/tiled codeword-to-commitment scheduling, witness-to-FFT-basis integration, and production parameterization.
 - Implement layout transforms: linear, bit-reversed, tiled, Morton-order where useful.
 - Avoid random global writes in encoder paths unless benchmarks prove the tradeoff.
 - Compose codeword generation and Merkle commitment in one command plan.
@@ -112,7 +112,7 @@ The project should then move from hashing trees to generating the data that thos
 Exit gate:
 
 - codeword generation can feed Merkle commitment without CPU readback,
-- a benchmark reports codeword throughput plus Merkle throughput for the same command plan.
+- a benchmark reports codeword throughput plus Merkle/proof throughput for the same command-plan surface while disallowing full-codeword and intermediate-FRI-layer readback.
 
 ## Phase 5: Sumcheck And GKR
 

@@ -95,10 +95,33 @@ struct QM31FRIFoldParams {
     uint challengeD;
 };
 
-struct CircleCodewordDirectEvalParams {
-    uint pointCount;
-    uint xCoefficientCount;
-    uint yCoefficientCount;
+struct CircleCodewordFFTStageParams {
+    uint elementCount;
+    uint stage;
+    uint twiddleOffset;
+    uint fieldModulus;
+};
+
+struct CircleCodewordFFTTwiddleMaterializeParams {
+    uint twiddleCount;
+    uint stage;
+    uint twiddleOffset;
+    uint logSize;
+    uint halfCosetInitialIndex;
+    uint halfCosetStepSize;
+    uint fieldModulus;
+};
+
+struct CircleDomainMaterializeParams {
+    uint elementCount;
+    uint logSize;
+    uint halfCosetInitialIndex;
+    uint halfCosetStepSize;
+    uint fieldModulus;
+};
+
+struct CircleLineFoldTwiddleParams {
+    uint pairCount;
     uint fieldModulus;
 };
 
@@ -1612,31 +1635,194 @@ kernel void qm31_vector_arithmetic(
     }
 }
 
-kernel void circle_codeword_direct_eval(
-    const device uint2 *domainPoints [[buffer(0)]],
-    const device uint4 *xCoefficients [[buffer(1)]],
-    const device uint4 *yCoefficients [[buffer(2)]],
-    device uint4 *output [[buffer(3)]],
-    constant CircleCodewordDirectEvalParams &params [[buffer(4)]],
+inline uint circle_bit_reverse_index(uint index, uint logSize) {
+    uint value = index;
+    uint reversed = 0u;
+    for (uint bit = 0u; bit < logSize; ++bit) {
+        reversed = (reversed << 1u) | (value & 1u);
+        value >>= 1u;
+    }
+    return reversed;
+}
+
+inline uint circle_domain_point_index(
+    uint naturalDomainIndex,
+    uint logSize,
+    uint halfCosetInitialIndex,
+    uint halfCosetStepSize)
+{
+    const uint halfSize = 1u << (logSize - 1u);
+    const bool inHalfCoset = naturalDomainIndex < halfSize;
+    const uint halfOffset = inHalfCoset
+        ? naturalDomainIndex
+        : (naturalDomainIndex - halfSize);
+    const uint cosetIndex = uint(
+        (ulong(halfCosetInitialIndex) + ulong(halfOffset) * ulong(halfCosetStepSize))
+        & 0x7fffffffUL
+    );
+    if (inHalfCoset) {
+        return cosetIndex;
+    }
+    return uint((0x80000000UL - ulong(cosetIndex)) & 0x7fffffffUL);
+}
+
+inline uint2 circle_add_mod(uint2 lhs, uint2 rhs) {
+    const uint xProduct = m31_mul_mod(lhs.x, rhs.x);
+    const uint yProduct = m31_mul_mod(lhs.y, rhs.y);
+    const uint crossLeft = m31_mul_mod(lhs.x, rhs.y);
+    const uint crossRight = m31_mul_mod(lhs.y, rhs.x);
+    return uint2(
+        m31_sub_mod(xProduct, yProduct),
+        m31_add_mod(crossLeft, crossRight)
+    );
+}
+
+inline uint2 circle_point_from_index(uint index) {
+    uint2 result = uint2(1u, 0u);
+    uint2 power = uint2(2u, 1268011823u);
+    uint remaining = index;
+    for (uint bit = 0u; bit < 31u; ++bit) {
+        if ((remaining & 1u) != 0u) {
+            result = circle_add_mod(result, power);
+        }
+        remaining >>= 1u;
+        power = circle_add_mod(power, power);
+    }
+    return result;
+}
+
+inline uint circle_double_x(uint x) {
+    const uint square = m31_mul_mod(x, x);
+    return m31_sub_mod(m31_add_mod(square, square), 1u);
+}
+
+kernel void circle_domain_points_materialize(
+    device uint2 *domainPoints [[buffer(0)]],
+    constant CircleDomainMaterializeParams &params [[buffer(1)]],
     uint gid [[thread_position_in_grid]])
 {
-    if (gid >= params.pointCount || params.fieldModulus != M31_MODULUS_U32) {
+    if (gid >= params.elementCount ||
+        params.fieldModulus != M31_MODULUS_U32 ||
+        params.logSize == 0u ||
+        params.logSize > 30u) {
         return;
     }
 
-    const uint2 point = domainPoints[gid];
-    uint4 xPart = uint4(0u, 0u, 0u, 0u);
-    for (uint offset = 0u; offset < params.xCoefficientCount; offset += 1u) {
-        const uint coefficientIndex = params.xCoefficientCount - 1u - offset;
-        xPart = qm31_add_mod(qm31_mul_m31_mod(xPart, point.x), xCoefficients[coefficientIndex]);
+    const uint naturalIndex = circle_bit_reverse_index(gid, params.logSize);
+    const uint pointIndex = circle_domain_point_index(
+        naturalIndex,
+        params.logSize,
+        params.halfCosetInitialIndex,
+        params.halfCosetStepSize
+    );
+    domainPoints[gid] = circle_point_from_index(pointIndex);
+}
+
+kernel void circle_first_fold_twiddles_materialize(
+    device uint4 *inverseYTwiddles [[buffer(0)]],
+    device uint *xCoordinates [[buffer(1)]],
+    constant CircleDomainMaterializeParams &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.elementCount ||
+        params.fieldModulus != M31_MODULUS_U32 ||
+        params.logSize == 0u ||
+        params.logSize > 30u) {
+        return;
     }
 
-    uint4 yPart = uint4(0u, 0u, 0u, 0u);
-    for (uint offset = 0u; offset < params.yCoefficientCount; offset += 1u) {
-        const uint coefficientIndex = params.yCoefficientCount - 1u - offset;
-        yPart = qm31_add_mod(qm31_mul_m31_mod(yPart, point.x), yCoefficients[coefficientIndex]);
+    const uint naturalIndex = circle_bit_reverse_index(gid << 1u, params.logSize);
+    const uint pointIndex = circle_domain_point_index(
+        naturalIndex,
+        params.logSize,
+        params.halfCosetInitialIndex,
+        params.halfCosetStepSize
+    );
+    const uint2 point = circle_point_from_index(pointIndex);
+    inverseYTwiddles[gid] = uint4(m31_inverse_mod(point.y), 0u, 0u, 0u);
+    xCoordinates[gid] = point.x;
+}
+
+kernel void circle_line_fold_twiddles_materialize(
+    const device uint *inputXCoordinates [[buffer(0)]],
+    device uint4 *inverseXTwiddles [[buffer(1)]],
+    device uint *nextXCoordinates [[buffer(2)]],
+    constant CircleLineFoldTwiddleParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.pairCount || params.fieldModulus != M31_MODULUS_U32) {
+        return;
     }
-    output[gid] = qm31_add_mod(xPart, qm31_mul_m31_mod(yPart, point.y));
+
+    const uint leftX = inputXCoordinates[gid * 2u];
+    const uint rightX = inputXCoordinates[gid * 2u + 1u];
+    const bool validPair = leftX != 0u && m31_add_mod(leftX, rightX) == 0u;
+    inverseXTwiddles[gid] = validPair
+        ? uint4(m31_inverse_mod(leftX), 0u, 0u, 0u)
+        : uint4(0u, 0u, 0u, 0u);
+    nextXCoordinates[gid] = circle_double_x(leftX);
+}
+
+kernel void circle_codeword_fft_twiddles_materialize(
+    device uint *twiddles [[buffer(0)]],
+    constant CircleCodewordFFTTwiddleMaterializeParams &params [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.twiddleCount ||
+        params.fieldModulus != M31_MODULUS_U32 ||
+        params.logSize == 0u ||
+        params.logSize > 30u ||
+        params.stage >= params.logSize) {
+        return;
+    }
+
+    const uint storageIndex = gid << (params.stage + 1u);
+    const uint naturalIndex = circle_bit_reverse_index(storageIndex, params.logSize);
+    const uint pointIndex = circle_domain_point_index(
+        naturalIndex,
+        params.logSize,
+        params.halfCosetInitialIndex,
+        params.halfCosetStepSize
+    );
+    const uint2 point = circle_point_from_index(pointIndex);
+    uint twiddle = point.x;
+    if (params.stage == 0u) {
+        twiddle = point.y;
+    } else {
+        for (uint repeat = 1u; repeat < params.stage; ++repeat) {
+            twiddle = circle_double_x(twiddle);
+        }
+    }
+    twiddles[params.twiddleOffset + gid] = twiddle;
+}
+
+kernel void circle_codeword_fft_stage(
+    device uint4 *values [[buffer(0)]],
+    const device uint *twiddles [[buffer(1)]],
+    constant CircleCodewordFFTStageParams &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.elementCount < 2u ||
+        params.stage >= 31u) {
+        return;
+    }
+
+    const uint butterflyCount = params.elementCount >> 1u;
+    if (gid >= butterflyCount) {
+        return;
+    }
+
+    const uint laneCount = 1u << params.stage;
+    const uint h = gid >> params.stage;
+    const uint lane = gid & (laneCount - 1u);
+    const uint leftIndex = (h << (params.stage + 1u)) + lane;
+    const uint rightIndex = leftIndex + laneCount;
+    const uint twiddle = twiddles[params.twiddleOffset + h];
+    const uint4 left = values[leftIndex];
+    const uint4 scaledRight = qm31_mul_m31_mod(values[rightIndex], twiddle);
+    values[leftIndex] = qm31_add_mod(left, scaledRight);
+    values[rightIndex] = qm31_sub_mod(left, scaledRight);
 }
 
 kernel void qm31_fri_fold(

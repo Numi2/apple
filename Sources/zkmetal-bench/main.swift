@@ -1025,11 +1025,14 @@ struct CircleFRIFoldChainBenchmarkReport: Codable {
 }
 
 struct CircleCodewordProverBenchmarkConfigReport: Codable {
+    let codewordEngine: String
+    let coefficientInput: String
     let domainLogSize: Int
     let codewordElementCount: Int
     let finalLayerElementCount: Int
     let xCoefficientCount: Int
     let yCoefficientCount: Int
+    let fftTwiddleCount: Int
     let roundCount: Int
     let queryCount: Int
     let storageOrder: String
@@ -1042,10 +1045,18 @@ struct CircleCodewordProverVerificationReport: Codable {
     let enabled: Bool
     let matchedCPU: Bool?
     let verifierAccepted: Bool?
-    let codewordDigestHex: String
+    let codewordDigestHex: String?
+    let codewordDigestSource: String
     let cpuCodewordDigestHex: String?
     let proofDigestHex: String
     let cpuProofDigestHex: String?
+}
+
+struct CircleCodewordProverReadbackPolicyReport: Codable {
+    let publicProofMaterialOnly: Bool
+    let fullCodewordReadback: Bool
+    let intermediateFRILayerReadback: Bool
+    let publicReadbacks: [String]
 }
 
 struct CircleCodewordProverBenchmarkReport: Codable {
@@ -1059,6 +1070,7 @@ struct CircleCodewordProverBenchmarkReport: Codable {
     let proofEmission: FieldMeasurementReport?
     let fullProver: FieldMeasurementReport?
     let proofSizeBytes: Int?
+    let readbackPolicy: CircleCodewordProverReadbackPolicyReport
     let verification: CircleCodewordProverVerificationReport
 }
 
@@ -1583,6 +1595,53 @@ func makeSharedMetalBuffer(
     }
     buffer.label = label
     return buffer
+}
+
+func makePrivateMetalBuffer(
+    device: MTLDevice,
+    length: Int,
+    label: String
+) throws -> MTLBuffer {
+    guard let buffer = device.makeBuffer(length: max(1, length), options: .storageModePrivate) else {
+        throw AppleZKProverError.failedToCreateBuffer(label: label, length: length)
+    }
+    buffer.label = label
+    return buffer
+}
+
+func makePrivateMetalBuffer(
+    context: MetalContext,
+    bytes: Data,
+    label: String
+) throws -> MTLBuffer {
+    let destination = try makePrivateMetalBuffer(
+        device: context.device,
+        length: bytes.count,
+        label: label
+    )
+    let staging = try makeSharedMetalBuffer(
+        device: context.device,
+        bytes: bytes,
+        label: "\(label).Staging"
+    )
+    guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+        throw AppleZKProverError.failedToCreateCommandBuffer
+    }
+    commandBuffer.label = "\(label).Upload"
+    guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+        throw AppleZKProverError.failedToCreateEncoder
+    }
+    blit.label = "\(label).Upload.Copy"
+    if bytes.count > 0 {
+        blit.copy(from: staging, sourceOffset: 0, to: destination, destinationOffset: 0, size: bytes.count)
+    }
+    blit.endEncoding()
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+    if let error = commandBuffer.error {
+        throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+    }
+    return destination
 }
 
 func readQM31Buffer(_ buffer: MTLBuffer, count: Int) -> [QM31Element] {
@@ -2141,11 +2200,14 @@ func emitText(_ report: CircleFRIFoldChainBenchmarkReport) {
 
 func emitText(_ report: CircleCodewordProverBenchmarkReport) {
     print("zkmetal-bench circle-codeword-prover")
+    print("  engine       : \(report.configuration.codewordEngine)")
+    print("  coeff input  : \(report.configuration.coefficientInput)")
     print("  domain log   : \(report.configuration.domainLogSize)")
     print("  codeword elems: \(report.configuration.codewordElementCount)")
     print("  final elems  : \(report.configuration.finalLayerElementCount)")
     print("  x coeffs     : \(report.configuration.xCoefficientCount)")
     print("  y coeffs     : \(report.configuration.yCoefficientCount)")
+    print("  fft twiddles : \(report.configuration.fftTwiddleCount)")
     print("  rounds       : \(report.configuration.roundCount)")
     print("  queries      : \(report.configuration.queryCount)")
     print("  storage      : \(report.configuration.storageOrder)")
@@ -2194,7 +2256,15 @@ func emitText(_ report: CircleCodewordProverBenchmarkReport) {
         print("  proof bytes  : \(proofSizeBytes)")
     }
 
-    print("  codeword digest: \(report.verification.codewordDigestHex)")
+    print("  readback     : \(report.readbackPolicy.publicProofMaterialOnly ? "public proof material only" : "debug/private material")")
+    print("  codeword rb  : \(report.readbackPolicy.fullCodewordReadback)")
+    print("  fri-layer rb : \(report.readbackPolicy.intermediateFRILayerReadback)")
+    if let codewordDigest = report.verification.codewordDigestHex {
+        print("  codeword digest: \(codewordDigest)")
+    } else {
+        print("  codeword digest: not read back")
+    }
+    print("  codeword source: \(report.verification.codewordDigestSource)")
     if let cpuDigest = report.verification.cpuCodewordDigestHex {
         print("  cpu codeword : \(cpuDigest)")
     }
@@ -2548,10 +2618,11 @@ func verificationFailureMessages(in report: CircleCodewordProverBenchmarkReport)
     }
     guard report.verification.matchedCPU == true,
           report.verification.verifierAccepted == true else {
+        let codewordDigest = report.verification.codewordDigestHex ?? "not-read-back"
         let cpuCodewordDigest = report.verification.cpuCodewordDigestHex ?? "missing"
         let cpuProofDigest = report.verification.cpuProofDigestHex ?? "missing"
         return [
-            "circle-codeword-prover log-size=\(report.configuration.domainLogSize) codeword-elements=\(report.configuration.codewordElementCount) rounds=\(report.configuration.roundCount) target=\(report.target) codeword-digest=\(report.verification.codewordDigestHex) cpu-codeword-digest=\(cpuCodewordDigest) proof-digest=\(report.verification.proofDigestHex) cpu-proof-digest=\(cpuProofDigest)",
+            "circle-codeword-prover log-size=\(report.configuration.domainLogSize) codeword-elements=\(report.configuration.codewordElementCount) rounds=\(report.configuration.roundCount) target=\(report.target) codeword-digest=\(codewordDigest) codeword-source=\(report.verification.codewordDigestSource) cpu-codeword-digest=\(cpuCodewordDigest) proof-digest=\(report.verification.proofDigestHex) cpu-proof-digest=\(cpuProofDigest)",
         ]
     }
     return []
@@ -2741,17 +2812,29 @@ func makeCircleCodewordProverConfigReport(
     queryCount: Int
 ) -> CircleCodewordProverBenchmarkConfigReport {
     CircleCodewordProverBenchmarkConfigReport(
+        codewordEngine: "circle-fft-butterfly-v1",
+        coefficientInput: "resident-circle-fft-basis-buffer",
         domainLogSize: config.leafCount.trailingZeroBitCount,
         codewordElementCount: config.leafCount,
         finalLayerElementCount: finalLayerElementCount,
         xCoefficientCount: polynomial.xCoefficients.count,
         yCoefficientCount: polynomial.yCoefficients.count,
+        fftTwiddleCount: config.leafCount - 1,
         roundCount: config.friFoldRounds,
         queryCount: queryCount,
         storageOrder: "circle-domain-bit-reversed",
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeCircleCodewordProverReadbackPolicyReport() -> CircleCodewordProverReadbackPolicyReport {
+    CircleCodewordProverReadbackPolicyReport(
+        publicProofMaterialOnly: true,
+        fullCodewordReadback: false,
+        intermediateFRILayerReadback: false,
+        publicReadbacks: CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPublicReadbacks.map(\.rawValue)
     )
 }
 
@@ -3870,7 +3953,7 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
             ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
             : nil
         return CircleCodewordProverBenchmarkReport(
-            schemaVersion: 1,
+            schemaVersion: 3,
             generatedAt: iso8601Now(),
             target: "cpu",
             configuration: configReport,
@@ -3880,11 +3963,13 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
             proofEmission: nil,
             fullProver: nil,
             proofSizeBytes: proofBytes.count,
+            readbackPolicy: makeCircleCodewordProverReadbackPolicyReport(),
             verification: CircleCodewordProverVerificationReport(
                 enabled: config.verifyWithCPU,
                 matchedCPU: config.verifyWithCPU ? true : nil,
                 verifierAccepted: verifierAccepted,
                 codewordDigestHex: codewordDigest,
+                codewordDigestSource: "cpu",
                 cpuCodewordDigestHex: config.verifyWithCPU ? codewordDigest : nil,
                 proofDigestHex: proofDigest,
                 cpuProofDigestHex: config.verifyWithCPU ? proofDigest : nil
@@ -3914,29 +3999,27 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     )
     try context.serializePipelineArchiveIfNeeded()
 
-    let codewordBuffer = try makeSharedMetalBuffer(
+    let codewordBuffer = try makePrivateMetalBuffer(
         device: device,
         length: domain.size * CircleCodewordPlan.elementByteCount,
         label: "zkmetal-bench.CircleCodewordProver.Codeword"
     )
-    let xCoefficientBuffer = try makeSharedMetalBuffer(
-        device: device,
-        bytes: QM31CanonicalEncoding.pack(polynomial.xCoefficients),
-        label: "zkmetal-bench.CircleCodewordProver.XCoefficients"
+    let circleCoefficientBytes = try QM31CanonicalEncoding.pack(
+        CircleCodewordOracle.circleFFTCoefficients(
+            polynomial: polynomial,
+            domain: domain
+        )
     )
-    let yCoefficientBuffer = try makeSharedMetalBuffer(
-        device: device,
-        bytes: QM31CanonicalEncoding.pack(polynomial.yCoefficients),
-        label: "zkmetal-bench.CircleCodewordProver.YCoefficients"
+    let circleCoefficientBuffer = try makePrivateMetalBuffer(
+        context: context,
+        bytes: circleCoefficientBytes,
+        label: "zkmetal-bench.CircleCodewordProver.CircleFFTCoefficients"
     )
 
     if config.warmupIterations > 0 {
         for _ in 0..<config.warmupIterations {
             _ = try codewordPlan.executeResident(
-                xCoefficientBuffer: xCoefficientBuffer,
-                xCoefficientCount: polynomial.xCoefficients.count,
-                yCoefficientBuffer: yCoefficientBuffer,
-                yCoefficientCount: polynomial.yCoefficients.count,
+                circleCoefficientBuffer: circleCoefficientBuffer,
                 outputBuffer: codewordBuffer
             )
         }
@@ -3946,17 +4029,12 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     var codewordGPUSeconds: [Double?] = []
     for _ in 0..<config.iterations {
         let stats = try codewordPlan.executeResident(
-            xCoefficientBuffer: xCoefficientBuffer,
-            xCoefficientCount: polynomial.xCoefficients.count,
-            yCoefficientBuffer: yCoefficientBuffer,
-            yCoefficientCount: polynomial.yCoefficients.count,
+            circleCoefficientBuffer: circleCoefficientBuffer,
             outputBuffer: codewordBuffer
         )
         codewordWallSeconds.append(stats.cpuWallSeconds)
         codewordGPUSeconds.append(stats.gpuSeconds)
     }
-
-    let measuredCodeword = readQM31Buffer(codewordBuffer, count: domain.size)
 
     if config.warmupIterations > 0 {
         for _ in 0..<config.warmupIterations {
@@ -3979,11 +4057,8 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
 
     if config.warmupIterations > 0 {
         for _ in 0..<config.warmupIterations {
-            _ = try fullProver.proveResidentCoefficients(
-                xCoefficientBuffer: xCoefficientBuffer,
-                xCoefficientCount: polynomial.xCoefficients.count,
-                yCoefficientBuffer: yCoefficientBuffer,
-                yCoefficientCount: polynomial.yCoefficients.count
+            _ = try fullProver.proveCircleFFTCoefficientsResident(
+                circleCoefficientBuffer: circleCoefficientBuffer
             )
         }
     }
@@ -3992,11 +4067,8 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     var fullGPUSeconds: [Double?] = []
     var latestFullProof: CircleCodewordPCSFRIProverV1Result?
     for _ in 0..<config.iterations {
-        let result = try fullProver.proveResidentCoefficients(
-            xCoefficientBuffer: xCoefficientBuffer,
-            xCoefficientCount: polynomial.xCoefficients.count,
-            yCoefficientBuffer: yCoefficientBuffer,
-            yCoefficientCount: polynomial.yCoefficients.count
+        let result = try fullProver.proveCircleFFTCoefficientsResident(
+            circleCoefficientBuffer: circleCoefficientBuffer
         )
         latestFullProof = result
         fullWallSeconds.append(result.stats.cpuWallSeconds)
@@ -4013,26 +4085,26 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
         )
         : nil
     let matchedCPU: Bool?
-    if let cpuCodeword, let expectedProof {
-        matchedCPU = measuredCodeword == cpuCodeword
-            && measuredProof.proof == expectedProof
+    if let expectedProof {
+        matchedCPU = measuredProof.proof == expectedProof
             && measuredFullProof.proof == expectedProof
             && verifierAccepted == Optional(true)
     } else {
         matchedCPU = nil
     }
 
-    let codewordDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(measuredCodeword)).hexString
     let cpuCodewordDigest = cpuCodeword.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
     let proofDigest = SHA3Oracle.sha3_256(measuredFullProof.encodedProof).hexString
     let cpuProofDigest = expectedProofBytes.map { SHA3Oracle.sha3_256($0).hexString }
-    let coefficientBytes = (polynomial.xCoefficients.count + polynomial.yCoefficients.count)
-        * CircleCodewordPlan.elementByteCount
-    let codewordInputBytes = Double(domain.size * CircleCodewordPlan.domainPointByteCount + coefficientBytes)
+    let fftCoefficientBytes = domain.size * CircleCodewordPlan.elementByteCount
+    let fftTwiddleBytes = (domain.size - 1) * CircleCodewordPlan.twiddleElementByteCount
+    let codewordInputBytes = Double(
+        fftCoefficientBytes + fftTwiddleBytes
+    )
     let proofInputBytes = Double(measuredProof.proofByteCount)
 
     return CircleCodewordProverBenchmarkReport(
-        schemaVersion: 1,
+        schemaVersion: 3,
         generatedAt: iso8601Now(),
         target: "metal",
         configuration: configReport,
@@ -4061,11 +4133,13 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
             inputBytes: codewordInputBytes + Double(measuredFullProof.proofByteCount)
         ),
         proofSizeBytes: measuredFullProof.proofByteCount,
+        readbackPolicy: makeCircleCodewordProverReadbackPolicyReport(),
         verification: CircleCodewordProverVerificationReport(
             enabled: config.verifyWithCPU,
             matchedCPU: matchedCPU,
             verifierAccepted: verifierAccepted,
-            codewordDigestHex: codewordDigest,
+            codewordDigestHex: cpuCodewordDigest,
+            codewordDigestSource: cpuCodewordDigest == nil ? "not-read-back" : "cpu-oracle-no-gpu-codeword-readback",
             cpuCodewordDigestHex: cpuCodewordDigest,
             proofDigestHex: proofDigest,
             cpuProofDigestHex: cpuProofDigest
@@ -4102,7 +4176,7 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
         ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
         : nil
     return CircleCodewordProverBenchmarkReport(
-        schemaVersion: 1,
+        schemaVersion: 3,
         generatedAt: iso8601Now(),
         target: "cpu",
         configuration: configReport,
@@ -4112,11 +4186,13 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
         proofEmission: nil,
         fullProver: nil,
         proofSizeBytes: proofBytes.count,
+        readbackPolicy: makeCircleCodewordProverReadbackPolicyReport(),
         verification: CircleCodewordProverVerificationReport(
             enabled: config.verifyWithCPU,
             matchedCPU: config.verifyWithCPU ? verifierAccepted : nil,
             verifierAccepted: verifierAccepted,
             codewordDigestHex: codewordDigest,
+            codewordDigestSource: "cpu",
             cpuCodewordDigestHex: config.verifyWithCPU ? codewordDigest : nil,
             proofDigestHex: proofDigest,
             cpuProofDigestHex: config.verifyWithCPU ? proofDigest : nil
