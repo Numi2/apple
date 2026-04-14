@@ -2,6 +2,186 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: Public AIR Trace Circle FFT-Basis Witness
+
+Finding:
+
+- Arbitrary public AIR trace layouts could be packed into Circle PCS polynomial
+  claims, but the corresponding Circle FFT-basis coefficient representation was
+  not exposed as a structured witness. The resident FFT-basis producer remained
+  limited to monomial coefficient buffers.
+
+Work completed:
+
+- Added `AIRTraceCircleFFTBasisChunkV1`,
+  `AIRTraceCircleFFTBasisWitnessV1`, and
+  `AIRTraceToCircleFFTBasisWitnessV1`.
+- The producer reuses the arbitrary-layout public trace PCS bridge, then derives
+  verifier-checkable Circle FFT-basis coefficient chunks for each packed QM31
+  trace-column group.
+- The witness validates row storage indices, contiguous source-column coverage,
+  polynomial-claim consistency, canonical QM31 FFT-basis coefficients, and
+  equality with the independent `CircleCodewordOracle.circleFFTCoefficients`
+  output.
+- Added regression coverage for a five-column AIR trace layout, polynomial claim
+  compatibility, Circle FFT/direct evaluation equivalence, corrupted basis
+  rejection, and rejection of private-resident/ZK overclaims.
+
+Residual risk:
+
+- This is a public CPU witness-generation surface. It does not make arbitrary
+  AIR trace layouts resident-private, does not synthesize traces from constraint
+  systems, does not verify AIR semantics, and is not zero-knowledge.
+
+## 2026-04-14: Public Trace/Quotient PCS Query Alignment
+
+Finding:
+
+- The public trace PCS query planner selected AIR opening rows, and the quotient
+  PCS layer proved packed quotient coefficient chunks, but no verifier checked
+  that a quotient PCS bundle opened at the same storage indices required by the
+  trace query plan.
+
+Work completed:
+
+- Added `AIRTraceQuotientPCSQueryAlignmentVerifierV1` and
+  `AIRTraceQuotientPCSQueryAlignmentReportV1`.
+- The verifier checks the trace queried-opening bundle, checks the quotient PCS
+  bundle proofs, verifies the quotient bundle is bound to the supplied
+  `AIRPublicQuotientProofV1`, requires matching domains and PCS parameter sets,
+  and requires quotient openings to exactly match the trace query plan's
+  bit-reversed row storage indices.
+- Added regression coverage for accepted aligned openings, under-opened quotient
+  bundles, wrong-domain quotient bundles, and quotient bundles bound to a
+  different public quotient proof.
+
+Residual risk:
+
+- This is public opening alignment only. It does not prove the AIR quotient
+  identity at a shared evaluation point, because the current trace PCS bridge
+  interpolates public trace rows over Circle first-half x-coordinates while the
+  CPU public quotient oracle is built over row-coordinate polynomials.
+- The report intentionally exposes `quotientIdentityChecked == false`,
+  `coordinateDomainsAlignedForAIRQuotientIdentity == false`, and
+  `isZeroKnowledge == false`.
+
+## 2026-04-14: Public Trace PCS Opening Query Planner
+
+Finding:
+
+- Public AIR opening checks could validate caller-selected PCS openings, but the
+  row selection was not transcript-derived.
+
+Work completed:
+
+- Added `AIRTracePCSOpeningQueryPlannerV1`, which samples public transition rows
+  from a transcript over the AIR definition and initial trace PCS commitment
+  roots.
+- Added `AIRTracePCSQueriedOpeningBundleV1`, builder, verifier, and report types
+  that require the trace PCS bundle to open exactly the sampled transition rows
+  plus required boundary rows.
+- Added regression coverage for accepted queried-opening bundles, tampered query
+  plan rejection, non-query row-claim rejection, and invalid full-transition
+  trace rejection.
+
+Residual risk:
+
+- This is a public query-opening scaffold. It does not hide opened witness
+  values and does not implement the full STARK/AIR quotient identity protocol.
+  The separate trace/quotient PCS alignment verifier now checks shared public
+  opening coverage, but still does not prove the quotient identity.
+- Query sampling is tied to initial trace PCS commitment roots to avoid the
+  circularity of deriving rows from the completed bundle digest, but the current
+  V1 PCS statement still exposes polynomial material and is not a commitment-only
+  production proof.
+
+## 2026-04-14: Public Trace PCS Opening Constraint Verifier
+
+Finding:
+
+- Public AIR trace PCS bundles could prove and bind opened trace chunks, but no
+  verifier checked AIR transition or boundary constraints directly against the
+  PCS evaluation claims.
+
+Work completed:
+
+- Added `AIRTracePCSOpeningConstraintVerifierV1` and
+  `AIRTracePCSOpeningConstraintReportV1`.
+- The verifier unpacks QM31 trace-opening limbs, checks padding limbs, verifies
+  opened transition and boundary constraints, and reports whether opened rows
+  cover every transition and boundary needed for full public AIR coverage.
+- Tightened `AIRTraceCirclePCSWitnessV1` shape validation so decoded or assembled
+  trace chunks must cover AIR columns contiguously and in order.
+- Added regression coverage for complete openings, partial openings, invalid
+  transition openings, invalid boundary openings, encoded-bundle verification,
+  and AIR shape mismatch.
+
+Residual risk:
+
+- This is still a public opening verifier. It does not sample Fiat-Shamir AIR
+  query rows, does not hide witness values, does not prove quotient relations
+  through private openings, and is not a zero-knowledge or succinct AIR proof.
+
+## 2026-04-14: Public Quotient PCS Layer
+
+Finding:
+
+- `AIRProofV1` had public quotient-divisibility validation, but no PCS-backed
+  proof bundle for the quotient coefficient polynomials.
+
+Work completed:
+
+- Added `AIRProofQuotientPCSArtifactV1` and
+  `AIRQuotientCirclePCSProofBundleV1`.
+- Added `AIRPublicQuotientToCirclePCSWitnessV1`, which packs up to four M31
+  quotient coefficient polynomials into each QM31 Circle polynomial chunk.
+- Added builder, verifier, digest, and strict codec coverage for quotient PCS
+  bundles and the wrapping artifact.
+- Added regression coverage for accepted artifacts, encoded verification,
+  trailing-byte rejection, and mismatched quotient-bundle rejection.
+
+Residual risk:
+
+- The quotient PCS layer is public. It proves packed public quotient coefficient
+  chunks with the current Circle PCS contract, but it does not hide witness data,
+  does not add zero-knowledge masking, and does not make the AIR/GKR theorem
+  succinct.
+
+## 2026-04-14: Public Revealed-Trace AIR Proof And Quotient Scaffold
+
+Finding:
+
+- The repository had AIR semantic checking and AIR-to-sum-check reduction, but
+  it did not have a standalone AIR proof artifact with a strict statement,
+  transcript-composed constraint-evaluation oracle, verifier report, and binary
+  codec.
+
+Work completed:
+
+- Added `AIRProofManifestV1`, `AIRProofStatementV1`, `AIRProofV1`,
+  `AIRProofBuilderV1`, and `AIRProofVerifierV1`.
+- Added `AIRCompositionOracleV1`, which derives nonzero M31 composition weights
+  from the AIR definition and trace shape, binds the raw AIR
+  constraint-evaluation digest, and produces a composed public evaluation vector.
+- Added `AIRPublicQuotientProofV1`, which interpolates public trace columns over
+  the row domain and verifies transition/boundary numerator divisibility by
+  public vanishing polynomials.
+- Added strict codecs for the AIR proof statement, composition evaluation,
+  public quotient proof, and proof bytes.
+- Added regression coverage for accepted Fibonacci AIR proofs, strict codec
+  round trips, trailing-byte rejection, invalid witness rejection, altered
+  witness rejection, tampered composition rejection, and tampered quotient proof
+  rejection.
+
+Residual risk:
+
+- The accepted scope is only public revealed-trace AIR constraint evaluation.
+  The proof includes the witness trace and is not zero-knowledge.
+- The quotient certificate inside `AIRProofV1` is public CPU divisibility
+  validation. The separate `AIRProofQuotientPCSArtifactV1` adds public
+  PCS-backed quotient chunks, but the combined artifact is still not a private
+  STARK/AIR protocol.
+
 ## 2026-04-14: Public AIR Trace Layout And PCS Witness Bridge
 
 Finding:

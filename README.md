@@ -170,12 +170,37 @@ Implemented today:
   ordered `ApplicationWitnessTraceV1` values, `WitnessToAIRTraceProducerV1`
   produces `AIRExecutionTraceV1`, and `AIRToSumcheckReductionV1` checks that
   the statement's M31 sum-check vector digest is the canonical AIR
-  constraint-evaluation vector. `AIRTraceToCirclePCSWitnessV1` is the CPU bridge
+  constraint-evaluation vector. `AIRProofV1` is a strict public revealed-trace
+  AIR proof scaffold: it derives transcript-composition weights, binds the raw
+  AIR constraint-evaluation digest, checks the composed evaluations vanish,
+  verifies a CPU public trace quotient-divisibility certificate, and records
+  that private witnesses and zero-knowledge remain unsupported.
+  `AIRProofQuotientPCSArtifactV1` attaches a public Circle PCS proof bundle for
+  the quotient coefficient chunks, giving a PCS-backed public quotient
+  low-degree layer without making the witness private or the theorem succinct.
+  `AIRTraceToCirclePCSWitnessV1` is the CPU bridge
   from public AIR trace rows to QM31-packed `CirclePCSFRIPolynomialClaimV1`
   chunks for arbitrary AIR column layouts.
+  `AIRTraceToCircleFFTBasisWitnessV1` derives the matching Circle FFT-basis
+  coefficient chunks for those arbitrary public trace layouts, giving the
+  application layer a codeword-compatible witness representation while still
+  recording that it is public, CPU-derived, not resident-private AIR synthesis,
+  and not zero-knowledge.
   `AIRTraceCirclePCSProofBundleBuilderV1` builds one ordinary Circle PCS
   statement/proof pair per generated chunk and verifies the ordered bundle
   against the regenerated public AIR trace witness.
+  `AIRTracePCSOpeningConstraintVerifierV1` can also read the PCS evaluation
+  claims directly, unpack the committed trace rows, and check AIR transition and
+  boundary constraints on opened rows with explicit full-coverage flags.
+  `AIRTracePCSOpeningQueryPlannerV1` derives public transition-query rows from
+  the AIR definition and initial trace PCS commitment roots, and
+  `AIRTracePCSQueriedOpeningBundleV1` verifies that a bundle opened exactly those
+  transcript-derived rows plus the required boundary rows.
+  `AIRTraceQuotientPCSQueryAlignmentVerifierV1` checks the matching public
+  quotient PCS bundle opens at those same bit-reversed storage indices and is
+  bound to the supplied public quotient proof, while explicitly reporting that
+  the AIR quotient identity is not checked because the current trace PCS bridge
+  and CPU quotient oracle use different semantic coordinate domains.
   `AIRTraceCirclePCSProofBundleCodecV1` gives that ordered bundle a strict
   binary form, and `AIRTraceCirclePCSProofBundleDigestV1` domain-separates the
   encoded bundle for fixture and artifact binding. `GKRClaimV1` adds a CPU

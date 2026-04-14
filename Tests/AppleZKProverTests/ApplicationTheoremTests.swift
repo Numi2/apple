@@ -3,6 +3,46 @@ import XCTest
 @testable import AppleZKProver
 
 final class ApplicationTheoremTests: XCTestCase {
+    func testAIRProofManifestRecordsPublicRevealedTraceScope() {
+        let manifest = AIRProofManifestV1.current
+        XCTAssertEqual(manifest.version, AIRProofManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, AIRProofManifestV1.artifactName)
+        XCTAssertTrue(manifest.verifiesAIRSemantics)
+        XCTAssertTrue(manifest.includesPublicWitnessTrace)
+        XCTAssertTrue(manifest.usesTranscriptComposedConstraintEvaluations)
+        XCTAssertTrue(manifest.verifiesPublicTraceQuotientDivisibility)
+        XCTAssertFalse(manifest.provesQuotientLowDegree)
+        XCTAssertFalse(manifest.usesPCSBackedOpenings)
+        XCTAssertFalse(manifest.isSuccinct)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertEqual(manifest.acceptedClaimScope, .publicRevealedTraceConstraintEvaluation)
+        XCTAssertEqual(manifest.rejectedClaimScopes, [.succinctPrivateAIR])
+        XCTAssertEqual(manifest.openBoundaries, [
+            .quotientPolynomialLowDegreeProof,
+            .pcsBackedConstraintOpenings,
+            .privateWitness,
+            .zeroKnowledge,
+        ])
+    }
+
+    func testAIRProofQuotientPCSArtifactManifestRecordsPublicPCSScope() {
+        let manifest = AIRProofQuotientPCSArtifactManifestV1.current
+        XCTAssertEqual(manifest.version, AIRProofQuotientPCSArtifactManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, AIRProofQuotientPCSArtifactManifestV1.artifactName)
+        XCTAssertTrue(manifest.includesAIRProof)
+        XCTAssertTrue(manifest.includesPublicQuotientPCSProofBundle)
+        XCTAssertTrue(manifest.verifiesPublicRevealedTraceAIR)
+        XCTAssertTrue(manifest.verifiesQuotientPCSBundleAgainstAIRProof)
+        XCTAssertTrue(manifest.usesPCSBackedQuotientLowDegreeProof)
+        XCTAssertFalse(manifest.isSuccinctAIRGKRProof)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertEqual(manifest.openBoundaries, [
+            .privateWitness,
+            .zeroKnowledge,
+            .succinctAIRGKRProof,
+        ])
+    }
+
     func testApplicationTheoremManifestRecordsPublicSidecarScope() {
         let manifest = ApplicationTheoremManifestV1.current
         XCTAssertEqual(manifest.version, ApplicationTheoremManifestV1.currentVersion)
@@ -88,6 +128,261 @@ final class ApplicationTheoremTests: XCTestCase {
         XCTAssertThrowsError(try layout.trace(columnOrder: ["missing"]))
     }
 
+    func testAIRProofV1BuildsComposesEncodesAndRejectsTampering() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let built = try AIRProofBuilderV1.prove(witness: witness, airDefinition: air)
+        let statement = built.statement
+        let proof = built.proof
+        let trace = try WitnessToAIRTraceProducerV1.produce(witness: witness, for: air)
+        let expectedComposition = try AIRCompositionOracleV1.evaluate(
+            definition: air,
+            trace: trace
+        )
+
+        XCTAssertEqual(statement.airDefinitionDigest, try AIRDefinitionDigestV1.digest(air))
+        XCTAssertEqual(statement.witnessTraceDigest, try ApplicationWitnessDigestV1.digest(witness))
+        XCTAssertEqual(statement.traceRowCount, witness.rowCount)
+        XCTAssertEqual(statement.traceColumnCount, witness.columnCount)
+        XCTAssertEqual(
+            statement.compositionEvaluationDigest,
+            try AIRCompositionEvaluationDigestV1.digest(proof.composition)
+        )
+        XCTAssertEqual(
+            statement.publicQuotientProofDigest,
+            try AIRPublicQuotientProofDigestV1.digest(proof.publicQuotientProof)
+        )
+        XCTAssertEqual(proof.statementDigest, try statement.digest())
+        XCTAssertEqual(proof.composition, expectedComposition)
+        XCTAssertEqual(proof.composition.compositionWeights.count, 5)
+        XCTAssertTrue(proof.composition.compositionWeights.allSatisfy { $0 != 0 })
+        XCTAssertTrue(proof.composition.allConstraintsVanish)
+        XCTAssertEqual(proof.publicQuotientProof.traceRowCount, witness.rowCount)
+        XCTAssertEqual(proof.publicQuotientProof.traceColumnCount, witness.columnCount)
+        XCTAssertEqual(proof.publicQuotientProof.quotientPolynomials.count, 5)
+        XCTAssertTrue(try AIRPublicQuotientOracleV1.verify(
+            proof.publicQuotientProof,
+            definition: air,
+            trace: trace
+        ))
+
+        let report = try AIRProofVerifierV1.verificationReport(proof: proof, statement: statement)
+        XCTAssertTrue(report.statementDigestMatches)
+        XCTAssertTrue(report.airDefinitionDigestMatches)
+        XCTAssertTrue(report.witnessTraceDigestMatches)
+        XCTAssertTrue(report.witnessToAIRTraceProduced)
+        XCTAssertTrue(report.compositionEvaluationDigestMatches)
+        XCTAssertTrue(report.compositionMatchesTrace)
+        XCTAssertTrue(report.compositionVanishes)
+        XCTAssertTrue(report.publicQuotientProofDigestMatches)
+        XCTAssertTrue(report.publicQuotientProofVerified)
+        XCTAssertTrue(report.airSemanticsVerified)
+        XCTAssertTrue(report.verifies(.publicRevealedTraceConstraintEvaluation))
+        XCTAssertFalse(report.verifies(.succinctPrivateAIR))
+        XCTAssertFalse(report.isSuccinct)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try AIRProofVerifierV1.verify(proof: proof, statement: statement))
+
+        let encodedStatement = try AIRProofStatementCodecV1.encode(statement)
+        XCTAssertEqual(try AIRProofStatementCodecV1.decode(encodedStatement), statement)
+        let encodedComposition = try AIRCompositionEvaluationCodecV1.encode(proof.composition)
+        XCTAssertEqual(
+            try AIRCompositionEvaluationCodecV1.decode(encodedComposition),
+            proof.composition
+        )
+        let encodedQuotientProof = try AIRPublicQuotientProofCodecV1.encode(proof.publicQuotientProof)
+        XCTAssertEqual(
+            try AIRPublicQuotientProofCodecV1.decode(encodedQuotientProof),
+            proof.publicQuotientProof
+        )
+        let encodedProof = try AIRProofCodecV1.encode(proof)
+        XCTAssertEqual(try AIRProofCodecV1.decode(encodedProof), proof)
+        XCTAssertEqual(
+            try AIRProofVerifierV1.verificationReport(
+                encodedProof: encodedProof,
+                statement: statement
+            ),
+            report
+        )
+        XCTAssertTrue(try AIRProofVerifierV1.verify(encodedProof: encodedProof, statement: statement))
+
+        var trailingProof = encodedProof
+        trailingProof.append(0)
+        XCTAssertThrowsError(try AIRProofCodecV1.decode(trailingProof))
+        var trailingStatement = encodedStatement
+        trailingStatement.append(0)
+        XCTAssertThrowsError(try AIRProofStatementCodecV1.decode(trailingStatement))
+        var trailingComposition = encodedComposition
+        trailingComposition.append(0)
+        XCTAssertThrowsError(try AIRCompositionEvaluationCodecV1.decode(trailingComposition))
+        var trailingQuotientProof = encodedQuotientProof
+        trailingQuotientProof.append(0)
+        XCTAssertThrowsError(try AIRPublicQuotientProofCodecV1.decode(trailingQuotientProof))
+
+        let invalidWitness = try ApplicationWitnessTraceV1(columns: [
+            [1, 1, 2, 4],
+            [1, 2, 3, 5],
+        ])
+        XCTAssertThrowsError(try AIRProofBuilderV1.prove(
+            witness: invalidWitness,
+            airDefinition: air
+        ))
+        let invalidWitnessProof = try AIRProofV1(
+            statementDigest: proof.statementDigest,
+            airDefinition: air,
+            witness: invalidWitness,
+            composition: proof.composition,
+            publicQuotientProof: proof.publicQuotientProof
+        )
+        let invalidWitnessReport = try AIRProofVerifierV1.verificationReport(
+            proof: invalidWitnessProof,
+            statement: statement
+        )
+        XCTAssertFalse(invalidWitnessReport.witnessTraceDigestMatches)
+        XCTAssertFalse(invalidWitnessReport.compositionMatchesTrace)
+        XCTAssertFalse(invalidWitnessReport.publicQuotientProofVerified)
+        XCTAssertFalse(invalidWitnessReport.airSemanticsVerified)
+        XCTAssertFalse(invalidWitnessReport.verifies(.publicRevealedTraceConstraintEvaluation))
+
+        var tamperedCombined = proof.composition.combinedEvaluations
+        tamperedCombined[0] = 1
+        let tamperedComposition = try AIRCompositionEvaluationV1(
+            traceRowCount: proof.composition.traceRowCount,
+            traceColumnCount: proof.composition.traceColumnCount,
+            transitionConstraintCount: proof.composition.transitionConstraintCount,
+            boundaryConstraintCount: proof.composition.boundaryConstraintCount,
+            compositionWeights: proof.composition.compositionWeights,
+            rawEvaluationDigest: proof.composition.rawEvaluationDigest,
+            combinedEvaluations: tamperedCombined
+        )
+        let tamperedProof = try AIRProofV1(
+            statementDigest: proof.statementDigest,
+            airDefinition: air,
+            witness: witness,
+            composition: tamperedComposition,
+            publicQuotientProof: proof.publicQuotientProof
+        )
+        let tamperedReport = try AIRProofVerifierV1.verificationReport(
+            proof: tamperedProof,
+            statement: statement
+        )
+        XCTAssertFalse(tamperedReport.compositionEvaluationDigestMatches)
+        XCTAssertFalse(tamperedReport.compositionMatchesTrace)
+        XCTAssertFalse(tamperedReport.compositionVanishes)
+        XCTAssertFalse(tamperedReport.verifies(.publicRevealedTraceConstraintEvaluation))
+
+        var tamperedQuotientDigest = proof.publicQuotientProof.tracePolynomialDigest
+        tamperedQuotientDigest[0] ^= 0xff
+        let tamperedQuotientProof = try AIRPublicQuotientProofV1(
+            traceRowCount: proof.publicQuotientProof.traceRowCount,
+            traceColumnCount: proof.publicQuotientProof.traceColumnCount,
+            tracePolynomialDigest: tamperedQuotientDigest,
+            quotientPolynomials: proof.publicQuotientProof.quotientPolynomials
+        )
+        let tamperedQuotientAIRProof = try AIRProofV1(
+            statementDigest: proof.statementDigest,
+            airDefinition: air,
+            witness: witness,
+            composition: proof.composition,
+            publicQuotientProof: tamperedQuotientProof
+        )
+        let tamperedQuotientReport = try AIRProofVerifierV1.verificationReport(
+            proof: tamperedQuotientAIRProof,
+            statement: statement
+        )
+        XCTAssertFalse(tamperedQuotientReport.publicQuotientProofDigestMatches)
+        XCTAssertFalse(tamperedQuotientReport.publicQuotientProofVerified)
+        XCTAssertFalse(tamperedQuotientReport.verifies(.publicRevealedTraceConstraintEvaluation))
+    }
+
+    func testAIRProofQuotientPCSArtifactBuildsEncodesAndRejectsMismatchedBundle() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+        let artifact = try AIRProofQuotientPCSArtifactBuilderV1.prove(
+            witness: witness,
+            airDefinition: air,
+            domain: domain,
+            parameterSet: parameterSet,
+            quotientClaimStorageIndices: [5, 0]
+        )
+
+        XCTAssertEqual(artifact.quotientPCSProofBundle.witness.domain, domain)
+        XCTAssertEqual(artifact.quotientPCSProofBundle.parameterSet, parameterSet)
+        XCTAssertEqual(artifact.quotientPCSProofBundle.witness.claimedStorageIndices, [0, 5])
+        XCTAssertEqual(artifact.quotientPCSProofBundle.witness.quotientPolynomialCount, 5)
+        XCTAssertEqual(artifact.quotientPCSProofBundle.chunks.count, 2)
+        XCTAssertEqual(artifact.quotientPCSProofBundle.chunks[0].sourceQuotientIndices, [0, 1, 2, 3])
+        XCTAssertEqual(artifact.quotientPCSProofBundle.chunks[1].sourceQuotientIndices, [4])
+        XCTAssertEqual(
+            artifact.quotientPCSProofBundle.witness.quotientProofDigest,
+            try AIRPublicQuotientProofDigestV1.digest(artifact.proof.publicQuotientProof)
+        )
+
+        let report = try AIRProofQuotientPCSArtifactVerifierV1.verificationReport(artifact)
+        XCTAssertTrue(report.airProofReport.verifies(.publicRevealedTraceConstraintEvaluation))
+        XCTAssertTrue(report.quotientPCSBundleProofsVerify)
+        XCTAssertTrue(report.quotientPCSBundleMatchesAIRProof)
+        XCTAssertTrue(report.usesPCSBackedQuotientLowDegreeProof)
+        XCTAssertFalse(report.isSuccinctAIRGKRProof)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(report.verified)
+        XCTAssertTrue(try AIRProofQuotientPCSArtifactVerifierV1.verify(artifact))
+
+        let encodedBundle = try AIRQuotientCirclePCSProofBundleCodecV1.encode(
+            artifact.quotientPCSProofBundle
+        )
+        XCTAssertEqual(
+            try AIRQuotientCirclePCSProofBundleCodecV1.decode(encodedBundle),
+            artifact.quotientPCSProofBundle
+        )
+        let encodedArtifact = try AIRProofQuotientPCSArtifactCodecV1.encode(artifact)
+        XCTAssertEqual(try AIRProofQuotientPCSArtifactCodecV1.decode(encodedArtifact), artifact)
+        XCTAssertTrue(try AIRProofQuotientPCSArtifactVerifierV1.verify(
+            encodedArtifact: encodedArtifact
+        ))
+        XCTAssertEqual(try AIRQuotientCirclePCSProofBundleDigestV1.digest(
+            artifact.quotientPCSProofBundle
+        ).count, 32)
+        XCTAssertEqual(try AIRProofQuotientPCSArtifactDigestV1.digest(artifact).count, 32)
+
+        var trailingBundle = encodedBundle
+        trailingBundle.append(0)
+        XCTAssertThrowsError(try AIRQuotientCirclePCSProofBundleCodecV1.decode(trailingBundle))
+        var trailingArtifact = encodedArtifact
+        trailingArtifact.append(0)
+        XCTAssertThrowsError(try AIRProofQuotientPCSArtifactCodecV1.decode(trailingArtifact))
+
+        var tamperedQuotientDigest = artifact.proof.publicQuotientProof.tracePolynomialDigest
+        tamperedQuotientDigest[0] ^= 0x7f
+        let mismatchedQuotientProof = try AIRPublicQuotientProofV1(
+            traceRowCount: artifact.proof.publicQuotientProof.traceRowCount,
+            traceColumnCount: artifact.proof.publicQuotientProof.traceColumnCount,
+            tracePolynomialDigest: tamperedQuotientDigest,
+            quotientPolynomials: artifact.proof.publicQuotientProof.quotientPolynomials
+        )
+        let mismatchedBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: mismatchedQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: [0, 5]
+        )
+        let mismatchedArtifact = try AIRProofQuotientPCSArtifactV1(
+            statement: artifact.statement,
+            proof: artifact.proof,
+            quotientPCSProofBundle: mismatchedBundle
+        )
+        let mismatchedReport = try AIRProofQuotientPCSArtifactVerifierV1.verificationReport(
+            mismatchedArtifact
+        )
+        XCTAssertTrue(mismatchedReport.airProofReport.verifies(.publicRevealedTraceConstraintEvaluation))
+        XCTAssertTrue(mismatchedReport.quotientPCSBundleProofsVerify)
+        XCTAssertFalse(mismatchedReport.quotientPCSBundleMatchesAIRProof)
+        XCTAssertFalse(mismatchedReport.verified)
+        XCTAssertFalse(try AIRProofQuotientPCSArtifactVerifierV1.verify(mismatchedArtifact))
+    }
+
     func testAIRTraceCirclePCSBridgeInterpolatesArbitraryTraceColumns() throws {
         let layout = try ApplicationWitnessLayoutV1(columns: [
             try ApplicationWitnessColumnV1(name: "a", values: [1, 2, 4, 8]),
@@ -161,6 +456,86 @@ final class ApplicationTheoremTests: XCTestCase {
         ))
     }
 
+    func testAIRTraceCircleFFTBasisWitnessCoversArbitraryTraceLayouts() throws {
+        let layout = try ApplicationWitnessLayoutV1(columns: [
+            try ApplicationWitnessColumnV1(name: "a", values: [1, 2, 4, 8]),
+            try ApplicationWitnessColumnV1(name: "b", values: [3, 5, 7, 11]),
+            try ApplicationWitnessColumnV1(name: "c", values: [13, 17, 19, 23]),
+            try ApplicationWitnessColumnV1(name: "d", values: [29, 31, 37, 41]),
+            try ApplicationWitnessColumnV1(name: "e", values: [43, 47, 53, 59]),
+        ])
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: layout.trace(columnOrder: ["a", "b", "c", "d", "e"])
+        )
+        let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+        let pcsWitness = try AIRTraceToCirclePCSWitnessV1.make(
+            trace: trace,
+            domain: domain,
+            claimRowIndices: [0, 3]
+        )
+
+        let fftBasisWitness = try AIRTraceToCircleFFTBasisWitnessV1.make(
+            pcsWitness: pcsWitness
+        )
+
+        XCTAssertEqual(fftBasisWitness.domain, pcsWitness.domain)
+        XCTAssertEqual(fftBasisWitness.rowCount, pcsWitness.rowCount)
+        XCTAssertEqual(fftBasisWitness.columnCount, pcsWitness.columnCount)
+        XCTAssertEqual(fftBasisWitness.rowStorageIndices, pcsWitness.rowStorageIndices)
+        XCTAssertEqual(fftBasisWitness.claimedRowIndices, pcsWitness.claimedRowIndices)
+        XCTAssertEqual(fftBasisWitness.polynomialClaims, pcsWitness.polynomialClaims)
+        XCTAssertEqual(fftBasisWitness.chunks.count, 2)
+        XCTAssertEqual(fftBasisWitness.chunks[0].sourceColumnIndices, [0, 1, 2, 3])
+        XCTAssertEqual(fftBasisWitness.chunks[1].sourceColumnIndices, [4])
+        XCTAssertTrue(fftBasisWitness.usesPublicTraceRows)
+        XCTAssertFalse(fftBasisWitness.isResidentPrivateWitness)
+        XCTAssertFalse(fftBasisWitness.verifiesAIRSemantics)
+        XCTAssertFalse(fftBasisWitness.isZeroKnowledge)
+
+        for chunk in fftBasisWitness.chunks {
+            XCTAssertEqual(chunk.circleFFTBasisCoefficients.count, domain.size)
+            XCTAssertEqual(
+                chunk.circleFFTBasisCoefficients,
+                try CircleCodewordOracle.circleFFTCoefficients(
+                    polynomial: chunk.polynomial,
+                    domain: domain
+                )
+            )
+            XCTAssertEqual(
+                try CircleCodewordOracle.evaluateWithCircleFFT(
+                    polynomial: chunk.polynomial,
+                    domain: domain
+                ),
+                try CircleCodewordOracle.evaluate(
+                    polynomial: chunk.polynomial,
+                    domain: domain
+                )
+            )
+        }
+
+        var corruptedBasis = fftBasisWitness.chunks[0].circleFFTBasisCoefficients
+        corruptedBasis[0] = QM31Field.add(
+            corruptedBasis[0],
+            QM31Element(a: 1, b: 0, c: 0, d: 0)
+        )
+        XCTAssertThrowsError(try AIRTraceCircleFFTBasisChunkV1(
+            chunkIndex: fftBasisWitness.chunks[0].chunkIndex,
+            sourceColumnIndices: fftBasisWitness.chunks[0].sourceColumnIndices,
+            polynomial: fftBasisWitness.chunks[0].polynomial,
+            polynomialClaim: fftBasisWitness.chunks[0].polynomialClaim,
+            circleFFTBasisCoefficients: corruptedBasis
+        ))
+        XCTAssertThrowsError(try AIRTraceCircleFFTBasisWitnessV1(
+            domain: fftBasisWitness.domain,
+            rowCount: fftBasisWitness.rowCount,
+            columnCount: fftBasisWitness.columnCount,
+            rowStorageIndices: fftBasisWitness.rowStorageIndices,
+            claimedRowIndices: fftBasisWitness.claimedRowIndices,
+            chunks: fftBasisWitness.chunks,
+            isResidentPrivateWitness: true
+        ))
+    }
+
     func testAIRTraceCirclePCSProofBundleProvesAllChunksAndBindsTrace() throws {
         let layout = try ApplicationWitnessLayoutV1(columns: [
             try ApplicationWitnessColumnV1(name: "a", values: [1, 2, 4, 8]),
@@ -229,6 +604,384 @@ final class ApplicationTheoremTests: XCTestCase {
             parameterSet: parameterSet,
             chunks: Array(bundle.chunks.reversed())
         ))
+    }
+
+    func testAIRTracePCSOpeningConstraintVerifierChecksOpenedRowsAndCoverage() throws {
+        let air = try Self.fibonacciAIRDefinition()
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: Self.fibonacciWitness(),
+            for: air
+        )
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+
+        let fullBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            domain: domain,
+            parameterSet: parameterSet
+        )
+        let fullReport = try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+            bundle: fullBundle,
+            definition: air
+        )
+        XCTAssertTrue(fullReport.tracePCSBundleProofsVerify)
+        XCTAssertTrue(fullReport.traceShapeMatchesAIR)
+        XCTAssertEqual(fullReport.openedTransitionRows, [0, 1, 2])
+        XCTAssertEqual(fullReport.openedBoundaryRows, [0, 3])
+        XCTAssertTrue(fullReport.transitionOpeningCoverageComplete)
+        XCTAssertTrue(fullReport.boundaryOpeningCoverageComplete)
+        XCTAssertTrue(fullReport.transitionOpeningsSatisfyAIR)
+        XCTAssertTrue(fullReport.boundaryOpeningsSatisfyAIR)
+        XCTAssertTrue(fullReport.openedConstraintsVerified)
+        XCTAssertTrue(fullReport.allAIRConstraintsCoveredAndVerified)
+        XCTAssertFalse(fullReport.isZeroKnowledge)
+        XCTAssertTrue(try AIRTracePCSOpeningConstraintVerifierV1.verifyOpenedConstraints(
+            bundle: fullBundle,
+            definition: air
+        ))
+        XCTAssertTrue(try AIRTracePCSOpeningConstraintVerifierV1.verifyAllAIRConstraintsFromOpenings(
+            bundle: fullBundle,
+            definition: air
+        ))
+
+        let encodedFullBundle = try AIRTraceCirclePCSProofBundleCodecV1.encode(fullBundle)
+        XCTAssertEqual(
+            try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+                encodedBundle: encodedFullBundle,
+                definition: air
+            ),
+            fullReport
+        )
+
+        let partialBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimRowIndices: [1, 0]
+        )
+        let partialReport = try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+            bundle: partialBundle,
+            definition: air
+        )
+        XCTAssertTrue(partialReport.tracePCSBundleProofsVerify)
+        XCTAssertTrue(partialReport.traceShapeMatchesAIR)
+        XCTAssertEqual(partialReport.openedTransitionRows, [0])
+        XCTAssertEqual(partialReport.openedBoundaryRows, [0])
+        XCTAssertFalse(partialReport.transitionOpeningCoverageComplete)
+        XCTAssertFalse(partialReport.boundaryOpeningCoverageComplete)
+        XCTAssertTrue(partialReport.transitionOpeningsSatisfyAIR)
+        XCTAssertTrue(partialReport.boundaryOpeningsSatisfyAIR)
+        XCTAssertTrue(partialReport.openedConstraintsVerified)
+        XCTAssertFalse(partialReport.allAIRConstraintsCoveredAndVerified)
+        XCTAssertTrue(try AIRTracePCSOpeningConstraintVerifierV1.verifyOpenedConstraints(
+            bundle: partialBundle,
+            definition: air
+        ))
+        XCTAssertFalse(try AIRTracePCSOpeningConstraintVerifierV1.verifyAllAIRConstraintsFromOpenings(
+            bundle: partialBundle,
+            definition: air
+        ))
+
+        let invalidTransitionTrace = try WitnessToAIRTraceProducerV1.produce(
+            witness: ApplicationWitnessTraceV1(columns: [
+                [1, 1, 2, 4],
+                [1, 2, 3, 5],
+            ]),
+            for: air
+        )
+        let invalidTransitionBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: invalidTransitionTrace,
+            domain: domain,
+            parameterSet: parameterSet
+        )
+        let invalidTransitionReport = try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+            bundle: invalidTransitionBundle,
+            definition: air
+        )
+        XCTAssertTrue(invalidTransitionReport.tracePCSBundleProofsVerify)
+        XCTAssertTrue(invalidTransitionReport.traceShapeMatchesAIR)
+        XCTAssertFalse(invalidTransitionReport.transitionOpeningsSatisfyAIR)
+        XCTAssertTrue(invalidTransitionReport.boundaryOpeningsSatisfyAIR)
+        XCTAssertFalse(invalidTransitionReport.openedConstraintsVerified)
+        XCTAssertFalse(invalidTransitionReport.allAIRConstraintsCoveredAndVerified)
+
+        let invalidBoundaryTrace = try WitnessToAIRTraceProducerV1.produce(
+            witness: ApplicationWitnessTraceV1(columns: [
+                [2, 2, 4, 6],
+                [2, 4, 6, 10],
+            ]),
+            for: air
+        )
+        let invalidBoundaryBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: invalidBoundaryTrace,
+            domain: domain,
+            parameterSet: parameterSet
+        )
+        let invalidBoundaryReport = try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+            bundle: invalidBoundaryBundle,
+            definition: air
+        )
+        XCTAssertTrue(invalidBoundaryReport.tracePCSBundleProofsVerify)
+        XCTAssertTrue(invalidBoundaryReport.traceShapeMatchesAIR)
+        XCTAssertTrue(invalidBoundaryReport.transitionOpeningsSatisfyAIR)
+        XCTAssertFalse(invalidBoundaryReport.boundaryOpeningsSatisfyAIR)
+        XCTAssertFalse(invalidBoundaryReport.openedConstraintsVerified)
+        XCTAssertFalse(invalidBoundaryReport.allAIRConstraintsCoveredAndVerified)
+
+        let wrongShapeAIR = try AIRDefinitionV1(
+            columnCount: 3,
+            transitionConstraints: air.transitionConstraints,
+            boundaryConstraints: air.boundaryConstraints
+        )
+        let wrongShapeReport = try AIRTracePCSOpeningConstraintVerifierV1.verificationReport(
+            bundle: fullBundle,
+            definition: wrongShapeAIR
+        )
+        XCTAssertTrue(wrongShapeReport.tracePCSBundleProofsVerify)
+        XCTAssertFalse(wrongShapeReport.traceShapeMatchesAIR)
+        XCTAssertFalse(wrongShapeReport.openedConstraintsVerified)
+        XCTAssertFalse(wrongShapeReport.allAIRConstraintsCoveredAndVerified)
+    }
+
+    func testAIRTracePCSQueriedOpeningBundleDerivesRowsFromInitialCommitments() throws {
+        let air = try Self.fibonacciAIRDefinition()
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: Self.fibonacciWitness(),
+            for: air
+        )
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+
+        let queriedBundle = try AIRTracePCSQueriedOpeningBundleBuilderV1.prove(
+            trace: trace,
+            definition: air,
+            domain: domain,
+            parameterSet: parameterSet,
+            transitionQueryCount: 1
+        )
+        let report = try AIRTracePCSQueriedOpeningBundleVerifierV1.verificationReport(
+            queriedBundle,
+            definition: air
+        )
+
+        XCTAssertTrue(report.verified)
+        XCTAssertTrue(report.openingConstraintReport.tracePCSBundleProofsVerify)
+        XCTAssertTrue(report.openingConstraintReport.openedConstraintsVerified)
+        XCTAssertTrue(report.queryPlanMatchesCommitments)
+        XCTAssertTrue(report.bundleClaimsExactlyQueryRows)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertEqual(
+            queriedBundle.tracePCSProofBundle.witness.claimedRowIndices,
+            queriedBundle.queryPlan.requiredTraceRows
+        )
+        XCTAssertEqual(queriedBundle.queryPlan.transitionQueryCount, 1)
+        XCTAssertEqual(queriedBundle.queryPlan.sampledTransitionRows.count, 1)
+        XCTAssertEqual(
+            queriedBundle.queryPlan.airDefinitionDigest,
+            try AIRDefinitionDigestV1.digest(air)
+        )
+        XCTAssertEqual(
+            queriedBundle.queryPlan.initialTraceCommitmentDigest,
+            try AIRTracePCSOpeningQueryPlannerV1.initialTraceCommitmentDigest(
+                bundle: queriedBundle.tracePCSProofBundle
+            )
+        )
+        XCTAssertEqual(
+            queriedBundle.queryPlan,
+            try AIRTracePCSOpeningQueryPlannerV1.make(
+                definition: air,
+                bundle: queriedBundle.tracePCSProofBundle,
+                transitionQueryCount: 1
+            )
+        )
+        XCTAssertTrue(try AIRTracePCSQueriedOpeningBundleVerifierV1.verify(
+            queriedBundle,
+            definition: air
+        ))
+
+        var tamperedInitialDigest = queriedBundle.queryPlan.initialTraceCommitmentDigest
+        tamperedInitialDigest[0] ^= 0xff
+        let tamperedQueryPlan = try AIRTracePCSOpeningQueryPlanV1(
+            traceRowCount: queriedBundle.queryPlan.traceRowCount,
+            traceColumnCount: queriedBundle.queryPlan.traceColumnCount,
+            transitionQueryCount: queriedBundle.queryPlan.transitionQueryCount,
+            airDefinitionDigest: queriedBundle.queryPlan.airDefinitionDigest,
+            initialTraceCommitmentDigest: tamperedInitialDigest,
+            sampledTransitionRows: queriedBundle.queryPlan.sampledTransitionRows,
+            boundaryRows: queriedBundle.queryPlan.boundaryRows,
+            requiredTraceRows: queriedBundle.queryPlan.requiredTraceRows
+        )
+        let wrongPlanBundle = try AIRTracePCSQueriedOpeningBundleV1(
+            queryPlan: tamperedQueryPlan,
+            tracePCSProofBundle: queriedBundle.tracePCSProofBundle
+        )
+        let wrongPlanReport = try AIRTracePCSQueriedOpeningBundleVerifierV1.verificationReport(
+            wrongPlanBundle,
+            definition: air
+        )
+        XCTAssertFalse(wrongPlanReport.queryPlanMatchesCommitments)
+        XCTAssertFalse(wrongPlanReport.verified)
+
+        let allRowsQueryPlan = try AIRTracePCSOpeningQueryPlannerV1.make(
+            definition: air,
+            trace: trace,
+            domain: domain,
+            parameterSet: parameterSet,
+            transitionQueryCount: 3
+        )
+        XCTAssertEqual(allRowsQueryPlan.requiredTraceRows, [0, 1, 2, 3])
+        let manuallyClaimedBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimRowIndices: [0, 3]
+        )
+        let wrongRowsBundle = try AIRTracePCSQueriedOpeningBundleV1(
+            queryPlan: allRowsQueryPlan,
+            tracePCSProofBundle: manuallyClaimedBundle
+        )
+        let wrongRowsReport = try AIRTracePCSQueriedOpeningBundleVerifierV1.verificationReport(
+            wrongRowsBundle,
+            definition: air
+        )
+        XCTAssertTrue(wrongRowsReport.queryPlanMatchesCommitments)
+        XCTAssertFalse(wrongRowsReport.bundleClaimsExactlyQueryRows)
+        XCTAssertFalse(wrongRowsReport.verified)
+
+        let invalidTransitionTrace = try WitnessToAIRTraceProducerV1.produce(
+            witness: ApplicationWitnessTraceV1(columns: [
+                [1, 1, 2, 4],
+                [1, 2, 3, 5],
+            ]),
+            for: air
+        )
+        XCTAssertThrowsError(try AIRTracePCSQueriedOpeningBundleBuilderV1.prove(
+            trace: invalidTransitionTrace,
+            definition: air,
+            domain: domain,
+            parameterSet: parameterSet,
+            transitionQueryCount: 3
+        ))
+    }
+
+    func testAIRTraceQuotientPCSQueryAlignmentChecksSharedPublicOpeningsOnly() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: witness,
+            for: air
+        )
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+        let traceQueriedBundle = try AIRTracePCSQueriedOpeningBundleBuilderV1.prove(
+            trace: trace,
+            definition: air,
+            domain: domain,
+            parameterSet: parameterSet,
+            transitionQueryCount: 3
+        )
+        let airProof = try AIRProofBuilderV1.prove(
+            witness: witness,
+            airDefinition: air
+        )
+        let requiredQuotientStorageIndices = try AIRTraceQuotientPCSQueryAlignmentVerifierV1
+            .requiredQuotientStorageIndices(traceQueriedOpeningBundle: traceQueriedBundle)
+        let quotientBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: airProof.proof.publicQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: requiredQuotientStorageIndices
+        )
+
+        XCTAssertEqual(traceQueriedBundle.queryPlan.requiredTraceRows, [0, 1, 2, 3])
+        XCTAssertEqual(requiredQuotientStorageIndices, [0, 16, 32, 48])
+
+        let report = try AIRTraceQuotientPCSQueryAlignmentVerifierV1.verificationReport(
+            traceQueriedOpeningBundle: traceQueriedBundle,
+            quotientPCSProofBundle: quotientBundle,
+            quotientProof: airProof.proof.publicQuotientProof,
+            definition: air
+        )
+        XCTAssertTrue(report.traceQueriedOpeningReport.verified)
+        XCTAssertTrue(report.quotientPCSBundleProofsVerify)
+        XCTAssertTrue(report.quotientPCSBundleMatchesQuotientProof)
+        XCTAssertTrue(report.domainsMatch)
+        XCTAssertTrue(report.parameterSetsMatch)
+        XCTAssertEqual(report.requiredQuotientStorageIndices, requiredQuotientStorageIndices)
+        XCTAssertEqual(report.openedQuotientStorageIndices, requiredQuotientStorageIndices)
+        XCTAssertTrue(report.quotientOpeningsMatchTraceQueryRows)
+        XCTAssertTrue(report.verifiedPublicOpeningAlignment)
+        XCTAssertFalse(report.coordinateDomainsAlignedForAIRQuotientIdentity)
+        XCTAssertFalse(report.quotientIdentityChecked)
+        XCTAssertFalse(report.provesAIRQuotientIdentity)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try AIRTraceQuotientPCSQueryAlignmentVerifierV1.verifyPublicOpeningAlignment(
+            traceQueriedOpeningBundle: traceQueriedBundle,
+            quotientPCSProofBundle: quotientBundle,
+            quotientProof: airProof.proof.publicQuotientProof,
+            definition: air
+        ))
+
+        let underOpenedQuotientBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: airProof.proof.publicQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: [requiredQuotientStorageIndices[0]]
+        )
+        let underOpenedReport = try AIRTraceQuotientPCSQueryAlignmentVerifierV1.verificationReport(
+            traceQueriedOpeningBundle: traceQueriedBundle,
+            quotientPCSProofBundle: underOpenedQuotientBundle,
+            quotientProof: airProof.proof.publicQuotientProof,
+            definition: air
+        )
+        XCTAssertTrue(underOpenedReport.quotientPCSBundleProofsVerify)
+        XCTAssertTrue(underOpenedReport.quotientPCSBundleMatchesQuotientProof)
+        XCTAssertFalse(underOpenedReport.quotientOpeningsMatchTraceQueryRows)
+        XCTAssertFalse(underOpenedReport.verifiedPublicOpeningAlignment)
+
+        let largerDomain = try CircleDomainDescriptor.canonical(logSize: 7)
+        let wrongDomainQuotientBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: airProof.proof.publicQuotientProof,
+            domain: largerDomain,
+            parameterSet: parameterSet,
+            claimStorageIndices: requiredQuotientStorageIndices
+        )
+        let wrongDomainReport = try AIRTraceQuotientPCSQueryAlignmentVerifierV1.verificationReport(
+            traceQueriedOpeningBundle: traceQueriedBundle,
+            quotientPCSProofBundle: wrongDomainQuotientBundle,
+            quotientProof: airProof.proof.publicQuotientProof,
+            definition: air
+        )
+        XCTAssertTrue(wrongDomainReport.quotientPCSBundleProofsVerify)
+        XCTAssertTrue(wrongDomainReport.quotientPCSBundleMatchesQuotientProof)
+        XCTAssertFalse(wrongDomainReport.domainsMatch)
+        XCTAssertTrue(wrongDomainReport.quotientOpeningsMatchTraceQueryRows)
+        XCTAssertFalse(wrongDomainReport.verifiedPublicOpeningAlignment)
+
+        var tamperedQuotientDigest = airProof.proof.publicQuotientProof.tracePolynomialDigest
+        tamperedQuotientDigest[0] ^= 0xa5
+        let tamperedQuotientProof = try AIRPublicQuotientProofV1(
+            traceRowCount: airProof.proof.publicQuotientProof.traceRowCount,
+            traceColumnCount: airProof.proof.publicQuotientProof.traceColumnCount,
+            tracePolynomialDigest: tamperedQuotientDigest,
+            quotientPolynomials: airProof.proof.publicQuotientProof.quotientPolynomials
+        )
+        let mismatchedQuotientBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: tamperedQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: requiredQuotientStorageIndices
+        )
+        let mismatchedReport = try AIRTraceQuotientPCSQueryAlignmentVerifierV1.verificationReport(
+            traceQueriedOpeningBundle: traceQueriedBundle,
+            quotientPCSProofBundle: mismatchedQuotientBundle,
+            quotientProof: airProof.proof.publicQuotientProof,
+            definition: air
+        )
+        XCTAssertTrue(mismatchedReport.quotientPCSBundleProofsVerify)
+        XCTAssertFalse(mismatchedReport.quotientPCSBundleMatchesQuotientProof)
+        XCTAssertTrue(mismatchedReport.quotientOpeningsMatchTraceQueryRows)
+        XCTAssertFalse(mismatchedReport.verifiedPublicOpeningAlignment)
     }
 
     func testPublicSidecarTheoremVerifiesAIRReductionAndGKRClaim() throws {

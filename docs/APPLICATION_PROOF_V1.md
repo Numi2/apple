@@ -107,6 +107,41 @@ The application proof does not weaken the PCS contract. It embeds the Circle
 PCS/FRI proof bytes and verifies them against the `CirclePCSFRIStatementV1`
 inside the application statement.
 
+## AIR Proof Component
+
+`AIRProofV1` is the first formal AIR proof artifact, but its accepted scope is
+only `publicRevealedTraceConstraintEvaluation`. It carries the public witness
+trace, AIR definition, and transcript-composed AIR constraint evaluations. The
+builder derives nonzero M31 composition weights from the AIR definition and
+trace shape, binds the raw constraint-evaluation digest, and verifies that the
+composed evaluations vanish. It also builds `AIRPublicQuotientProofV1`, a CPU
+public trace quotient-divisibility certificate: trace columns are interpolated
+over the public row domain, transition and boundary numerator polynomials are
+divided by their public vanishing polynomials, and the verifier rederives the
+same quotient records.
+
+`AIRProofVerifierV1` rederives the AIR trace and composition oracle from the
+public witness and AIR definition, checks the statement digest, checks the
+definition/witness/composition/quotient digests, verifies AIR semantics
+directly, checks the public quotient-divisibility certificate, and rejects
+attempts to treat this artifact as `succinctPrivateAIR`.
+
+`AIRProofManifestV1.current` records the remaining proof-system boundaries:
+there is no private witness and no zero-knowledge masking in `AIRProofV1`.
+
+## AIR Quotient PCS Artifact
+
+`AIRProofQuotientPCSArtifactV1` wraps an `AIRProofV1` with an
+`AIRQuotientCirclePCSProofBundleV1`. The bundle packs up to four M31 quotient
+coefficient polynomials into each QM31 Circle polynomial chunk and proves every
+chunk with the existing `CirclePCSFRIContractProverV1` / verifier contract.
+
+`AIRProofQuotientPCSArtifactVerifierV1` first verifies the public revealed-trace
+AIR proof, then checks that the quotient PCS bundle verifies and that its
+packed quotient witness is rederived from the `AIRProofV1.publicQuotientProof`.
+This is a PCS-backed public quotient low-degree layer, not a private or
+zero-knowledge AIR proof.
+
 ## Public Sidecar Theorem
 
 `ApplicationTheoremVerifierV1` provides a non-ZK theorem check when the caller
@@ -131,11 +166,33 @@ supplies public sidecar material:
   to four M31 AIR columns into each QM31 polynomial, interpolates over the
   canonical Circle first half-domain, and emits claimed row openings using the
   existing PCS claim type. This does not move AIR semantics into the PCS proof.
+- `AIRTraceToCircleFFTBasisWitnessV1` derives the matching Circle FFT-basis
+  coefficient chunks for those arbitrary public AIR trace layouts and validates
+  them against the independent Circle codeword oracle. This is the public
+  codeword-compatible representation for trace chunks; it is not resident-private
+  AIR synthesis and it does not verify AIR constraints.
 - `AIRTraceCirclePCSProofBundleBuilderV1` builds one ordinary
   `CirclePCSFRIStatementV1` / `CirclePCSFRIProofV1` pair per AIR trace chunk,
   and `AIRTraceCirclePCSProofBundleVerifierV1` verifies those PCS proofs and can
   rederive the chunk witness from the public AIR trace. This is a sidecar bundle
   of committed-polynomial proofs, not a batch PCS protocol and not an AIR proof.
+- `AIRTracePCSOpeningConstraintVerifierV1` verifies AIR constraints directly on
+  the PCS evaluation claims for opened trace rows. Its report distinguishes
+  opened-row validity from complete AIR coverage, so sampled openings are not
+  mislabeled as a full AIR proof.
+- `AIRTracePCSOpeningQueryPlannerV1` derives transition query rows from a
+  transcript over the AIR definition and the initial trace PCS commitment roots.
+  `AIRTracePCSQueriedOpeningBundleV1` then checks that the PCS bundle opened
+  exactly those rows plus required boundary rows. The planner intentionally does
+  not derive queries from the completed bundle digest, because that would bind to
+  a value that already includes the chosen openings.
+- `AIRTraceQuotientPCSQueryAlignmentVerifierV1` checks the corresponding public
+  quotient PCS bundle proofs, verifies that the bundle is bound to the supplied
+  `AIRPublicQuotientProofV1`, requires matching domains and PCS parameter sets,
+  and requires the quotient openings to exactly match the trace query plan's
+  bit-reversed row storage indices. Its report intentionally leaves
+  `quotientIdentityChecked`, `coordinateDomainsAlignedForAIRQuotientIdentity`,
+  and `isZeroKnowledge` false; it is not a quotient-identity protocol.
 - `AIRTraceCirclePCSProofBundleCodecV1` gives that ordered sidecar bundle a
   strict binary encoding; decoders reject trailing bytes and malformed witness
   layout metadata. `AIRTraceCirclePCSProofBundleDigestV1` hashes the
