@@ -95,6 +95,13 @@ struct QM31FRIFoldParams {
     uint challengeD;
 };
 
+struct CircleCodewordDirectEvalParams {
+    uint pointCount;
+    uint xCoefficientCount;
+    uint yCoefficientCount;
+    uint fieldModulus;
+};
+
 struct M31DotProductParams {
     uint count;
     uint fieldModulus;
@@ -1603,6 +1610,33 @@ kernel void qm31_vector_arithmetic(
         output[gid] = uint4(0u, 0u, 0u, 0u);
         break;
     }
+}
+
+kernel void circle_codeword_direct_eval(
+    const device uint2 *domainPoints [[buffer(0)]],
+    const device uint4 *xCoefficients [[buffer(1)]],
+    const device uint4 *yCoefficients [[buffer(2)]],
+    device uint4 *output [[buffer(3)]],
+    constant CircleCodewordDirectEvalParams &params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.pointCount || params.fieldModulus != M31_MODULUS_U32) {
+        return;
+    }
+
+    const uint2 point = domainPoints[gid];
+    uint4 xPart = uint4(0u, 0u, 0u, 0u);
+    for (uint offset = 0u; offset < params.xCoefficientCount; offset += 1u) {
+        const uint coefficientIndex = params.xCoefficientCount - 1u - offset;
+        xPart = qm31_add_mod(qm31_mul_m31_mod(xPart, point.x), xCoefficients[coefficientIndex]);
+    }
+
+    uint4 yPart = uint4(0u, 0u, 0u, 0u);
+    for (uint offset = 0u; offset < params.yCoefficientCount; offset += 1u) {
+        const uint coefficientIndex = params.yCoefficientCount - 1u - offset;
+        yPart = qm31_add_mod(qm31_mul_m31_mod(yPart, point.x), yCoefficients[coefficientIndex]);
+    }
+    output[gid] = qm31_add_mod(xPart, qm31_mul_m31_mod(yPart, point.y));
 }
 
 kernel void qm31_fri_fold(

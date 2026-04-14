@@ -1,6 +1,7 @@
 # Circle Domain And Proof Format V1
 
-Status: implementation foundation with resident Circle FRI folding, not a complete Circle PCS prover/verifier.
+Status: implementation foundation with resident Circle FRI folding and direct Circle
+codeword-to-proof emission, not a complete Circle PCS prover/verifier.
 
 This note records the consensus-facing Circle-domain and proof-artifact surface added in
 `CircleDomain.swift` and `CircleProofFormat.swift`.
@@ -169,12 +170,38 @@ proving call:
 
 `proveVerified` decodes the emitted bytes and runs `CirclePCSFRIProofVerifierV1`, which is
 independent of prover helper state. The resident prover is intentionally scoped to proof
-emission from an existing resident evaluation/codeword buffer; it does not yet generate that
-buffer with a Metal Circle FFT or enforce committed-polynomial opening semantics beyond the
-implemented FRI artifact.
+emission from an existing resident evaluation/codeword buffer; it does not enforce
+committed-polynomial opening semantics beyond the implemented FRI artifact.
 
 `zkmetal-bench --circle-fri-fold-chain-merkle` now reports `proofEmission` timing and
 `proofSizeBytes` in addition to the attributed fold-chain and query-extraction measurements.
+
+## Direct Circle Codeword Path
+
+`CircleCodewordPolynomial` is the current canonical polynomial input for the GPU codeword
+path. It represents the Circle function as `P(x) + yQ(x)` over QM31 coefficients and rejects
+empty or noncanonical coefficient sets before execution.
+
+`CircleCodewordOracle` is the CPU oracle. It evaluates that function over the canonical
+bit-reversed Circle domain by mapping each storage index back to the natural Circle point,
+then evaluating `P` and `Q` with Horner's rule over the point's M31 `x` coordinate.
+
+`CircleCodewordPlan` uploads the canonical domain points in proof storage order and runs
+the `circle_codeword_direct_eval` Metal kernel. The resident API writes directly into a
+caller-owned QM31 output buffer and rejects undersized or overlapping coefficient/output
+ranges. It is a direct `O(domain_size * degree)` evaluator, not the optimized Circle FFT
+that should replace it for production-scale prover throughput.
+
+`CircleCodewordPCSFRIProverV1` composes `CircleCodewordPlan` with
+`CirclePCSFRIResidentProverV1`. Its `prove(polynomial:)` path generates the codeword into
+a reusable resident buffer and immediately emits the canonical Circle PCS/FRI proof from
+that buffer, with no full-codeword CPU readback between codeword generation and commitment.
+`proveVerified` checks the composed path against the CPU codeword oracle, CPU proof builder,
+and independent CPU verifier.
+
+`zkmetal-bench --circle-codeword-prover` reports separate direct codeword-generation timing,
+resident proof-emission timing from the generated codeword buffer, full polynomial-to-proof
+timing, proof size, codeword/proof digests, and verifier acceptance.
 
 ## Binary Proof Format
 
@@ -227,8 +254,8 @@ rejects tampered commitments, openings, final-layer values, public inputs, malfo
 encodings, noncanonical field elements, and invalid line-domain pair schedules.
 
 This is now a complete CPU verifier for the implemented multi-layer FRI artifact. It is not
-yet a complete PCS verifier for polynomial commitments because Circle FFT/codeword
-generation and committed polynomial evaluation semantics are not yet integrated.
+yet a complete PCS verifier for polynomial commitments because optimized Circle FFT layout
+semantics and committed polynomial evaluation checks are not yet integrated.
 
 ## Transcript
 
@@ -269,8 +296,12 @@ Implemented:
 - materialized resident committed-layer log for Circle FRI query extraction
 - resident Circle FRI query extraction for selected pair openings
 - resident Circle PCS/FRI proof emission from an already-resident evaluation/codeword buffer
+- direct GPU Circle codeword generation for `P(x) + yQ(x)` into caller-owned resident buffers
+- composed direct Circle codeword plus resident PCS/FRI proof emission
 - Circle fold-chain benchmark modes for explicit and Merkle-transcript challenges,
   including query-extraction and full proof-emission timing for the Merkle-transcript mode
+- Circle codeword prover benchmark mode with codeword, proof-emission, full-prover, proof-size,
+  digest, and verifier-acceptance reporting
 - multi-layer Circle FRI proof builder
 - independent multi-layer verifier with left/right Merkle pair openings
 - pinned deterministic first-fold and three-round proof digest vectors
@@ -283,8 +314,8 @@ Implemented:
 Not yet implemented:
 
 - Metal-resident Circle-domain/twiddle generation
-- GPU Circle FFT/codeword command plans
+- optimized GPU Circle FFT/codeword command plans
 - independent full Circle PCS verifier with committed polynomial semantics
 - checked-in reproducible complete PCS proof corpus
-- end-to-end witness-to-proof prover command plan and benchmark baselines
+- end-to-end witness-to-proof prover command plan beyond the direct polynomial-to-proof slice
 - sumcheck/GKR integration into the same proof artifact

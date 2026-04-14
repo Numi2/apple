@@ -57,6 +57,7 @@ struct BenchConfig {
     var circleFRIFold = false
     var circleFRIFoldChain = false
     var circleFRIFoldChainMerkleTranscript = false
+    var circleCodewordProver = false
     var qm31FRIFoldChain = false
     var qm31FRIFoldChainTranscript = false
     var qm31FRIFoldChainMerkleTranscript = false
@@ -100,7 +101,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -187,6 +188,9 @@ struct BenchConfig {
                 m31DotProduct = false
             case "--circle-fri-fold-chain-merkle", "--circle-fri-fold-chain-merkle-transcript":
                 circleFRIFoldChainMerkleTranscript = true
+                m31DotProduct = false
+            case "--circle-codeword-prover", "--circle-codeword-pcs-fri":
+                circleCodewordProver = true
                 m31DotProduct = false
             case "--qm31-fri-fold-chain":
                 qm31FRIFoldChain = true
@@ -303,6 +307,7 @@ struct BenchConfig {
           --circle-fri-fold-chain    Run canonical Circle multi-round FRI fold chain instead of hash/Merkle
           --circle-fri-fold-chain-merkle
                                       Commit each current Circle FRI layer on GPU before deriving the next Circle V1 challenge
+          --circle-codeword-prover    Generate a Circle codeword on GPU, keep it resident, and emit a Circle PCS/FRI proof
           --qm31-fri-fold-chain      Run chained QM31 radix-2 FRI folds instead of hash/Merkle
           --qm31-fri-fold-chain-transcript
                                       Run chained QM31 FRI folds with GPU transcript-derived challenges
@@ -345,12 +350,13 @@ struct BenchConfig {
             circleFRIFold,
             circleFRIFoldChain,
             circleFRIFoldChainMerkleTranscript,
+            circleCodewordProver,
             qm31FRIFoldChain,
             qm31FRIFoldChainTranscript,
             qm31FRIFoldChainMerkleTranscript,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -438,6 +444,29 @@ struct BenchConfig {
             }
             guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
                 return BenchError.invalidArgument("Requested Circle FRI fold chain buffers are too large for this process.")
+            }
+            return nil
+        }
+        if circleCodewordProver {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with Circle codeword prover benchmarks.")
+            }
+            guard leafCount > 1,
+                  leafCount.nonzeroBitCount == 1 else {
+                return BenchError.invalidArgument("--elements must be a power-of-two count greater than one for --circle-codeword-prover.")
+            }
+            let logSize = leafCount.trailingZeroBitCount
+            guard logSize >= Int(CircleDomainDescriptor.minimumLogSize),
+                  logSize <= Int(CircleDomainDescriptor.maximumLogSize),
+                  friFoldRounds > 0,
+                  friFoldRounds <= logSize else {
+                return BenchError.invalidArgument("--fri-fold-rounds must be in 1...log2(--elements) for --circle-codeword-prover.")
+            }
+            guard let outputCount = Self.friFoldChainOutputCount(inputCount: leafCount, roundCount: friFoldRounds) else {
+                return BenchError.invalidArgument("--elements must leave at least one output element after --fri-fold-rounds.")
+            }
+            guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
+                return BenchError.invalidArgument("Requested Circle codeword prover buffers are too large for this process.")
             }
             return nil
         }
@@ -955,6 +984,44 @@ struct CircleFRIFoldChainBenchmarkReport: Codable {
     let verification: CircleFRIFoldVerificationReport
 }
 
+struct CircleCodewordProverBenchmarkConfigReport: Codable {
+    let domainLogSize: Int
+    let codewordElementCount: Int
+    let finalLayerElementCount: Int
+    let xCoefficientCount: Int
+    let yCoefficientCount: Int
+    let roundCount: Int
+    let queryCount: Int
+    let storageOrder: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct CircleCodewordProverVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let verifierAccepted: Bool?
+    let codewordDigestHex: String
+    let cpuCodewordDigestHex: String?
+    let proofDigestHex: String
+    let cpuProofDigestHex: String?
+}
+
+struct CircleCodewordProverBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: CircleCodewordProverBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let codewordGeneration: FieldMeasurementReport?
+    let proofEmission: FieldMeasurementReport?
+    let fullProver: FieldMeasurementReport?
+    let proofSizeBytes: Int?
+    let verification: CircleCodewordProverVerificationReport
+}
+
 struct QM31FRIFoldChainBenchmarkConfigReport: Codable {
     let inputElementCount: Int
     let outputElementCount: Int
@@ -1092,6 +1159,27 @@ func makeDeterministicNonzeroQM31Vector(
     ).map { value in
         QM31Field.isZero(value) ? QM31Element(a: 1, b: 0, c: 0, d: 0) : value
     }
+}
+
+func makeDeterministicCircleCodewordPolynomial(domainSize: Int) throws -> CircleCodewordPolynomial {
+    let xCoefficientCount = max(1, min(8, domainSize / 2))
+    let yCoefficientCount = max(1, min(7, domainSize / 2))
+    return try CircleCodewordPolynomial(
+        xCoefficients: makeDeterministicQM31Vector(
+            count: xCoefficientCount,
+            aSalt: 0xe01,
+            bSalt: 0xe03,
+            cSalt: 0xe07,
+            dSalt: 0xe0b
+        ),
+        yCoefficients: makeDeterministicQM31Vector(
+            count: yCoefficientCount,
+            aSalt: 0xe11,
+            bSalt: 0xe17,
+            cSalt: 0xe1d,
+            dSalt: 0xe23
+        )
+    )
 }
 
 func makeDeterministicQM31FRIFoldRounds(
@@ -1532,6 +1620,14 @@ func emitJSON(_ report: CircleFRIFoldChainBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: CircleCodewordProverBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitJSON(_ report: QM31FRIFoldChainBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1958,6 +2054,77 @@ func emitText(_ report: CircleFRIFoldChainBenchmarkReport) {
     }
 }
 
+func emitText(_ report: CircleCodewordProverBenchmarkReport) {
+    print("zkmetal-bench circle-codeword-prover")
+    print("  domain log   : \(report.configuration.domainLogSize)")
+    print("  codeword elems: \(report.configuration.codewordElementCount)")
+    print("  final elems  : \(report.configuration.finalLayerElementCount)")
+    print("  x coeffs     : \(report.configuration.xCoefficientCount)")
+    print("  y coeffs     : \(report.configuration.yCoefficientCount)")
+    print("  rounds       : \(report.configuration.roundCount)")
+    print("  queries      : \(report.configuration.queryCount)")
+    print("  storage      : \(report.configuration.storageOrder)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+
+    if let device = report.device {
+        print("  device       : \(device.name)")
+        print("  apple9       : \(device.supportsApple9)")
+        print("  binary arch  : \(device.supportsBinaryArchives)")
+        print("  tg mem bytes : \(device.maxThreadgroupMemoryLength)")
+    }
+
+    print("  archive      : \(report.pipelineArchive.mode)")
+    if let path = report.pipelineArchive.path {
+        print("  archive path : \(path)")
+    }
+
+    if let codeword = report.codewordGeneration {
+        printSeconds("codeword wall", codeword.wallSeconds)
+        if let gpu = codeword.gpuSeconds {
+            printSeconds("codeword gpu ", gpu)
+        }
+        print("  evals/sec    : \(String(format: "%.2f", codeword.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", codeword.inputBytesPerSecond))")
+    }
+
+    if let proof = report.proofEmission {
+        printSeconds("proof wall", proof.wallSeconds)
+        if let gpu = proof.gpuSeconds {
+            printSeconds("proof gpu ", gpu)
+        }
+        print("  proofs/sec   : \(String(format: "%.2f", proof.elementsPerSecond))")
+        print("  proof B/s    : \(String(format: "%.2f", proof.inputBytesPerSecond))")
+    }
+    if let fullProver = report.fullProver {
+        printSeconds("full wall ", fullProver.wallSeconds)
+        if let gpu = fullProver.gpuSeconds {
+            printSeconds("full gpu  ", gpu)
+        }
+        print("  full/sec     : \(String(format: "%.2f", fullProver.elementsPerSecond))")
+        print("  full B/s     : \(String(format: "%.2f", fullProver.inputBytesPerSecond))")
+    }
+    if let proofSizeBytes = report.proofSizeBytes {
+        print("  proof bytes  : \(proofSizeBytes)")
+    }
+
+    print("  codeword digest: \(report.verification.codewordDigestHex)")
+    if let cpuDigest = report.verification.cpuCodewordDigestHex {
+        print("  cpu codeword : \(cpuDigest)")
+    }
+    print("  proof digest : \(report.verification.proofDigestHex)")
+    if let cpuProofDigest = report.verification.cpuProofDigestHex {
+        print("  cpu proof    : \(cpuProofDigest)")
+    }
+    if let accepted = report.verification.verifierAccepted {
+        print("  verifier     : \(accepted)")
+    }
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ report: QM31FRIFoldChainBenchmarkReport) {
     print("zkmetal-bench qm31-fri-fold-chain")
     print("  input elems  : \(report.configuration.inputElementCount)")
@@ -2241,6 +2408,21 @@ func verificationFailureMessages(in report: CircleFRIFoldChainBenchmarkReport) -
     return []
 }
 
+func verificationFailureMessages(in report: CircleCodewordProverBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true,
+          report.verification.verifierAccepted == true else {
+        let cpuCodewordDigest = report.verification.cpuCodewordDigestHex ?? "missing"
+        let cpuProofDigest = report.verification.cpuProofDigestHex ?? "missing"
+        return [
+            "circle-codeword-prover log-size=\(report.configuration.domainLogSize) codeword-elements=\(report.configuration.codewordElementCount) rounds=\(report.configuration.roundCount) target=\(report.target) codeword-digest=\(report.verification.codewordDigestHex) cpu-codeword-digest=\(cpuCodewordDigest) proof-digest=\(report.verification.proofDigestHex) cpu-proof-digest=\(cpuProofDigest)",
+        ]
+    }
+    return []
+}
+
 func verificationFailureMessages(in report: QM31FRIFoldChainBenchmarkReport) -> [String] {
     guard report.verification.enabled else {
         return []
@@ -2396,6 +2578,27 @@ func makeCircleFRIFoldChainConfigReport(
             ? "circle-v1-merkle-transcript"
             : "explicit",
         totalInverseDomainElementCount: totalInverseDomainElementCount,
+        storageOrder: "circle-domain-bit-reversed",
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeCircleCodewordProverConfigReport(
+    config: BenchConfig,
+    polynomial: CircleCodewordPolynomial,
+    finalLayerElementCount: Int,
+    queryCount: Int
+) -> CircleCodewordProverBenchmarkConfigReport {
+    CircleCodewordProverBenchmarkConfigReport(
+        domainLogSize: config.leafCount.trailingZeroBitCount,
+        codewordElementCount: config.leafCount,
+        finalLayerElementCount: finalLayerElementCount,
+        xCoefficientCount: polynomial.xCoefficients.count,
+        yCoefficientCount: polynomial.yCoefficients.count,
+        roundCount: config.friFoldRounds,
+        queryCount: queryCount,
         storageOrder: "circle-domain-bit-reversed",
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
@@ -3434,6 +3637,303 @@ func runCircleFRIFoldChainBenchmark(_ config: BenchConfig) throws -> CircleFRIFo
 }
 
 @inline(never)
+func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCodewordProverBenchmarkReport {
+    let domain = try CircleDomainDescriptor.canonical(logSize: UInt32(config.leafCount.trailingZeroBitCount))
+    let finalLayerCount = domain.size >> config.friFoldRounds
+    let polynomial = try makeDeterministicCircleCodewordPolynomial(domainSize: domain.size)
+    let queryCount: UInt32 = 4
+    let security = try CircleFRISecurityParametersV1(
+        logBlowupFactor: 2,
+        queryCount: queryCount,
+        foldingStep: 1,
+        grindingBits: 0
+    )
+    let publicInputs = try CirclePCSFRIPublicInputsV1(
+        publicInputDigest: Data((0..<32).map { UInt8(0xa0 + $0) })
+    )
+    let configReport = makeCircleCodewordProverConfigReport(
+        config: config,
+        polynomial: polynomial,
+        finalLayerElementCount: finalLayerCount,
+        queryCount: Int(queryCount)
+    )
+
+    let cpuCodeword = config.verifyWithCPU
+        ? try CircleCodewordOracle.evaluate(polynomial: polynomial, domain: domain)
+        : nil
+    let expectedProof = try cpuCodeword.map {
+        try CircleFRIProofBuilderV1.prove(
+            evaluations: $0,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: config.friFoldRounds
+        )
+    }
+    let expectedProofBytes = try expectedProof.map { try CirclePCSFRIProofCodecV1.encode($0) }
+
+    #if canImport(Metal)
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        let codeword: [QM31Element]
+        if let cpuCodeword {
+            codeword = cpuCodeword
+        } else {
+            codeword = try CircleCodewordOracle.evaluate(polynomial: polynomial, domain: domain)
+        }
+        let proof: CirclePCSFRIProofV1
+        if let expectedProof {
+            proof = expectedProof
+        } else {
+            proof = try CircleFRIProofBuilderV1.prove(
+                evaluations: codeword,
+                domain: domain,
+                securityParameters: security,
+                publicInputs: publicInputs,
+                roundCount: config.friFoldRounds
+            )
+        }
+        let proofBytes: Data
+        if let expectedProofBytes {
+            proofBytes = expectedProofBytes
+        } else {
+            proofBytes = try CirclePCSFRIProofCodecV1.encode(proof)
+        }
+        let codewordDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(codeword)).hexString
+        let proofDigest = SHA3Oracle.sha3_256(proofBytes).hexString
+        let verifierAccepted = config.verifyWithCPU
+            ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
+            : nil
+        return CircleCodewordProverBenchmarkReport(
+            schemaVersion: 1,
+            generatedAt: iso8601Now(),
+            target: "cpu",
+            configuration: configReport,
+            device: nil,
+            pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+            codewordGeneration: nil,
+            proofEmission: nil,
+            fullProver: nil,
+            proofSizeBytes: proofBytes.count,
+            verification: CircleCodewordProverVerificationReport(
+                enabled: config.verifyWithCPU,
+                matchedCPU: config.verifyWithCPU ? true : nil,
+                verifierAccepted: verifierAccepted,
+                codewordDigestHex: codewordDigest,
+                cpuCodewordDigestHex: config.verifyWithCPU ? codewordDigest : nil,
+                proofDigestHex: proofDigest,
+                cpuProofDigestHex: config.verifyWithCPU ? proofDigest : nil
+            )
+        )
+    }
+
+    let archiveURL = config.pipelineArchiveURL ?? defaultPipelineArchiveURL(for: device)
+    let pipelineCacheConfiguration = config.usePipelineArchive
+        ? MetalPipelineCacheConfiguration(binaryArchiveMode: .readWrite(archiveURL))
+        : .disabled
+    let context = try MetalContext(device: device, pipelineCacheConfiguration: pipelineCacheConfiguration)
+    let codewordPlan = try CircleCodewordPlan(context: context, domain: domain)
+    let proofProver = try CirclePCSFRIResidentProverV1(
+        context: context,
+        domain: domain,
+        securityParameters: security,
+        publicInputs: publicInputs,
+        roundCount: config.friFoldRounds
+    )
+    let fullProver = try CircleCodewordPCSFRIProverV1(
+        context: context,
+        domain: domain,
+        securityParameters: security,
+        publicInputs: publicInputs,
+        roundCount: config.friFoldRounds
+    )
+    try context.serializePipelineArchiveIfNeeded()
+
+    let codewordBuffer = try makeSharedMetalBuffer(
+        device: device,
+        length: domain.size * CircleCodewordPlan.elementByteCount,
+        label: "zkmetal-bench.CircleCodewordProver.Codeword"
+    )
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try codewordPlan.executeResident(
+                polynomial: polynomial,
+                outputBuffer: codewordBuffer
+            )
+        }
+    }
+
+    var codewordWallSeconds: [Double] = []
+    var codewordGPUSeconds: [Double?] = []
+    for _ in 0..<config.iterations {
+        let stats = try codewordPlan.executeResident(
+            polynomial: polynomial,
+            outputBuffer: codewordBuffer
+        )
+        codewordWallSeconds.append(stats.cpuWallSeconds)
+        codewordGPUSeconds.append(stats.gpuSeconds)
+    }
+
+    let measuredCodeword = readQM31Buffer(codewordBuffer, count: domain.size)
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        }
+    }
+
+    var proofWallSeconds: [Double] = []
+    var proofGPUSeconds: [Double?] = []
+    var latestProof: CirclePCSFRIResidentProverV1Result?
+    for _ in 0..<config.iterations {
+        let result = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        latestProof = result
+        proofWallSeconds.append(result.stats.cpuWallSeconds)
+        proofGPUSeconds.append(result.stats.gpuSeconds)
+    }
+    guard let measuredProof = latestProof else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try fullProver.prove(polynomial: polynomial)
+        }
+    }
+
+    var fullWallSeconds: [Double] = []
+    var fullGPUSeconds: [Double?] = []
+    var latestFullProof: CircleCodewordPCSFRIProverV1Result?
+    for _ in 0..<config.iterations {
+        let result = try fullProver.prove(polynomial: polynomial)
+        latestFullProof = result
+        fullWallSeconds.append(result.stats.cpuWallSeconds)
+        fullGPUSeconds.append(result.stats.gpuSeconds)
+    }
+    guard let measuredFullProof = latestFullProof else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    let verifierAccepted = config.verifyWithCPU
+        ? try CirclePCSFRIProofVerifierV1.verify(
+            proof: measuredFullProof.proof,
+            publicInputs: publicInputs
+        )
+        : nil
+    let matchedCPU: Bool?
+    if let cpuCodeword, let expectedProof {
+        matchedCPU = measuredCodeword == cpuCodeword
+            && measuredProof.proof == expectedProof
+            && measuredFullProof.proof == expectedProof
+            && verifierAccepted == Optional(true)
+    } else {
+        matchedCPU = nil
+    }
+
+    let codewordDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(measuredCodeword)).hexString
+    let cpuCodewordDigest = cpuCodeword.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0)).hexString }
+    let proofDigest = SHA3Oracle.sha3_256(measuredFullProof.encodedProof).hexString
+    let cpuProofDigest = expectedProofBytes.map { SHA3Oracle.sha3_256($0).hexString }
+    let coefficientBytes = (polynomial.xCoefficients.count + polynomial.yCoefficients.count)
+        * CircleCodewordPlan.elementByteCount
+    let codewordInputBytes = Double(domain.size * CircleCodewordPlan.domainPointByteCount + coefficientBytes)
+    let proofInputBytes = Double(measuredProof.proofByteCount)
+
+    return CircleCodewordProverBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "metal",
+        configuration: configReport,
+        device: makeDeviceReport(context.capabilities),
+        pipelineArchive: PipelineArchiveReport(
+            enabled: config.usePipelineArchive,
+            mode: config.usePipelineArchive ? "readWrite" : "disabled",
+            path: config.usePipelineArchive ? archiveURL.path : nil
+        ),
+        codewordGeneration: makeFieldMeasurement(
+            wallSeconds: codewordWallSeconds,
+            gpuSeconds: codewordGPUSeconds,
+            elements: domain.size,
+            inputBytes: codewordInputBytes
+        ),
+        proofEmission: makeFieldMeasurement(
+            wallSeconds: proofWallSeconds,
+            gpuSeconds: proofGPUSeconds,
+            elements: 1,
+            inputBytes: proofInputBytes
+        ),
+        fullProver: makeFieldMeasurement(
+            wallSeconds: fullWallSeconds,
+            gpuSeconds: fullGPUSeconds,
+            elements: 1,
+            inputBytes: codewordInputBytes + Double(measuredFullProof.proofByteCount)
+        ),
+        proofSizeBytes: measuredFullProof.proofByteCount,
+        verification: CircleCodewordProverVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            verifierAccepted: verifierAccepted,
+            codewordDigestHex: codewordDigest,
+            cpuCodewordDigestHex: cpuCodewordDigest,
+            proofDigestHex: proofDigest,
+            cpuProofDigestHex: cpuProofDigest
+        )
+    )
+    #else
+    let codeword: [QM31Element]
+    if let cpuCodeword {
+        codeword = cpuCodeword
+    } else {
+        codeword = try CircleCodewordOracle.evaluate(polynomial: polynomial, domain: domain)
+    }
+    let proof: CirclePCSFRIProofV1
+    if let expectedProof {
+        proof = expectedProof
+    } else {
+        proof = try CircleFRIProofBuilderV1.prove(
+            evaluations: codeword,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: config.friFoldRounds
+        )
+    }
+    let proofBytes: Data
+    if let expectedProofBytes {
+        proofBytes = expectedProofBytes
+    } else {
+        proofBytes = try CirclePCSFRIProofCodecV1.encode(proof)
+    }
+    let codewordDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(codeword)).hexString
+    let proofDigest = SHA3Oracle.sha3_256(proofBytes).hexString
+    let verifierAccepted = config.verifyWithCPU
+        ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
+        : nil
+    return CircleCodewordProverBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        codewordGeneration: nil,
+        proofEmission: nil,
+        fullProver: nil,
+        proofSizeBytes: proofBytes.count,
+        verification: CircleCodewordProverVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: config.verifyWithCPU ? verifierAccepted : nil,
+            verifierAccepted: verifierAccepted,
+            codewordDigestHex: codewordDigest,
+            cpuCodewordDigestHex: config.verifyWithCPU ? codewordDigest : nil,
+            proofDigestHex: proofDigest,
+            cpuProofDigestHex: config.verifyWithCPU ? proofDigest : nil
+        )
+    )
+    #endif
+}
+
+@inline(never)
 func runQM31FRIFoldChainBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldChainBenchmarkReport {
     let outputCount = config.leafCount >> config.friFoldRounds
     let totalInverseDomainCount = config.leafCount - outputCount
@@ -4398,6 +4898,20 @@ func runCLI() -> Int32 {
             }
         } else if config.circleFRIFoldChain || config.circleFRIFoldChainMerkleTranscript {
             let report = try runCircleFRIFoldChainBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.circleCodewordProver {
+            let report = try runCircleCodewordProverBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

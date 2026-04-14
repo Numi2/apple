@@ -833,6 +833,103 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(arrayResult.proof, expectedProof)
     }
 
+    func testCircleCodewordPlanMatchesCPUOracleAndFeedsResidentProver() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+
+        let context = try MetalContext(device: device)
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let roundCount = 3
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 3,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(
+            publicInputDigest: Data((0..<32).map { UInt8(0xd0 + $0) })
+        )
+        let polynomial = try Self.makeStableCircleCodewordPolynomial()
+        let expectedCodeword = try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            domain: domain
+        )
+        let expectedProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: expectedCodeword,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+
+        let codewordPlan = try CircleCodewordPlan(context: context, domain: domain)
+        let measured = try codewordPlan.executeVerified(polynomial: polynomial)
+        XCTAssertEqual(measured.evaluations, expectedCodeword)
+
+        let xOnlyPolynomial = try CircleCodewordPolynomial(
+            xCoefficients: polynomial.xCoefficients,
+            yCoefficients: []
+        )
+        XCTAssertEqual(
+            try codewordPlan.executeVerified(polynomial: xOnlyPolynomial).evaluations,
+            try CircleCodewordOracle.evaluate(polynomial: xOnlyPolynomial, domain: domain)
+        )
+        let yOnlyPolynomial = try CircleCodewordPolynomial(
+            xCoefficients: [],
+            yCoefficients: polynomial.yCoefficients
+        )
+        XCTAssertEqual(
+            try codewordPlan.executeVerified(polynomial: yOnlyPolynomial).evaluations,
+            try CircleCodewordOracle.evaluate(polynomial: yOnlyPolynomial, domain: domain)
+        )
+
+        let outputOffset = 32
+        let outputBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: outputOffset + domain.size * CircleCodewordPlan.elementByteCount,
+            label: "CircleDomainTests.CircleCodewordOutput"
+        )
+        _ = try codewordPlan.executeResident(
+            polynomial: polynomial,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset
+        )
+        XCTAssertEqual(
+            try Self.readQM31Buffer(
+                outputBuffer,
+                offset: outputOffset,
+                count: domain.size
+            ),
+            expectedCodeword
+        )
+
+        let residentProver = try CirclePCSFRIResidentProverV1(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        let residentProof = try residentProver.proveVerified(
+            evaluationsBuffer: outputBuffer,
+            evaluationsOffset: outputOffset
+        )
+        XCTAssertEqual(residentProof.proof, expectedProof)
+
+        let codewordProver = try CircleCodewordPCSFRIProverV1(
+            context: context,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
+        XCTAssertEqual(proofResult.proof, expectedProof)
+        XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(proofResult.encodedProof), expectedProof)
+        try codewordProver.clearReusableBuffers()
+    }
+
     func testCircleFRIFoldPlanRejectsInvalidDomainsAndResidentLayouts() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device on this test machine")
@@ -1169,6 +1266,51 @@ final class CircleDomainTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
         }
+
+        XCTAssertThrowsError(try CircleCodewordPolynomial(xCoefficients: [], yCoefficients: [])) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let polynomial = try Self.makeStableCircleCodewordPolynomial()
+        XCTAssertThrowsError(try CircleCodewordPlan(context: context, domain: naturalDomain)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let codewordPlan = try CircleCodewordPlan(context: context, domain: domain)
+        XCTAssertThrowsError(
+            try codewordPlan.executeResident(
+                polynomial: polynomial,
+                outputBuffer: shortOutputBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        let coefficientBytes = QM31CanonicalEncoding.pack(polynomial.xCoefficients)
+        let aliasedCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * CircleCodewordPlan.elementByteCount,
+            label: "CircleDomainTests.CircleCodewordAliasedCoefficients"
+        )
+        try MetalBufferFactory.copy(
+            coefficientBytes,
+            into: aliasedCoefficientBuffer,
+            byteCount: coefficientBytes.count
+        )
+        let yCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: QM31CanonicalEncoding.pack(polynomial.yCoefficients),
+            declaredLength: polynomial.yCoefficients.count * CircleCodewordPlan.elementByteCount,
+            label: "CircleDomainTests.CircleCodewordYCoefficients"
+        )
+        XCTAssertThrowsError(
+            try codewordPlan.executeResident(
+                xCoefficientBuffer: aliasedCoefficientBuffer,
+                xCoefficientCount: polynomial.xCoefficients.count,
+                yCoefficientBuffer: yCoefficientBuffer,
+                yCoefficientCount: polynomial.yCoefficients.count,
+                outputBuffer: aliasedCoefficientBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
     }
 #endif
 
@@ -1273,10 +1415,36 @@ final class CircleDomainTests: XCTestCase {
         return evaluations
     }
 
+    private static func makeStableCircleCodewordPolynomial() throws -> CircleCodewordPolynomial {
+        try CircleCodewordPolynomial(
+            xCoefficients: [
+                QM31Element(a: 3, b: 5, c: 7, d: 11),
+                QM31Element(a: 13, b: 17, c: 19, d: 23),
+                QM31Element(a: 29, b: 31, c: 37, d: 41),
+                QM31Element(a: 43, b: 47, c: 53, d: 59),
+            ],
+            yCoefficients: [
+                QM31Element(a: 61, b: 67, c: 71, d: 73),
+                QM31Element(a: 79, b: 83, c: 89, d: 97),
+                QM31Element(a: 101, b: 103, c: 107, d: 109),
+            ]
+        )
+    }
+
 #if canImport(Metal)
     private static func readQM31Buffer(_ buffer: MTLBuffer, count: Int) throws -> [QM31Element] {
         let byteCount = count * CircleFRIFoldPlan.elementByteCount
         let data = Data(bytes: buffer.contents(), count: byteCount)
+        return try QM31CanonicalEncoding.unpackMany(data, count: count)
+    }
+
+    private static func readQM31Buffer(
+        _ buffer: MTLBuffer,
+        offset: Int,
+        count: Int
+    ) throws -> [QM31Element] {
+        let byteCount = count * CircleFRIFoldPlan.elementByteCount
+        let data = Data(bytes: buffer.contents().advanced(by: offset), count: byteCount)
         return try QM31CanonicalEncoding.unpackMany(data, count: count)
     }
 

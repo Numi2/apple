@@ -1,0 +1,140 @@
+{
+  "codewordGeneration" : {
+    "bestSecondsForThroughput" : 9.612500434741378e-05,
+    "elementsPerSecond" : 170444725.71137843,
+    "gpuSeconds" : {
+      "max" : 0.0007134166662581265,
+      "mean" : 0.00022170833544805647,
+      "median" : 9.837500692810863e-05,
+      "min" : 9.612500434741378e-05,
+      "samples" : [
+        0.0007134166662581265,
+        9.774998761713505e-05,
+        9.612500434741378e-05,
+        0.00010287501208949834,
+        9.837500692810863e-05
+      ]
+    },
+    "inputBytesPerSecond" : 1366054554.6028152,
+    "wallSeconds" : {
+      "max" : 0.001335958,
+      "mean" : 0.0007137168,
+      "median" : 0.00056125,
+      "min" : 0.000397959,
+      "samples" : [
+        0.001335958,
+        0.00056125,
+        0.000397959,
+        0.000717708,
+        0.000555709
+      ]
+    }
+  },
+  "configuration" : {
+    "codewordElementCount" : 16384,
+    "domainLogSize" : 14,
+    "finalLayerElementCount" : 2048,
+    "iterations" : 5,
+    "queryCount" : 4,
+    "roundCount" : 3,
+    "storageOrder" : "circle-domain-bit-reversed",
+    "verifyWithCPU" : true,
+    "warmupIterations" : 1,
+    "xCoefficientCount" : 8,
+    "yCoefficientCount" : 7
+  },
+  "device" : {
+    "hasUnifiedMemory" : true,
+    "maxThreadgroupMemoryLength" : 32768,
+    "maxThreadsPerThreadgroup" : 1024,
+    "name" : "Apple M4",
+    "registryID" : 4294968275,
+    "supports64BitAtomics" : true,
+    "supportsApple3" : true,
+    "supportsApple4" : true,
+    "supportsApple7" : true,
+    "supportsApple9" : true,
+    "supportsBinaryArchives" : true,
+    "supportsNonuniformThreadgroups" : true,
+    "supportsSIMDReductions" : true
+  },
+  "fullProver" : {
+    "bestSecondsForThroughput" : 0.029557541623944417,
+    "elementsPerSecond" : 33.83231300907329,
+    "gpuSeconds" : {
+      "max" : 0.03269495831045788,
+      "mean" : 0.030958116656984204,
+      "median" : 0.031342916685389355,
+      "min" : 0.029557541623944417,
+      "samples" : [
+        0.03269495831045788,
+        0.029557541623944417,
+        0.03154433333838824,
+        0.031342916685389355,
+        0.02965083332674112
+      ]
+    },
+    "inputBytesPerSecond" : 5925932.617417241,
+    "wallSeconds" : {
+      "max" : 0.045099041,
+      "mean" : 0.04345456639999999,
+      "median" : 0.042853708,
+      "min" : 0.041941875,
+      "samples" : [
+        0.044780208,
+        0.042598,
+        0.045099041,
+        0.042853708,
+        0.041941875
+      ]
+    }
+  },
+  "generatedAt" : "2026-04-14T00:01:16.211Z",
+  "pipelineArchive" : {
+    "enabled" : false,
+    "mode" : "disabled"
+  },
+  "proofEmission" : {
+    "bestSecondsForThroughput" : 0.030579458296415396,
+    "elementsPerSecond" : 32.70169112568036,
+    "gpuSeconds" : {
+      "max" : 0.03978020840440877,
+      "mean" : 0.033879508342943156,
+      "median" : 0.03279070829739794,
+      "min" : 0.030579458296415396,
+      "samples" : [
+        0.03978020840440877,
+        0.03506749996449798,
+        0.030579458296415396,
+        0.03279070829739794,
+        0.031179666751995683
+      ]
+    },
+    "inputBytesPerSecond" : 1433772.9457143296,
+    "wallSeconds" : {
+      "max" : 0.058178458,
+      "mean" : 0.047433617,
+      "median" : 0.044605334,
+      "min" : 0.04216425,
+      "samples" : [
+        0.058178458,
+        0.049430209,
+        0.04216425,
+        0.044605334,
+        0.042789834
+      ]
+    }
+  },
+  "proofSizeBytes" : 43844,
+  "schemaVersion" : 1,
+  "target" : "metal",
+  "verification" : {
+    "codewordDigestHex" : "0a4ff8f860f6e64dd54aa2261d8cbc4d929c6e7c7c124f30b3531772997b58be",
+    "cpuCodewordDigestHex" : "0a4ff8f860f6e64dd54aa2261d8cbc4d929c6e7c7c124f30b3531772997b58be",
+    "cpuProofDigestHex" : "80e8b093680f5662b57aed2ede38d82f8e6e5eb906a7c046198c603203aa5569",
+    "enabled" : true,
+    "matchedCPU" : true,
+    "proofDigestHex" : "80e8b093680f5662b57aed2ede38d82f8e6e5eb906a7c046198c603203aa5569",
+    "verifierAccepted" : true
+  }
+}
