@@ -1,10 +1,15 @@
 # Circle Domain And Proof Format V1
 
-Status: implementation foundation with resident Circle FRI folding and Circle FFT
-codeword-to-proof emission, not a complete Circle PCS prover/verifier.
+Status: implementation foundation with resident Circle FRI folding, Circle FFT
+codeword-to-proof emission, a strict production-facing PCS verifier contract,
+and a reproducible proof corpus. This is still not a complete application
+prover because witness/AIR/sumcheck/GKR integration remains outside this slice.
 
 This note records the consensus-facing Circle-domain and proof-artifact surface added in
 `CircleDomain.swift` and `CircleProofFormat.swift`.
+
+For the conservative soundness argument and parameter rationale, see
+`docs/CIRCLE_PCS_SOUNDNESS_V1.md`.
 
 ## References
 
@@ -218,6 +223,34 @@ into a domain-separated SHA3 public-input digest. `CircleFRIProofBuilderV1` can 
 first-layer Merkle openings for those claimed evaluation indices without changing legacy
 proof bytes when no claims are present.
 
+`CirclePCSFRIParameterSetV1.conservative128` is the V1 production-facing profile for this
+implemented PCS/FRI slice:
+
+```text
+logBlowupFactor = 4
+queryCount      = 36
+foldingStep     = 1
+grindingBits    = 0
+roundCount      = domain.logSize - logBlowupFactor
+```
+
+The profile targets 128-bit soundness with a nominal 144-bit query budget and no grinding
+credit. `grindingBits` is zero because the current proof format has no nonce or
+proof-of-work check. The verifier contract also requires a terminal constant final layer
+of size `2^logBlowupFactor` and a combined `P/Q` coefficient budget no larger than
+`domain.size / 2^logBlowupFactor`.
+
+`CirclePCSFRIStatementV1` is the public statement shape for this contract: a fixed
+parameter set plus one structured polynomial claim. `CirclePCSFRIContractVerifierV1` is the
+public V1 PCS verifier surface. It checks the profile, round count, terminal layer shape,
+domain equality, claimed-opening count, and then delegates to the claim-aware polynomial
+verifier. This is intentionally stricter than `CirclePCSFRIPolynomialVerifierV1`, which
+can still validate internally consistent developer-parameter artifacts.
+
+`CirclePCSFRIContractProverV1` is a deterministic CPU helper for tests and corpus
+generation. It is not the resident production prover path; resident coefficient-to-proof
+emission remains under `CircleCodewordPCSFRIProverV1`.
+
 `zkmetal-bench --circle-codeword-prover` now emits schema v3 for this boundary. Timed
 codeword and full-prover rows use a pre-uploaded private Circle FFT-basis coefficient
 buffer, keep the generated codeword private, and report `readbackPolicy` with
@@ -287,6 +320,13 @@ oracle, and verifies each claimed first-layer opening against the first Merkle r
 regression gate includes a proof that remains accepted by the FRI-artifact verifier while
 the polynomial verifier rejects a false claimed evaluation.
 
+`CirclePCSFRIContractVerifierV1.verify(proof:statement:)` is the final public PCS verifier
+contract for V1. It rejects proofs that do not use the selected parameter profile, proofs
+with nonterminal final layers, proofs with unexpected round counts, proofs whose domain
+does not equal the statement domain, and proofs whose claimed-opening count does not match
+the statement. The checked-in corpus includes a proof accepted by the lower polynomial
+verifier but rejected by this contract because it uses developer parameters.
+
 ## Transcript
 
 `CircleFRITranscriptV1` frames and absorbs:
@@ -313,6 +353,8 @@ verify transcript sensitivity for every currently bound field group.
 
 Implemented:
 
+- production-facing `CirclePCSFRIParameterSetV1.conservative128` profile
+- strict `CirclePCSFRIStatementV1` and `CirclePCSFRIContractVerifierV1` public PCS contract
 - canonical Circle-domain descriptor
 - M31 Circle point/index/coset arithmetic
 - layout and bit-reversal policy helpers
@@ -341,13 +383,16 @@ Implemented:
 - canonical QM31 binary encoding
 - strict V1 proof container
 - V1 transcript framing and challenge/query derivation
+- reproducible complete PCS/FRI corpus with canonical bytes, expected digests, verifier
+  acceptance, and tamper/rejection vectors
 - unit tests for layout, encoding rejection, transcript binding, CPU/GPU first-fold and
-  fold-chain parity, Circle Merkle-transcript GPU parity, and resident layout rejection
+  fold-chain parity, Circle Merkle-transcript GPU parity, resident layout rejection,
+  contract-parameter enforcement, and corpus accept/reject behavior
 
 Not yet implemented:
 
 - fused/tiled Circle FFT codeword plus commitment command plans
-- independent full Circle PCS verifier with committed polynomial semantics
-- checked-in reproducible complete PCS proof corpus
 - end-to-end witness-to-Circle-FFT-basis generation beyond the current coefficient-to-proof slice
 - sumcheck/GKR integration into the same proof artifact
+- nonzero grinding support
+- external cryptographic review of the concrete parameter profile

@@ -9,7 +9,8 @@ serialization, canonical Circle-domain descriptors, the first resident Circle
 FRI fold layer, resident multi-layer Circle FRI fold chains with explicit or
 Circle V1 Merkle-transcript challenges, multi-layer CPU Circle FRI proof
 verification, Circle FFT codeword generation feeding resident PCS/FRI proof
-emission, and early M31 sum-check execution.
+emission, a strict Circle PCS verifier contract for the implemented slice, and
+early M31 sum-check execution.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
 a broad cryptography catalog and does not claim production proof-system security
@@ -125,6 +126,12 @@ Implemented today:
   material. A structured `CirclePCSFRIPolynomialClaimV1` plus
   `CirclePCSFRIPolynomialVerifierV1` now binds polynomial coefficients, domain
   points, claimed evaluations, and first-layer Merkle openings on the CPU.
+  `CirclePCSFRIParameterSetV1.conservative128` fixes the production-facing V1
+  profile for this implemented slice, and `CirclePCSFRIContractVerifierV1`
+  enforces that profile, the terminal final layer, exact round count, and
+  committed-polynomial semantics as the public verifier contract. The checked-in
+  corpus under `Tests/AppleZKProverTests/Resources/` pins canonical accepted
+  proof bytes and tamper/rejection vectors for that contract.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
   buffer plus concatenated per-round inverse-domain buffers, encodes every fold
   round into one command buffer, ping-pongs private scratch between intermediate
@@ -229,6 +236,7 @@ computing base:
 - QM31 Merkle-bound transcript FRI fold chain `executeMerkleTranscriptDerivedVerified`
 - Circle Merkle-transcript FRI fold chain `executeVerified`
 - QM31 linear FRI proof `QM31FRIProofVerifier.verify`
+- Circle PCS/FRI contract proof `CirclePCSFRIContractVerifierV1.verify`
 
 These APIs recompute the result with the CPU oracle and throw
 `AppleZKProverError.correctnessValidationFailed` if the GPU result diverges.
@@ -386,6 +394,9 @@ designed to be testable and conservative:
 - Shared upload slots clear unused tails before reuse.
 - Strided GPU result buffers clear unwritten padding before returning `Data`.
 - A production verifier must remain CPU-only and deterministic.
+- The current Circle PCS/FRI contract is scoped to the implemented
+  coefficient-to-proof slice; witness/AIR/sumcheck/GKR integration and external
+  cryptographic review remain open before any full proof-system security claim.
 
 See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) for assets, attacker model,
 trust boundaries, current guarantees, and pre-production review gates.

@@ -10,6 +10,7 @@ AppleZKProver is not production proving software yet. It is a GPU-accelerated cr
 - future field/codeword buffers,
 - future transcript challenges,
 - final commitments, openings, and proofs.
+- public PCS statements and verifier decisions.
 
 ## Attacker Model
 
@@ -65,6 +66,9 @@ The current package aims to guarantee:
 - the resident Circle PCS/FRI proof emitter returns canonical proof bytes from an already-resident evaluation/codeword buffer, keeps the materialized committed-layer log private, and `proveVerified` decodes those bytes before checking them with the independent CPU verifier,
 - the Circle FFT codeword plan validates canonical bounded `P(x) + yQ(x)` coefficients, rejects overlapping coefficient/output resident ranges, writes codewords into resident buffers with FFT stages, and is checked against a direct CPU Circle-domain oracle before feeding the resident proof emitter in the verified path,
 - the composed Circle coefficient-to-proof plan accepts Circle FFT-basis coefficient buffers, keeps the generated codeword and intermediate FRI layers private, and reads back only public proof material: commitments, final layer, queried leaves, sibling paths, and encoded proof bytes,
+- `CirclePCSFRIParameterSetV1.conservative128` fixes the V1 Circle PCS/FRI verifier profile at `logBlowupFactor = 4`, `queryCount = 36`, `foldingStep = 1`, and `grindingBits = 0`; the contract claims no grinding credit because the proof format has no grinding nonce,
+- `CirclePCSFRIContractVerifierV1` is the public CPU-only verifier contract for the implemented Circle PCS/FRI slice. It enforces the profile, canonical domain, exact round count, terminal constant final layer, combined coefficient budget, transcript binding, Merkle openings, structured polynomial claims, and claimed first-layer evaluation openings,
+- the checked-in Circle PCS/FRI corpus pins canonical accepted proof bytes, expected proof digests, and tamper/rejection vectors for the strict contract,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, M31 vector, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
@@ -140,5 +144,6 @@ Before this project claims production security:
 - fuzzing must cover public deserialization and verifier inputs,
 - GPU/CPU differential tests must run over randomized workloads,
 - cryptographic parameter choices must be documented,
+- Circle witness/AIR/sumcheck/GKR outputs must be integrated into the same proof artifact before any full proof-system claim,
 - lattice-based parameter choices, if added later, must include an independent lattice-estimator reproduction artifact,
 - an external cryptography review must be completed.

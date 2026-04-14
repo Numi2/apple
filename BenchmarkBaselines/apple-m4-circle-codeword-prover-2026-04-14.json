@@ -1,38 +1,41 @@
 {
   "codewordGeneration" : {
-    "bestSecondsForThroughput" : 9.612500434741378e-05,
-    "elementsPerSecond" : 170444725.71137843,
+    "bestSecondsForThroughput" : 0.00015062501188367605,
+    "elementsPerSecond" : 108773435.40163805,
     "gpuSeconds" : {
-      "max" : 0.0007134166662581265,
-      "mean" : 0.00022170833544805647,
-      "median" : 9.837500692810863e-05,
-      "min" : 9.612500434741378e-05,
+      "max" : 0.00016858334129210562,
+      "mean" : 0.00015881667204666882,
+      "median" : 0.0001584999990882352,
+      "min" : 0.00015062501188367605,
       "samples" : [
-        0.0007134166662581265,
-        9.774998761713505e-05,
-        9.612500434741378e-05,
-        0.00010287501208949834,
-        9.837500692810863e-05
+        0.0001584999990882352,
+        0.0001597500086063519,
+        0.00016858334129210562,
+        0.00015662499936297536,
+        0.00015062501188367605
       ]
     },
-    "inputBytesPerSecond" : 1366054554.6028152,
+    "inputBytesPerSecond" : 2175442152.0182586,
     "wallSeconds" : {
-      "max" : 0.001335958,
-      "mean" : 0.0007137168,
-      "median" : 0.00056125,
-      "min" : 0.000397959,
+      "max" : 0.000864,
+      "mean" : 0.0007182915999999999,
+      "median" : 0.000747916,
+      "min" : 0.000494667,
       "samples" : [
-        0.001335958,
-        0.00056125,
-        0.000397959,
-        0.000717708,
-        0.000555709
+        0.000775125,
+        0.00070975,
+        0.000747916,
+        0.000864,
+        0.000494667
       ]
     }
   },
   "configuration" : {
     "codewordElementCount" : 16384,
+    "codewordEngine" : "circle-fft-butterfly-v1",
+    "coefficientInput" : "resident-circle-fft-basis-buffer",
     "domainLogSize" : 14,
+    "fftTwiddleCount" : 16383,
     "finalLayerElementCount" : 2048,
     "iterations" : 5,
     "queryCount" : 4,
@@ -59,77 +62,90 @@
     "supportsSIMDReductions" : true
   },
   "fullProver" : {
-    "bestSecondsForThroughput" : 0.029557541623944417,
-    "elementsPerSecond" : 33.83231300907329,
+    "bestSecondsForThroughput" : 0.007956333342008293,
+    "elementsPerSecond" : 125.68603614433098,
     "gpuSeconds" : {
-      "max" : 0.03269495831045788,
-      "mean" : 0.030958116656984204,
-      "median" : 0.031342916685389355,
-      "min" : 0.029557541623944417,
+      "max" : 0.008992833332740702,
+      "mean" : 0.008390533324563876,
+      "median" : 0.008351291646249592,
+      "min" : 0.007956333342008293,
       "samples" : [
-        0.03269495831045788,
-        0.029557541623944417,
-        0.03154433333838824,
-        0.031342916685389355,
-        0.02965083332674112
+        0.007956333342008293,
+        0.008992833332740702,
+        0.008351291646249592,
+        0.008224083270761184,
+        0.008428125031059608
       ]
     },
-    "inputBytesPerSecond" : 5925932.617417241,
+    "inputBytesPerSecond" : 46694876.14834185,
     "wallSeconds" : {
-      "max" : 0.045099041,
-      "mean" : 0.04345456639999999,
-      "median" : 0.042853708,
-      "min" : 0.041941875,
+      "max" : 0.019687125,
+      "mean" : 0.019113775,
+      "median" : 0.019310333,
+      "min" : 0.018175292,
       "samples" : [
-        0.044780208,
-        0.042598,
-        0.045099041,
-        0.042853708,
-        0.041941875
+        0.018175292,
+        0.019687125,
+        0.019310333,
+        0.018713458,
+        0.019682667
       ]
     }
   },
-  "generatedAt" : "2026-04-14T00:01:16.211Z",
+  "generatedAt" : "2026-04-14T11:35:37.393Z",
   "pipelineArchive" : {
     "enabled" : false,
     "mode" : "disabled"
   },
   "proofEmission" : {
-    "bestSecondsForThroughput" : 0.030579458296415396,
-    "elementsPerSecond" : 32.70169112568036,
+    "bestSecondsForThroughput" : 0.008024416703847237,
+    "elementsPerSecond" : 124.61964986446412,
     "gpuSeconds" : {
-      "max" : 0.03978020840440877,
-      "mean" : 0.033879508342943156,
-      "median" : 0.03279070829739794,
-      "min" : 0.030579458296415396,
+      "max" : 0.008452041627606377,
+      "mean" : 0.008216516685206444,
+      "median" : 0.008213833381887525,
+      "min" : 0.008024416703847237,
       "samples" : [
-        0.03978020840440877,
-        0.03506749996449798,
-        0.030579458296415396,
-        0.03279070829739794,
-        0.031179666751995683
+        0.008170875022187829,
+        0.008452041627606377,
+        0.008024416703847237,
+        0.008213833381887525,
+        0.008221416690503247
       ]
     },
-    "inputBytesPerSecond" : 1433772.9457143296,
+    "inputBytesPerSecond" : 5463823.928657565,
     "wallSeconds" : {
-      "max" : 0.058178458,
-      "mean" : 0.047433617,
-      "median" : 0.044605334,
-      "min" : 0.04216425,
+      "max" : 0.021127583,
+      "mean" : 0.0195300084,
+      "median" : 0.01879825,
+      "min" : 0.018615292,
       "samples" : [
-        0.058178458,
-        0.049430209,
-        0.04216425,
-        0.044605334,
-        0.042789834
+        0.021127583,
+        0.0203185,
+        0.01879825,
+        0.018790417,
+        0.018615292
       ]
     }
   },
   "proofSizeBytes" : 43844,
-  "schemaVersion" : 1,
+  "readbackPolicy" : {
+    "fullCodewordReadback" : false,
+    "intermediateFRILayerReadback" : false,
+    "publicProofMaterialOnly" : true,
+    "publicReadbacks" : [
+      "merkle-commitments",
+      "final-layer",
+      "queried-leaves",
+      "merkle-sibling-paths",
+      "proof-bytes"
+    ]
+  },
+  "schemaVersion" : 3,
   "target" : "metal",
   "verification" : {
     "codewordDigestHex" : "0a4ff8f860f6e64dd54aa2261d8cbc4d929c6e7c7c124f30b3531772997b58be",
+    "codewordDigestSource" : "cpu-oracle-no-gpu-codeword-readback",
     "cpuCodewordDigestHex" : "0a4ff8f860f6e64dd54aa2261d8cbc4d929c6e7c7c124f30b3531772997b58be",
     "cpuProofDigestHex" : "80e8b093680f5662b57aed2ede38d82f8e6e5eb906a7c046198c603203aa5569",
     "enabled" : true,

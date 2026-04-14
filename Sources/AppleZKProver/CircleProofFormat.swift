@@ -157,6 +157,87 @@ public struct CircleFRISecurityParametersV1: Equatable, Sendable {
     }
 }
 
+public struct CirclePCSFRIParameterSetV1: Equatable, Sendable {
+    public enum ProfileID: String, Sendable {
+        case conservative128 = "circle-pcs-fri-v1-conservative-128"
+    }
+
+    public let profileID: ProfileID
+    public let securityParameters: CircleFRISecurityParametersV1
+    public let targetSoundnessBits: UInt32
+
+    public init(
+        profileID: ProfileID,
+        logBlowupFactor: UInt32,
+        queryCount: UInt32,
+        grindingBits: UInt32,
+        targetSoundnessBits: UInt32
+    ) throws {
+        let securityParameters = try CircleFRISecurityParametersV1(
+            logBlowupFactor: logBlowupFactor,
+            queryCount: queryCount,
+            foldingStep: 1,
+            grindingBits: grindingBits
+        )
+        guard targetSoundnessBits > 0,
+              securityParameters.nominalSecurityBits >= targetSoundnessBits else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.profileID = profileID
+        self.securityParameters = securityParameters
+        self.targetSoundnessBits = targetSoundnessBits
+    }
+
+    public static let conservative128: CirclePCSFRIParameterSetV1 = {
+        do {
+            return try CirclePCSFRIParameterSetV1(
+                profileID: .conservative128,
+                logBlowupFactor: 4,
+                queryCount: 36,
+                grindingBits: 0,
+                targetSoundnessBits: 128
+            )
+        } catch {
+            preconditionFailure("Invalid built-in Circle PCS/FRI parameter set: \(error)")
+        }
+    }()
+
+    public func roundCount(for domain: CircleDomainDescriptor) throws -> Int {
+        try validateDomain(domain)
+        return Int(domain.logSize - securityParameters.logBlowupFactor)
+    }
+
+    public func committedCoefficientCapacity(for domain: CircleDomainDescriptor) throws -> Int {
+        try validateDomain(domain)
+        return domain.size >> Int(securityParameters.logBlowupFactor)
+    }
+
+    public func validateDomain(_ domain: CircleDomainDescriptor) throws {
+        guard domain.storageOrder == .circleDomainBitReversed,
+              domain.isCanonical,
+              domain.logSize > securityParameters.logBlowupFactor else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    public func acceptsProofShape(_ proof: CirclePCSFRIProofV1) throws -> Bool {
+        guard proof.securityParameters == securityParameters,
+              proof.commitments.count == (try roundCount(for: proof.domain)),
+              proof.finalLayer.count == (1 << Int(securityParameters.logBlowupFactor)),
+              Self.finalLayerIsTerminalConstant(proof.finalLayer) else {
+            return false
+        }
+        return true
+    }
+
+    public static func finalLayerIsTerminalConstant(_ finalLayer: [QM31Element]) -> Bool {
+        guard let first = finalLayer.first else {
+            return false
+        }
+        return finalLayer.allSatisfy { $0 == first }
+    }
+}
+
 public struct CircleFRIValueOpeningV1: Equatable, Sendable {
     public let leafIndex: UInt64
     public let value: QM31Element
@@ -1341,6 +1422,100 @@ public enum CirclePCSFRIPolynomialVerifierV1 {
             result += 1
         }
         return result
+    }
+}
+
+public struct CirclePCSFRIStatementV1: Equatable, Sendable {
+    public let parameterSet: CirclePCSFRIParameterSetV1
+    public let polynomialClaim: CirclePCSFRIPolynomialClaimV1
+
+    public init(
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        polynomialClaim: CirclePCSFRIPolynomialClaimV1
+    ) throws {
+        try parameterSet.validateDomain(polynomialClaim.domain)
+        guard try Self.coefficientBudgetFits(
+            polynomialClaim.polynomial,
+            parameterSet: parameterSet,
+            domain: polynomialClaim.domain
+        ) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.parameterSet = parameterSet
+        self.polynomialClaim = polynomialClaim
+    }
+
+    public func publicInputs() throws -> CirclePCSFRIPublicInputsV1 {
+        try CirclePCSFRIPublicInputsV1(polynomialClaim: polynomialClaim)
+    }
+
+    public func roundCount() throws -> Int {
+        try parameterSet.roundCount(for: polynomialClaim.domain)
+    }
+
+    public func claimedEvaluationIndices() throws -> [Int] {
+        try polynomialClaim.evaluationClaims.map { claim in
+            guard claim.storageIndex <= UInt64(Int.max) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            return Int(claim.storageIndex)
+        }
+    }
+
+    private static func coefficientBudgetFits(
+        _ polynomial: CircleCodewordPolynomial,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        domain: CircleDomainDescriptor
+    ) throws -> Bool {
+        let capacity = try parameterSet.committedCoefficientCapacity(for: domain)
+        let used = polynomial.xCoefficients.count + polynomial.yCoefficients.count
+        return used > 0 && used <= capacity
+    }
+}
+
+public enum CirclePCSFRIContractProverV1 {
+    public static func prove(statement: CirclePCSFRIStatementV1) throws -> CirclePCSFRIProofV1 {
+        let domain = statement.polynomialClaim.domain
+        let evaluations = try CircleCodewordOracle.evaluate(
+            polynomial: statement.polynomialClaim.polynomial,
+            domain: domain
+        )
+        return try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: statement.parameterSet.securityParameters,
+            publicInputs: statement.publicInputs(),
+            roundCount: statement.roundCount(),
+            claimedEvaluationIndices: statement.claimedEvaluationIndices()
+        )
+    }
+}
+
+public enum CirclePCSFRIContractVerifierV1 {
+    public static func verify(
+        proof: CirclePCSFRIProofV1,
+        statement: CirclePCSFRIStatementV1
+    ) throws -> Bool {
+        guard proof.domain == statement.polynomialClaim.domain,
+              try statement.parameterSet.acceptsProofShape(proof),
+              proof.claimedEvaluationOpenings.count == statement.polynomialClaim.evaluationClaims.count,
+              try CirclePCSFRIPolynomialVerifierV1.verify(
+                proof: proof,
+                polynomialClaim: statement.polynomialClaim
+              ) else {
+            return false
+        }
+        return true
+    }
+
+    public static func verify(
+        encodedProof: Data,
+        statement: CirclePCSFRIStatementV1
+    ) throws -> Bool {
+        try verify(
+            proof: CirclePCSFRIProofCodecV1.decode(encodedProof),
+            statement: statement
+        )
     }
 }
 

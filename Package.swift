@@ -32,7 +32,10 @@ let package = Package(
         ),
         .testTarget(
             name: "AppleZKProverTests",
-            dependencies: ["AppleZKProver"]
+            dependencies: ["AppleZKProver"],
+            resources: [
+                .copy("Resources")
+            ]
         )
     ]
 )

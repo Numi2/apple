@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import AppleZKProver
 #if canImport(Metal)
@@ -475,6 +476,159 @@ final class CircleDomainTests: XCTestCase {
             proof: badOpeningProof,
             polynomialClaim: claim
         ))
+    }
+
+    func testCirclePCSContractVerifierEnforcesProductionProfileAndTerminalLayer() throws {
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = CirclePCSFRIParameterSetV1.conservative128
+        let polynomial = try CircleCodewordPolynomial(
+            xCoefficients: [
+                QM31Element(a: 3, b: 5, c: 7, d: 11),
+                QM31Element(a: 13, b: 17, c: 19, d: 23),
+            ],
+            yCoefficients: [
+                QM31Element(a: 29, b: 31, c: 37, d: 41),
+                QM31Element(a: 43, b: 47, c: 53, d: 59),
+            ]
+        )
+        let claim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: polynomial,
+            storageIndices: [0, 17, 42]
+        )
+        let statement = try CirclePCSFRIStatementV1(
+            parameterSet: parameterSet,
+            polynomialClaim: claim
+        )
+        let proof = try CirclePCSFRIContractProverV1.prove(statement: statement)
+
+        XCTAssertEqual(proof.securityParameters, parameterSet.securityParameters)
+        XCTAssertEqual(proof.commitments.count, try statement.roundCount())
+        XCTAssertEqual(proof.finalLayer.count, 1 << Int(parameterSet.securityParameters.logBlowupFactor))
+        XCTAssertTrue(CirclePCSFRIParameterSetV1.finalLayerIsTerminalConstant(proof.finalLayer))
+        XCTAssertTrue(try CirclePCSFRIContractVerifierV1.verify(proof: proof, statement: statement))
+        XCTAssertTrue(try CirclePCSFRIContractVerifierV1.verify(
+            encodedProof: try CirclePCSFRIProofCodecV1.encode(proof),
+            statement: statement
+        ))
+
+        let artifactOnlySecurity = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: parameterSet.securityParameters.queryCount,
+            foldingStep: 1,
+            grindingBits: 0
+        )
+        let artifactOnlyProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: try CircleCodewordOracle.evaluate(polynomial: polynomial, domain: domain),
+            domain: domain,
+            securityParameters: artifactOnlySecurity,
+            publicInputs: statement.publicInputs(),
+            roundCount: 3,
+            claimedEvaluationIndices: try statement.claimedEvaluationIndices()
+        )
+        XCTAssertTrue(try CirclePCSFRIPolynomialVerifierV1.verify(
+            proof: artifactOnlyProof,
+            polynomialClaim: claim
+        ))
+        XCTAssertFalse(try CirclePCSFRIContractVerifierV1.verify(
+            proof: artifactOnlyProof,
+            statement: statement
+        ))
+
+        var nonTerminalFinalLayer = proof.finalLayer
+        nonTerminalFinalLayer[1] = QM31Field.add(
+            nonTerminalFinalLayer[1],
+            QM31Element(a: 1, b: 0, c: 0, d: 0)
+        )
+        let nonTerminalProof = try CirclePCSFRIProofV1(
+            domain: proof.domain,
+            securityParameters: proof.securityParameters,
+            publicInputDigest: proof.publicInputDigest,
+            commitments: proof.commitments,
+            finalLayer: nonTerminalFinalLayer,
+            queries: proof.queries,
+            claimedEvaluationOpenings: proof.claimedEvaluationOpenings
+        )
+        XCTAssertFalse(try CirclePCSFRIContractVerifierV1.verify(
+            proof: nonTerminalProof,
+            statement: statement
+        ))
+
+        let overBudgetPolynomial = try CircleCodewordPolynomial(
+            xCoefficients: Self.makeDeterministicQM31Coefficients(count: 4, salt: 0x120),
+            yCoefficients: [QM31Element(a: 1, b: 2, c: 3, d: 4)]
+        )
+        let overBudgetClaim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: overBudgetPolynomial,
+            storageIndices: [0]
+        )
+        XCTAssertThrowsError(try CirclePCSFRIStatementV1(
+            parameterSet: parameterSet,
+            polynomialClaim: overBudgetClaim
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testCirclePCSProofCorpusV1PinsCanonicalBytesDigestsAndRejections() throws {
+        let corpus = try Self.loadCirclePCSFRIProofCorpus()
+        XCTAssertEqual(corpus.schemaVersion, 1)
+        XCTAssertEqual(corpus.artifact, "CirclePCSFRIProofV1")
+
+        let parameterSet = CirclePCSFRIParameterSetV1.conservative128
+        XCTAssertEqual(corpus.profile.id, parameterSet.profileID.rawValue)
+        XCTAssertEqual(corpus.profile.logBlowupFactor, parameterSet.securityParameters.logBlowupFactor)
+        XCTAssertEqual(corpus.profile.queryCount, parameterSet.securityParameters.queryCount)
+        XCTAssertEqual(corpus.profile.foldingStep, parameterSet.securityParameters.foldingStep)
+        XCTAssertEqual(corpus.profile.grindingBits, parameterSet.securityParameters.grindingBits)
+        XCTAssertEqual(corpus.profile.targetSoundnessBits, parameterSet.targetSoundnessBits)
+        XCTAssertEqual(corpus.profile.nominalSecurityBits, parameterSet.securityParameters.nominalSecurityBits)
+
+        let statement = try Self.makeCorpusStatement(
+            corpus.validCase,
+            parameterSet: parameterSet
+        )
+        XCTAssertEqual(try statement.roundCount(), corpus.validCase.roundCount)
+        XCTAssertEqual(
+            try statement.claimedEvaluationIndices(),
+            corpus.validCase.claimedStorageIndices
+        )
+        XCTAssertEqual(
+            try statement.publicInputs().publicInputDigest.hexString,
+            corpus.validCase.publicInputDigestHex
+        )
+
+        let validProof = try Self.assertEncodedCorpusProof(
+            id: corpus.validCase.id,
+            expectedVerifierAccepted: corpus.validCase.expectedVerifierAccepted,
+            proofByteCount: corpus.validCase.proofByteCount,
+            proofDigestHex: corpus.validCase.proofDigestHex,
+            proofHex: corpus.validCase.proofHex,
+            statement: statement
+        )
+        XCTAssertTrue(corpus.validCase.expectedVerifierAccepted)
+        XCTAssertEqual(validProof.commitments.count, try statement.roundCount())
+        XCTAssertTrue(CirclePCSFRIParameterSetV1.finalLayerIsTerminalConstant(validProof.finalLayer))
+
+        XCTAssertEqual(corpus.tamperVectors.count, 3)
+        for vector in corpus.tamperVectors {
+            let proof = try Self.assertEncodedCorpusProof(
+                id: vector.id,
+                expectedVerifierAccepted: vector.expectedVerifierAccepted,
+                proofByteCount: vector.proofByteCount,
+                proofDigestHex: vector.proofDigestHex,
+                proofHex: vector.proofHex,
+                statement: statement
+            )
+            XCTAssertFalse(vector.expectedVerifierAccepted, vector.id)
+            if vector.id == "developer-parameter-proof-rejected-by-contract" {
+                XCTAssertTrue(try CirclePCSFRIPolynomialVerifierV1.verify(
+                    proof: proof,
+                    polynomialClaim: statement.polynomialClaim
+                ))
+            }
+        }
     }
 
     func testCircleCodewordFFTOracleMatchesDirectEvaluatorAcrossEdgeDegrees() throws {
@@ -1619,6 +1773,132 @@ final class CircleDomainTests: XCTestCase {
         }
     }
 #endif
+
+    private struct CirclePCSFRIProofCorpusFixture: Decodable {
+        let artifact: String
+        let profile: CirclePCSFRIProofCorpusProfile
+        let schemaVersion: Int
+        let tamperVectors: [CirclePCSFRIProofCorpusTamperVector]
+        let validCase: CirclePCSFRIProofCorpusCase
+    }
+
+    private struct CirclePCSFRIProofCorpusProfile: Decodable {
+        let foldingStep: UInt32
+        let grindingBits: UInt32
+        let id: String
+        let logBlowupFactor: UInt32
+        let nominalSecurityBits: UInt32
+        let queryCount: UInt32
+        let targetSoundnessBits: UInt32
+    }
+
+    private struct CirclePCSFRIProofCorpusCase: Decodable {
+        let claimedStorageIndices: [Int]
+        let domainLogSize: UInt32
+        let expectedVerifierAccepted: Bool
+        let id: String
+        let proofByteCount: Int
+        let proofDigestHex: String
+        let proofHex: String
+        let publicInputDigestHex: String
+        let roundCount: Int
+        let storageOrder: String
+        let xCoefficientHex: [String]
+        let yCoefficientHex: [String]
+    }
+
+    private struct CirclePCSFRIProofCorpusTamperVector: Decodable {
+        let description: String
+        let expectedVerifierAccepted: Bool
+        let id: String
+        let proofByteCount: Int
+        let proofDigestHex: String
+        let proofHex: String
+    }
+
+    private static func loadCirclePCSFRIProofCorpus() throws -> CirclePCSFRIProofCorpusFixture {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: "CirclePCSFRIProofCorpusV1",
+            withExtension: "json"
+        ))
+        return try JSONDecoder().decode(
+            CirclePCSFRIProofCorpusFixture.self,
+            from: try Data(contentsOf: url)
+        )
+    }
+
+    private static func makeCorpusStatement(
+        _ proofCase: CirclePCSFRIProofCorpusCase,
+        parameterSet: CirclePCSFRIParameterSetV1
+    ) throws -> CirclePCSFRIStatementV1 {
+        XCTAssertEqual(proofCase.storageOrder, "circle-domain-bit-reversed")
+        let domain = try CircleDomainDescriptor.canonical(logSize: proofCase.domainLogSize)
+        let polynomial = try CircleCodewordPolynomial(
+            xCoefficients: try qm31Elements(fromHexStrings: proofCase.xCoefficientHex),
+            yCoefficients: try qm31Elements(fromHexStrings: proofCase.yCoefficientHex)
+        )
+        let claim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: polynomial,
+            storageIndices: proofCase.claimedStorageIndices
+        )
+        return try CirclePCSFRIStatementV1(
+            parameterSet: parameterSet,
+            polynomialClaim: claim
+        )
+    }
+
+    @discardableResult
+    private static func assertEncodedCorpusProof(
+        id: String,
+        expectedVerifierAccepted: Bool,
+        proofByteCount: Int,
+        proofDigestHex: String,
+        proofHex: String,
+        statement: CirclePCSFRIStatementV1
+    ) throws -> CirclePCSFRIProofV1 {
+        let proofBytes = try decodeHex(proofHex)
+        XCTAssertEqual(proofBytes.count, proofByteCount, id)
+        XCTAssertEqual(SHA3Oracle.sha3_256(proofBytes).hexString, proofDigestHex, id)
+
+        let proof = try CirclePCSFRIProofCodecV1.decode(proofBytes)
+        XCTAssertEqual(try CirclePCSFRIProofCodecV1.encode(proof), proofBytes, id)
+        XCTAssertEqual(
+            try CirclePCSFRIContractVerifierV1.verify(proof: proof, statement: statement),
+            expectedVerifierAccepted,
+            id
+        )
+        XCTAssertEqual(
+            try CirclePCSFRIContractVerifierV1.verify(encodedProof: proofBytes, statement: statement),
+            expectedVerifierAccepted,
+            id
+        )
+        return proof
+    }
+
+    private static func qm31Elements(fromHexStrings hexStrings: [String]) throws -> [QM31Element] {
+        try hexStrings.map { hexString in
+            try QM31CanonicalEncoding.unpack(try decodeHex(hexString))
+        }
+    }
+
+    private static func decodeHex(_ hexString: String) throws -> Data {
+        guard hexString.utf8.count.isMultiple(of: 2) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var data = Data()
+        data.reserveCapacity(hexString.utf8.count / 2)
+        var index = hexString.startIndex
+        while index < hexString.endIndex {
+            let nextIndex = hexString.index(index, offsetBy: 2)
+            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            data.append(byte)
+            index = nextIndex
+        }
+        return data
+    }
 
     private static func makeProof(queryCount: UInt32) throws -> CirclePCSFRIProofV1 {
         let domain = try CircleDomainDescriptor.canonical(logSize: 3)

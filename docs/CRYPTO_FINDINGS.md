@@ -2,6 +2,29 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: Production-Facing Circle PCS Contract, Parameters, And Corpus
+
+Finding:
+
+- The resident Circle coefficient-to-proof boundary had an implemented artifact verifier and structured polynomial-claim checker, but the public PCS surface still allowed caller-selected developer parameters. There was also no checked-in complete proof corpus that pinned canonical bytes, expected digests, and rejection behavior for the strict boundary.
+
+Work completed:
+
+- Added `CirclePCSFRIParameterSetV1.conservative128`, fixing `logBlowupFactor = 4`, `queryCount = 36`, `foldingStep = 1`, `grindingBits = 0`, and `roundCount = domain.logSize - 4` for the production-facing V1 slice. The profile targets 128-bit soundness from a nominal 144-bit query budget and intentionally claims no grinding credit.
+- Added `CirclePCSFRIStatementV1` as the verifier-facing public statement: one parameter profile plus one structured `CirclePCSFRIPolynomialClaimV1`. The statement enforces canonical bit-reversed domains and a combined `P/Q` coefficient budget no larger than `domain.size / 16`.
+- Added `CirclePCSFRIContractVerifierV1`, which rejects proofs that do not match the selected profile, exact round count, terminal constant final layer, statement domain, claimed-opening count, and claim-aware polynomial verification.
+- Added `CirclePCSFRIContractProverV1` as a deterministic CPU helper for tests and corpus generation. It is not the resident production prover path.
+- Checked in `Tests/AppleZKProverTests/Resources/CirclePCSFRIProofCorpusV1.json`, containing canonical accepted proof bytes, expected SHA3-256 proof digests, verifier acceptance, and three tamper/rejection vectors.
+- Added a corpus regression that reconstructs the public statement from JSON, checks exact proof byte counts and digests, checks codec re-encoding stability, verifies the accepted proof, rejects tampered proofs, and confirms that a developer-parameter proof accepted by the lower polynomial verifier is rejected by the strict contract.
+- Added `docs/CIRCLE_PCS_SOUNDNESS_V1.md`, a conservative soundness note covering FRI sampling, Fiat-Shamir transcript binding, Merkle assumptions, field/domain assumptions, random-oracle modeling points, and explicit open boundaries.
+
+Residual risk:
+
+- This is still the implemented Circle PCS/FRI slice, not a complete application proof system. Witness/AIR/sumcheck/GKR generation is not integrated into the final proof artifact.
+- The concrete profile has not received external cryptographic review or a mechanized theorem for exact 128-bit soundness.
+- Nonzero grinding remains unsupported by the proof format.
+- The resident path still writes a full private codeword before commitment; fused/tiled codeword-to-commitment scheduling remains performance work.
+
 ## 2026-04-14: End-To-End Resident Circle Coefficient-To-Proof Boundary
 
 Finding:
@@ -20,7 +43,7 @@ Residual risk:
 
 - This closes the resident coefficient-to-proof boundary for the current Circle FFT-basis input model. It does not generate witness polynomials or FFT-basis coefficients on GPU from a larger proving system.
 - `prove(polynomial:)` and the legacy resident monomial-buffer convenience path still perform the monomial-to-Circle-FFT-basis conversion on the host. Callers that require a no-host-read resident path should provide Circle FFT-basis coefficients directly.
-- Query count and blowup parameters remain caller-selected developer parameters, not production soundness claims. Production PCS parameterization still requires a separate cryptographic review.
+- Legacy artifact/prover APIs still allow caller-selected developer parameters for development and lower-level tests. Public production-facing verification should use `CirclePCSFRIContractVerifierV1` with the fixed conservative profile; external cryptographic review of that concrete profile is still required.
 - The path writes a full private codeword before committing it. Fused/tiled codeword-to-commitment scheduling remains performance work and must be benchmarked before any stronger throughput claim.
 
 ## 2026-04-14: Circle FFT Codeword Engine
