@@ -2,6 +2,27 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: QM31 FRI Proof Benchmark Gate And Resident Circle Coefficients
+
+Findings:
+
+- The linear QM31 FRI proof/decommitment surface had deterministic serialization and an independent verifier, but no benchmark mode that exercised the complete proof artifact lifecycle. That made proof-size, query-opening count, strict decode cost, and verifier cost invisible to the measurement discipline.
+- The Circle codeword prover benchmark used public polynomial convenience calls in timed regions. Those calls allocate and upload coefficient buffers even though the direct evaluator already supports caller-owned resident coefficient buffers, so the timed rows included avoidable host allocation work.
+
+Work completed:
+
+- Added `zkmetal-bench --qm31-fri-proof`, which builds the current linear radix-2 QM31 FRI proof, serializes it with deterministic sorted-key JSON, deserializes it through the strict decoder, verifies it with `QM31FRIProofVerifier`, and reports proof size, query-opening count, final-layer/proof digests, verifier acceptance, and CPU match status.
+- Added `CircleCodewordPCSFRIProverV1.proveResidentCoefficients`, which composes resident coefficient buffers, resident Circle codeword generation, and resident PCS/FRI proof emission without allocating coefficient buffers in the timed path.
+- Added `CircleCodewordPCSFRIProverV1.proveResidentCoefficientsVerified`, which keeps the same CPU oracle and independent verifier gate for callers that still have the polynomial on the CPU.
+- Extended the Circle domain test flow to cover resident coefficient-buffer codeword generation and resident coefficient-buffer proof emission against the CPU proof builder/verifier.
+
+Residual risk:
+
+- `--qm31-fri-proof` benchmarks the CPU proof artifact for the current linear radix-2 layout. It is not a GPU proof emitter, not a Circle-domain proof benchmark, and not a production soundness-parameter claim.
+- The QM31 proof format remains deterministic developer JSON. A compact binary format should be specified before treating it as a wire-format commitment.
+- Resident coefficient-buffer execution assumes the caller has already produced canonical QM31 coefficient limbs. The verified convenience method checks the resulting proof against a CPU polynomial oracle, but the resident-only path intentionally avoids reading private buffers back for canonicality checks.
+- The Circle codeword prover remains a direct `P(x) + yQ(x)` evaluator, not an optimized Circle FFT or full committed-polynomial PCS verifier.
+
 ## 2026-04-13: Linear QM31 FRI Query Proof Format And Verifier
 
 Finding:

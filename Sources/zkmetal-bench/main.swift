@@ -61,7 +61,9 @@ struct BenchConfig {
     var qm31FRIFoldChain = false
     var qm31FRIFoldChainTranscript = false
     var qm31FRIFoldChainMerkleTranscript = false
+    var qm31FRIProof = false
     var friFoldRounds = 3
+    var friQueryCount = 4
     var permutationKernelFamily: KeccakF1600PermutationKernelFamily = .scalar
     var permutationSIMDGroupsPerThreadgroup = 2
     var merkleSubtreeMode: BenchMerkleSubtreeMode = .disabled
@@ -101,7 +103,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript && !qm31FRIProof {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -201,9 +203,17 @@ struct BenchConfig {
             case "--qm31-fri-fold-chain-merkle", "--qm31-fri-fold-chain-merkle-transcript":
                 qm31FRIFoldChainMerkleTranscript = true
                 m31DotProduct = false
+            case "--qm31-fri-proof", "--qm31-fri-proof-verifier":
+                qm31FRIProof = true
+                m31DotProduct = false
             case "--fri-fold-rounds":
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
                 case let .success(value): friFoldRounds = value
+                case let .failure(error): return error
+                }
+            case "--fri-query-count":
+                switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
+                case let .success(value): friQueryCount = value
                 case let .failure(error): return error
                 }
             case "--merkle-opening":
@@ -313,7 +323,9 @@ struct BenchConfig {
                                       Run chained QM31 FRI folds with GPU transcript-derived challenges
           --qm31-fri-fold-chain-merkle
                                       Commit each current QM31 FRI layer on GPU before deriving the next challenge
+          --qm31-fri-proof           Build, serialize, deserialize, and verify a linear QM31 FRI proof
           --fri-fold-rounds N        Fold rounds for FRI chain modes. Default: 3
+          --fri-query-count N        Query count for --qm31-fri-proof. Default: 4
           --elements N               Element count for field-vector benchmarks. Alias for --leaves in those modes
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
@@ -354,9 +366,10 @@ struct BenchConfig {
             qm31FRIFoldChain,
             qm31FRIFoldChainTranscript,
             qm31FRIFoldChainMerkleTranscript,
+            qm31FRIProof,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, and --qm31-fri-fold-chain-merkle are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, --qm31-fri-fold-chain-merkle, and --qm31-fri-proof are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -482,6 +495,33 @@ struct BenchConfig {
             }
             guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
                 return BenchError.invalidArgument("Requested QM31 FRI fold chain buffers are too large for this process.")
+            }
+            return nil
+        }
+        if qm31FRIProof {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with QM31 FRI proof benchmarks.")
+            }
+            guard leafCount > 1,
+                  leafCount.nonzeroBitCount == 1 else {
+                return BenchError.invalidArgument("--elements must be a power-of-two count greater than one for --qm31-fri-proof.")
+            }
+            let logSize = leafCount.trailingZeroBitCount
+            guard friFoldRounds > 0,
+                  friFoldRounds <= logSize else {
+                return BenchError.invalidArgument("--fri-fold-rounds must be in 1...log2(--elements) for --qm31-fri-proof.")
+            }
+            guard friQueryCount > 0 else {
+                return BenchError.invalidArgument("--fri-query-count must be greater than zero.")
+            }
+            guard leafCount / 2 <= Int(UInt32.max) else {
+                return BenchError.invalidArgument("--elements is too large for QM31 FRI proof query sampling.")
+            }
+            guard let outputCount = Self.friFoldChainOutputCount(inputCount: leafCount, roundCount: friFoldRounds) else {
+                return BenchError.invalidArgument("--elements must leave at least one output element after --fri-fold-rounds.")
+            }
+            guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
+                return BenchError.invalidArgument("Requested QM31 FRI proof buffers are too large for this process.")
             }
             return nil
         }
@@ -1049,6 +1089,43 @@ struct QM31FRIFoldChainBenchmarkReport: Codable {
     let pipelineArchive: PipelineArchiveReport
     let foldChain: FieldMeasurementReport?
     let verification: QM31FRIFoldChainVerificationReport
+}
+
+struct QM31FRIProofBenchmarkConfigReport: Codable {
+    let inputElementCount: Int
+    let finalLayerElementCount: Int
+    let roundCount: Int
+    let queryCount: Int
+    let totalInverseDomainElementCount: Int
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct QM31FRIProofVerificationReport: Codable {
+    let enabled: Bool
+    let matchedCPU: Bool?
+    let verifierAccepted: Bool
+    let proofDigestHex: String
+    let cpuProofDigestHex: String?
+    let finalLayerDigestHex: String
+    let cpuFinalLayerDigestHex: String?
+}
+
+struct QM31FRIProofBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: QM31FRIProofBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let proofBuild: FieldMeasurementReport?
+    let serialization: FieldMeasurementReport?
+    let deserialization: FieldMeasurementReport?
+    let proofVerification: FieldMeasurementReport?
+    let proofSizeBytes: Int
+    let queryOpeningCount: Int
+    let verification: QM31FRIProofVerificationReport
 }
 
 struct MerkleOpeningBenchmarkConfigReport: Codable {
@@ -1636,6 +1713,14 @@ func emitJSON(_ report: QM31FRIFoldChainBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: QM31FRIProofBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitJSON(_ report: MerkleOpeningBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -2166,6 +2251,55 @@ func emitText(_ report: QM31FRIFoldChainBenchmarkReport) {
     }
 }
 
+func emitText(_ report: QM31FRIProofBenchmarkReport) {
+    print("zkmetal-bench qm31-fri-proof")
+    print("  input elems  : \(report.configuration.inputElementCount)")
+    print("  final elems  : \(report.configuration.finalLayerElementCount)")
+    print("  rounds       : \(report.configuration.roundCount)")
+    print("  queries      : \(report.configuration.queryCount)")
+    print("  inv elems    : \(report.configuration.totalInverseDomainElementCount)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+    print("  archive      : \(report.pipelineArchive.mode)")
+
+    if let proofBuild = report.proofBuild {
+        printSeconds("build wall", proofBuild.wallSeconds)
+        print("  builds/sec   : \(String(format: "%.2f", proofBuild.elementsPerSecond))")
+        print("  input B/s    : \(String(format: "%.2f", proofBuild.inputBytesPerSecond))")
+    }
+    if let serialization = report.serialization {
+        printSeconds("ser wall  ", serialization.wallSeconds)
+        print("  serial/sec   : \(String(format: "%.2f", serialization.elementsPerSecond))")
+        print("  proof B/s    : \(String(format: "%.2f", serialization.inputBytesPerSecond))")
+    }
+    if let deserialization = report.deserialization {
+        printSeconds("de wall   ", deserialization.wallSeconds)
+        print("  deser/sec    : \(String(format: "%.2f", deserialization.elementsPerSecond))")
+        print("  proof B/s    : \(String(format: "%.2f", deserialization.inputBytesPerSecond))")
+    }
+    if let proofVerification = report.proofVerification {
+        printSeconds("verify wall", proofVerification.wallSeconds)
+        print("  verify/sec   : \(String(format: "%.2f", proofVerification.elementsPerSecond))")
+        print("  proof B/s    : \(String(format: "%.2f", proofVerification.inputBytesPerSecond))")
+    }
+
+    print("  proof bytes  : \(report.proofSizeBytes)")
+    print("  openings     : \(report.queryOpeningCount)")
+    print("  proof digest : \(report.verification.proofDigestHex)")
+    if let cpuProofDigest = report.verification.cpuProofDigestHex {
+        print("  cpu proof    : \(cpuProofDigest)")
+    }
+    print("  final digest : \(report.verification.finalLayerDigestHex)")
+    if let cpuFinalLayerDigest = report.verification.cpuFinalLayerDigestHex {
+        print("  cpu final    : \(cpuFinalLayerDigest)")
+    }
+    print("  verifier     : \(report.verification.verifierAccepted)")
+    if let matchedCPU = report.verification.matchedCPU {
+        print("  match        : \(matchedCPU)")
+    }
+}
+
 func emitText(_ report: MerkleOpeningBenchmarkReport) {
     print("zkmetal-bench merkle-opening")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -2436,6 +2570,21 @@ func verificationFailureMessages(in report: QM31FRIFoldChainBenchmarkReport) -> 
     return []
 }
 
+func verificationFailureMessages(in report: QM31FRIProofBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.matchedCPU == true,
+          report.verification.verifierAccepted else {
+        let cpuProofDigest = report.verification.cpuProofDigestHex ?? "missing"
+        let cpuFinalDigest = report.verification.cpuFinalLayerDigestHex ?? "missing"
+        return [
+            "qm31-fri-proof input-elements=\(report.configuration.inputElementCount) rounds=\(report.configuration.roundCount) queries=\(report.configuration.queryCount) target=\(report.target) proof-digest=\(report.verification.proofDigestHex) cpu-proof-digest=\(cpuProofDigest) final-digest=\(report.verification.finalLayerDigestHex) cpu-final-digest=\(cpuFinalDigest) verifier=\(report.verification.verifierAccepted)",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -2624,6 +2773,23 @@ func makeQM31FRIFoldChainConfigReport(
         outputElementCount: outputElementCount,
         roundCount: config.friFoldRounds,
         challengeMode: challengeMode,
+        totalInverseDomainElementCount: totalInverseDomainElementCount,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeQM31FRIProofConfigReport(
+    config: BenchConfig,
+    finalLayerElementCount: Int,
+    totalInverseDomainElementCount: Int
+) -> QM31FRIProofBenchmarkConfigReport {
+    QM31FRIProofBenchmarkConfigReport(
+        inputElementCount: config.leafCount,
+        finalLayerElementCount: finalLayerElementCount,
+        roundCount: config.friFoldRounds,
+        queryCount: config.friQueryCount,
         totalInverseDomainElementCount: totalInverseDomainElementCount,
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
@@ -3753,11 +3919,24 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
         length: domain.size * CircleCodewordPlan.elementByteCount,
         label: "zkmetal-bench.CircleCodewordProver.Codeword"
     )
+    let xCoefficientBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: QM31CanonicalEncoding.pack(polynomial.xCoefficients),
+        label: "zkmetal-bench.CircleCodewordProver.XCoefficients"
+    )
+    let yCoefficientBuffer = try makeSharedMetalBuffer(
+        device: device,
+        bytes: QM31CanonicalEncoding.pack(polynomial.yCoefficients),
+        label: "zkmetal-bench.CircleCodewordProver.YCoefficients"
+    )
 
     if config.warmupIterations > 0 {
         for _ in 0..<config.warmupIterations {
             _ = try codewordPlan.executeResident(
-                polynomial: polynomial,
+                xCoefficientBuffer: xCoefficientBuffer,
+                xCoefficientCount: polynomial.xCoefficients.count,
+                yCoefficientBuffer: yCoefficientBuffer,
+                yCoefficientCount: polynomial.yCoefficients.count,
                 outputBuffer: codewordBuffer
             )
         }
@@ -3767,7 +3946,10 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     var codewordGPUSeconds: [Double?] = []
     for _ in 0..<config.iterations {
         let stats = try codewordPlan.executeResident(
-            polynomial: polynomial,
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientCount: polynomial.xCoefficients.count,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientCount: polynomial.yCoefficients.count,
             outputBuffer: codewordBuffer
         )
         codewordWallSeconds.append(stats.cpuWallSeconds)
@@ -3797,7 +3979,12 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
 
     if config.warmupIterations > 0 {
         for _ in 0..<config.warmupIterations {
-            _ = try fullProver.prove(polynomial: polynomial)
+            _ = try fullProver.proveResidentCoefficients(
+                xCoefficientBuffer: xCoefficientBuffer,
+                xCoefficientCount: polynomial.xCoefficients.count,
+                yCoefficientBuffer: yCoefficientBuffer,
+                yCoefficientCount: polynomial.yCoefficients.count
+            )
         }
     }
 
@@ -3805,7 +3992,12 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     var fullGPUSeconds: [Double?] = []
     var latestFullProof: CircleCodewordPCSFRIProverV1Result?
     for _ in 0..<config.iterations {
-        let result = try fullProver.prove(polynomial: polynomial)
+        let result = try fullProver.proveResidentCoefficients(
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientCount: polynomial.xCoefficients.count,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientCount: polynomial.yCoefficients.count
+        )
         latestFullProof = result
         fullWallSeconds.append(result.stats.cpuWallSeconds)
         fullGPUSeconds.append(result.stats.gpuSeconds)
@@ -4185,6 +4377,196 @@ func runQM31FRIFoldChainBenchmark(_ config: BenchConfig) throws -> QM31FRIFoldCh
         )
     )
     #endif
+}
+
+@inline(never)
+func runQM31FRIProofBenchmark(_ config: BenchConfig) throws -> QM31FRIProofBenchmarkReport {
+    let outputCount = config.leafCount >> config.friFoldRounds
+    let totalInverseDomainCount = config.leafCount - outputCount
+    let evaluations = makeDeterministicQM31Vector(
+        count: config.leafCount,
+        aSalt: 0xfa1,
+        bSalt: 0xfa7,
+        cSalt: 0xfad,
+        dSalt: 0xfb3
+    )
+    let rounds = makeDeterministicQM31FRIFoldRounds(
+        inputCount: config.leafCount,
+        roundCount: config.friFoldRounds,
+        saltBase: 0xfc1
+    )
+    let inverseDomainLayers = rounds.map(\.inverseDomainPoints)
+    let configReport = makeQM31FRIProofConfigReport(
+        config: config,
+        finalLayerElementCount: outputCount,
+        totalInverseDomainElementCount: totalInverseDomainCount
+    )
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try QM31FRIProofBuilder.prove(
+                evaluations: evaluations,
+                inverseDomainLayers: inverseDomainLayers,
+                queryCount: config.friQueryCount
+            )
+        }
+    }
+
+    var buildWallSeconds: [Double] = []
+    var measuredProof: QM31FRIProof?
+    for _ in 0..<config.iterations {
+        let start = DispatchTime.now()
+        let proof = try QM31FRIProofBuilder.prove(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            queryCount: config.friQueryCount
+        )
+        let end = DispatchTime.now()
+        measuredProof = proof
+        buildWallSeconds.append(Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000)
+    }
+    guard let measuredProof else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try measuredProof.serialized()
+        }
+    }
+
+    var serializationWallSeconds: [Double] = []
+    var measuredProofBytes: Data?
+    for _ in 0..<config.iterations {
+        let start = DispatchTime.now()
+        let bytes = try measuredProof.serialized()
+        let end = DispatchTime.now()
+        measuredProofBytes = bytes
+        serializationWallSeconds.append(Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000)
+    }
+    guard let measuredProofBytes else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try QM31FRIProof.deserialize(measuredProofBytes)
+        }
+    }
+
+    var deserializationWallSeconds: [Double] = []
+    var decodedProof: QM31FRIProof?
+    for _ in 0..<config.iterations {
+        let start = DispatchTime.now()
+        let proof = try QM31FRIProof.deserialize(measuredProofBytes)
+        let end = DispatchTime.now()
+        decodedProof = proof
+        deserializationWallSeconds.append(Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000)
+    }
+    guard let decodedProof else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            _ = try QM31FRIProofVerifier.verify(
+                proof: decodedProof,
+                inverseDomainLayers: inverseDomainLayers
+            )
+        }
+    }
+
+    var verificationWallSeconds: [Double] = []
+    var verifierAccepted = false
+    for _ in 0..<config.iterations {
+        let start = DispatchTime.now()
+        let accepted = try QM31FRIProofVerifier.verify(
+            proof: decodedProof,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        let end = DispatchTime.now()
+        verifierAccepted = accepted
+        verificationWallSeconds.append(Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000)
+    }
+
+    let cpuProof = config.verifyWithCPU
+        ? try QM31FRIProofBuilder.prove(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers,
+            queryCount: config.friQueryCount
+        )
+        : nil
+    let cpuCommitted = config.verifyWithCPU
+        ? try QM31FRIMerkleFoldChainOracle.commitAndFold(
+            evaluations: evaluations,
+            inverseDomainLayers: inverseDomainLayers
+        )
+        : nil
+    let cpuProofBytes = try cpuProof.map { try $0.serialized() }
+    let proofDigest = SHA3Oracle.sha3_256(measuredProofBytes).hexString
+    let cpuProofDigest = cpuProofBytes.map { SHA3Oracle.sha3_256($0).hexString }
+    let finalLayerDigest = SHA3Oracle.sha3_256(packQM31LittleEndian(measuredProof.finalValues)).hexString
+    let cpuFinalLayerDigest = cpuCommitted.map { SHA3Oracle.sha3_256(packQM31LittleEndian($0.values)).hexString }
+    let matchedCPU: Bool?
+    if let cpuProof, let cpuCommitted {
+        matchedCPU = decodedProof == measuredProof
+            && measuredProof == cpuProof
+            && measuredProof.finalValues == cpuCommitted.values
+            && measuredProof.commitments == cpuCommitted.commitments
+            && verifierAccepted
+    } else {
+        matchedCPU = nil
+    }
+
+    let emptyGPUSamples = Array<Double?>(repeating: nil, count: config.iterations)
+    let fieldElementByteCount = Double(QM31CanonicalEncoding.elementByteCount)
+    let proofBuildInputBytes = Double(config.leafCount + totalInverseDomainCount) * fieldElementByteCount
+    let proofByteCount = measuredProofBytes.count
+    let verifierInputBytes = Double(proofByteCount) + Double(totalInverseDomainCount) * fieldElementByteCount
+
+    return QM31FRIProofBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        proofBuild: makeFieldMeasurement(
+            wallSeconds: buildWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: proofBuildInputBytes
+        ),
+        serialization: makeFieldMeasurement(
+            wallSeconds: serializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(proofByteCount)
+        ),
+        deserialization: makeFieldMeasurement(
+            wallSeconds: deserializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(proofByteCount)
+        ),
+        proofVerification: makeFieldMeasurement(
+            wallSeconds: verificationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: verifierInputBytes
+        ),
+        proofSizeBytes: proofByteCount,
+        queryOpeningCount: config.friQueryCount * config.friFoldRounds * 2,
+        verification: QM31FRIProofVerificationReport(
+            enabled: config.verifyWithCPU,
+            matchedCPU: matchedCPU,
+            verifierAccepted: verifierAccepted,
+            proofDigestHex: proofDigest,
+            cpuProofDigestHex: cpuProofDigest,
+            finalLayerDigestHex: finalLayerDigest,
+            cpuFinalLayerDigestHex: cpuFinalLayerDigest
+        )
+    )
 }
 
 @inline(never)
@@ -4926,6 +5308,20 @@ func runCLI() -> Int32 {
             }
         } else if config.qm31FRIFoldChain || config.qm31FRIFoldChainTranscript || config.qm31FRIFoldChainMerkleTranscript {
             let report = try runQM31FRIFoldChainBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.qm31FRIProof {
+            let report = try runQM31FRIProofBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

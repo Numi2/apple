@@ -9,3 +9,4 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 BenchmarkBaselines/*.local.json
+output/pdf/

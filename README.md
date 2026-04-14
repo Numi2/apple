@@ -247,6 +247,7 @@ swift run zkmetal-bench --circle-codeword-prover --elements 16384 --fri-fold-rou
 swift run zkmetal-bench --qm31-fri-fold-chain --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
 swift run zkmetal-bench --qm31-fri-fold-chain-transcript --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
 swift run zkmetal-bench --qm31-fri-fold-chain-merkle --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
+swift run zkmetal-bench --qm31-fri-proof --elements 1024 --fri-fold-rounds 3 --fri-query-count 3 --iterations 1 --json
 ```
 
 Useful benchmark variants:

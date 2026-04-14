@@ -201,7 +201,10 @@ and independent CPU verifier.
 
 `zkmetal-bench --circle-codeword-prover` reports separate direct codeword-generation timing,
 resident proof-emission timing from the generated codeword buffer, full polynomial-to-proof
-timing, proof size, codeword/proof digests, and verifier acceptance.
+timing, proof size, codeword/proof digests, and verifier acceptance. Timed codeword and
+full-prover rows pre-upload the deterministic coefficient buffers and use the resident
+coefficient APIs, so the measured path is the resident evaluator plus proof command path
+rather than repeated coefficient-buffer allocation.
 
 ## Binary Proof Format
 
@@ -298,6 +301,7 @@ Implemented:
 - resident Circle PCS/FRI proof emission from an already-resident evaluation/codeword buffer
 - direct GPU Circle codeword generation for `P(x) + yQ(x)` into caller-owned resident buffers
 - composed direct Circle codeword plus resident PCS/FRI proof emission
+- resident coefficient-buffer entry point for composed Circle codeword plus PCS/FRI proof emission
 - Circle fold-chain benchmark modes for explicit and Merkle-transcript challenges,
   including query-extraction and full proof-emission timing for the Merkle-transcript mode
 - Circle codeword prover benchmark mode with codeword, proof-emission, full-prover, proof-size,

@@ -464,6 +464,39 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         )
     }
 
+    public func proveResidentCoefficients(
+        xCoefficientBuffer: MTLBuffer,
+        xCoefficientOffset: Int = 0,
+        xCoefficientCount: Int,
+        yCoefficientBuffer: MTLBuffer,
+        yCoefficientOffset: Int = 0,
+        yCoefficientCount: Int
+    ) throws -> CircleCodewordPCSFRIProverV1Result {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let start = DispatchTime.now()
+        let codewordStats = try codewordPlan.executeResident(
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientOffset: xCoefficientOffset,
+            xCoefficientCount: xCoefficientCount,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientOffset: yCoefficientOffset,
+            yCoefficientCount: yCoefficientCount,
+            outputBuffer: codewordBuffer
+        )
+        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        let end = DispatchTime.now()
+        return CircleCodewordPCSFRIProverV1Result(
+            proofResult: proofResult,
+            codewordStats: codewordStats,
+            stats: GPUExecutionStats(
+                cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
+                gpuSeconds: Self.sumGPUSeconds(codewordStats.gpuSeconds, proofResult.stats.gpuSeconds)
+            )
+        )
+    }
+
     public func proveVerified(
         polynomial: CircleCodewordPolynomial
     ) throws -> CircleCodewordPCSFRIProverV1Result {
@@ -486,6 +519,44 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
               ) else {
             throw AppleZKProverError.correctnessValidationFailed(
                 "Circle codeword PCS/FRI resident prover emitted a proof rejected by the CPU oracle or verifier."
+            )
+        }
+        return result
+    }
+
+    public func proveResidentCoefficientsVerified(
+        polynomial: CircleCodewordPolynomial,
+        xCoefficientBuffer: MTLBuffer,
+        xCoefficientOffset: Int = 0,
+        yCoefficientBuffer: MTLBuffer,
+        yCoefficientOffset: Int = 0
+    ) throws -> CircleCodewordPCSFRIProverV1Result {
+        let expectedCodeword = try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            domain: domain
+        )
+        let result = try proveResidentCoefficients(
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientOffset: xCoefficientOffset,
+            xCoefficientCount: polynomial.xCoefficients.count,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientOffset: yCoefficientOffset,
+            yCoefficientCount: polynomial.yCoefficients.count
+        )
+        let expectedProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: expectedCodeword,
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        guard result.proof == expectedProof,
+              try CirclePCSFRIProofVerifierV1.verify(
+                proof: result.proof,
+                publicInputs: publicInputs
+              ) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Circle codeword PCS/FRI resident-coefficient prover emitted a proof rejected by the CPU oracle or verifier."
             )
         }
         return result

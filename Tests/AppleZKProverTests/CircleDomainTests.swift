@@ -904,6 +904,50 @@ final class CircleDomainTests: XCTestCase {
             expectedCodeword
         )
 
+        let coefficientOffset = 64
+        let xCoefficientBytes = QM31CanonicalEncoding.pack(polynomial.xCoefficients)
+        let yCoefficientBytes = QM31CanonicalEncoding.pack(polynomial.yCoefficients)
+        let xCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: coefficientOffset + xCoefficientBytes.count,
+            label: "CircleDomainTests.CircleCodewordXCoefficients"
+        )
+        let yCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: coefficientOffset + yCoefficientBytes.count,
+            label: "CircleDomainTests.CircleCodewordYCoefficients"
+        )
+        try MetalBufferFactory.copy(
+            xCoefficientBytes,
+            into: xCoefficientBuffer,
+            destinationOffset: coefficientOffset,
+            byteCount: xCoefficientBytes.count
+        )
+        try MetalBufferFactory.copy(
+            yCoefficientBytes,
+            into: yCoefficientBuffer,
+            destinationOffset: coefficientOffset,
+            byteCount: yCoefficientBytes.count
+        )
+        let residentCoefficientOutput = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * CircleCodewordPlan.elementByteCount,
+            label: "CircleDomainTests.CircleCodewordResidentCoefficientOutput"
+        )
+        _ = try codewordPlan.executeResident(
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientOffset: coefficientOffset,
+            xCoefficientCount: polynomial.xCoefficients.count,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientOffset: coefficientOffset,
+            yCoefficientCount: polynomial.yCoefficients.count,
+            outputBuffer: residentCoefficientOutput
+        )
+        XCTAssertEqual(
+            try Self.readQM31Buffer(residentCoefficientOutput, count: domain.size),
+            expectedCodeword
+        )
+
         let residentProver = try CirclePCSFRIResidentProverV1(
             context: context,
             domain: domain,
@@ -927,6 +971,18 @@ final class CircleDomainTests: XCTestCase {
         let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
         XCTAssertEqual(proofResult.proof, expectedProof)
         XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(proofResult.encodedProof), expectedProof)
+        let residentCoefficientProof = try codewordProver.proveResidentCoefficientsVerified(
+            polynomial: polynomial,
+            xCoefficientBuffer: xCoefficientBuffer,
+            xCoefficientOffset: coefficientOffset,
+            yCoefficientBuffer: yCoefficientBuffer,
+            yCoefficientOffset: coefficientOffset
+        )
+        XCTAssertEqual(residentCoefficientProof.proof, expectedProof)
+        XCTAssertEqual(
+            try CirclePCSFRIProofCodecV1.decode(residentCoefficientProof.encodedProof),
+            expectedProof
+        )
         try codewordProver.clearReusableBuffers()
     }
 
