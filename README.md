@@ -126,8 +126,11 @@ Implemented today:
   and materialized FRI layers private, with readback limited to public proof
   material. `CircleWitnessToFFTBasisPlanV1` adds the narrow resident production
   path for private monomial coefficient witness columns into Circle FFT-basis
-  coefficients using a public M31 transform matrix; it does not synthesize AIR
-  traces or verify AIR semantics. A structured `CirclePCSFRIPolynomialClaimV1` plus
+  coefficients using a public M31 transform matrix. The resident witness path
+  rejects noncanonical private QM31 limbs on GPU before transformation and tiles
+  the transform matrix for shapes beyond the full-matrix oracle cap; it does not
+  synthesize AIR traces or verify AIR semantics. A structured
+  `CirclePCSFRIPolynomialClaimV1` plus
   `CirclePCSFRIPolynomialVerifierV1` now binds polynomial coefficients, domain
   points, claimed evaluations, and first-layer Merkle openings on the CPU.
   `CirclePCSFRIParameterSetV1.conservative128` fixes the production-facing V1
@@ -148,11 +151,43 @@ Implemented today:
   SHA3-256 statement digest. The application verifier checks the embedded
   `M31SumcheckProofV1` and `CirclePCSFRIProofV1` against that statement. This
   closes the final artifact composition boundary for the implemented
-  components; AIR semantic verification, GKR verification, witness-to-AIR trace
-  production, and AIR-to-sum-check reduction remain explicit open boundaries in
-  `ApplicationProofManifestV1`. The checked-in application corpus under
-  `Tests/AppleZKProverTests/Resources/` pins canonical accepted proof bytes and
-  statement/sum-check/PCS rejection vectors for that final artifact.
+  component slice only; `ApplicationProofVerificationReportV1` and
+  `ApplicationProofClaimScopeV1` now separate that accepted slice from the
+  unsupported witness/AIR/GKR theorem in the proof bytes alone.
+  `M31SumcheckVerificationReportV1` classifies the embedded M31 component as a
+  `revealedEvaluationVectorFoldingTrace`, and leaves full multilinear
+  sum-check, AIR-constraint sum-check, and zero-knowledge sum-check scopes
+  unverified. AIR semantic verification,
+  witness-to-AIR trace production, AIR-to-sum-check reduction, GKR verification,
+  end-to-end theorem verification, and M31 sum-check zero-knowledge remain
+  explicit open boundaries in `ApplicationProofManifestV1`. The checked-in
+  application corpus under `Tests/AppleZKProverTests/Resources/` pins canonical
+  accepted proof bytes and statement/sum-check/PCS rejection vectors for that
+  final artifact.
+- A public sidecar theorem verifier for non-ZK validation paths. `AIRDefinitionV1`
+  expresses M31 transition and boundary polynomial constraints,
+  `ApplicationWitnessLayoutV1` validates named M31 witness columns and produces
+  ordered `ApplicationWitnessTraceV1` values, `WitnessToAIRTraceProducerV1`
+  produces `AIRExecutionTraceV1`, and `AIRToSumcheckReductionV1` checks that
+  the statement's M31 sum-check vector digest is the canonical AIR
+  constraint-evaluation vector. `AIRTraceToCirclePCSWitnessV1` is the CPU bridge
+  from public AIR trace rows to QM31-packed `CirclePCSFRIPolynomialClaimV1`
+  chunks for arbitrary AIR column layouts.
+  `AIRTraceCirclePCSProofBundleBuilderV1` builds one ordinary Circle PCS
+  statement/proof pair per generated chunk and verifies the ordered bundle
+  against the regenerated public AIR trace witness.
+  `AIRTraceCirclePCSProofBundleCodecV1` gives that ordered bundle a strict
+  binary form, and `AIRTraceCirclePCSProofBundleDigestV1` domain-separates the
+  encoded bundle for fixture and artifact binding. `GKRClaimV1` adds a CPU
+  layered arithmetic-circuit claim verifier.
+  `ApplicationTheoremVerifierV1` composes those sidecars with `ApplicationProofV1`, while
+  `ApplicationTheoremManifestV1` records that this is public, not zero-knowledge,
+  and not a succinct AIR/GKR proof. `ApplicationPublicTheoremArtifactV1` carries
+  the statement, application proof, public witness trace, AIR definition, and
+  GKR claim in one verifier-facing blob; `ApplicationPublicTheoremBuilderV1`
+  rejects false AIR or GKR inputs before producing that public theorem artifact.
+  `ApplicationPublicTheoremArtifactCorpusV1.json` pins the public theorem
+  artifact digest plus digest-bound AIR/GKR rejection vectors.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
   buffer plus concatenated per-round inverse-domain buffers, encodes every fold
   round into one command buffer, ping-pongs private scratch between intermediate
@@ -286,6 +321,7 @@ swift run zkmetal-bench --qm31-fri-fold-chain --elements 16384 --fri-fold-rounds
 swift run zkmetal-bench --qm31-fri-fold-chain-transcript --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
 swift run zkmetal-bench --qm31-fri-fold-chain-merkle --elements 16384 --fri-fold-rounds 3 --iterations 5 --json
 swift run zkmetal-bench --qm31-fri-proof --elements 1024 --fri-fold-rounds 3 --fri-query-count 3 --iterations 1 --json
+swift run zkmetal-bench --application-public-theorem --iterations 1 --warmups 0 --json
 ```
 
 Useful benchmark variants:
@@ -383,6 +419,7 @@ rules.
 | `Sources/AppleZKProver/SumcheckOracle.swift` | CPU M31 sum-check chunk oracle |
 | `Sources/AppleZKProver/CircleWitnessFFTBasis.swift` | Resident monomial coefficient witness-column to Circle FFT-basis production |
 | `Sources/AppleZKProver/ApplicationProofFormat.swift` | Application proof envelope binding M31 sum-check and Circle PCS proofs |
+| `Sources/AppleZKProver/ApplicationTheorem.swift` | Public AIR/GKR theorem verifier, public theorem artifact, and AIR-to-PCS witness bridge |
 | `Sources/AppleZKProver/Planner/` | Planning, tuning, transcript, and residency runtime |
 | `Sources/AppleZKProver/Resources/HashMerkleKernels.metal` | Metal kernels |
 | `Sources/zkmetal-bench/main.swift` | Benchmark and smoke-test CLI |
@@ -420,9 +457,13 @@ designed to be testable and conservative:
 - A production verifier must remain CPU-only and deterministic.
 - `ApplicationProofV1` integrates the implemented M31 sum-check chunk proof and
   Circle PCS/FRI contract proof into one statement-bound artifact, but it only
-  binds witness/AIR/GKR digests. AIR semantic verification, GKR verification,
-  witness-to-AIR trace production, AIR-to-sum-check reduction, and external
-  cryptographic review remain open before any full proof-system security claim.
+  binds witness/AIR/GKR digests. The default verifier checks the implemented
+  component slice; full-theorem verification is a separate scope and returns
+  false for the proof bytes alone. The public sidecar theorem path can check
+  AIR/GKR semantics when sidecars are supplied, and
+  `ApplicationPublicTheoremArtifactV1` packages those public sidecars into one
+  decodable artifact. Zero-knowledge masking, succinct AIR/GKR proof
+  integration, and external cryptographic review remain open.
 - Lower-level V1 artifacts can carry verifier-checked nonzero grinding nonces,
   but the conservative public profile still claims no grinding credit until a
   reviewed parameter profile assigns it.

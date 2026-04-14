@@ -194,6 +194,77 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertFalse(manifest.openBoundaries.contains(.nonzeroGrinding))
     }
 
+    func testM31SumcheckManifestRecordsNarrowNonZKScope() {
+        let manifest = M31SumcheckManifestV1.current
+        XCTAssertEqual(manifest.version, M31SumcheckManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, M31SumcheckManifestV1.artifactName)
+        XCTAssertTrue(manifest.verifiesChunkTranscriptFolding)
+        XCTAssertFalse(manifest.verifiesAIRConstraintReduction)
+        XCTAssertFalse(manifest.verifiesFullSumcheckProtocol)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertTrue(manifest.revealsInitialEvaluationVector)
+        XCTAssertEqual(manifest.acceptedClaimScope, .revealedEvaluationVectorFoldingTrace)
+        XCTAssertEqual(manifest.rejectedClaimScopes, [
+            .fullMultilinearSumcheck,
+            .airConstraintSumcheck,
+            .zeroKnowledgeAIRConstraintSumcheck,
+        ])
+        XCTAssertEqual(manifest.openBoundaries, [
+            .airConstraintReduction,
+            .fullSumcheckProtocol,
+            .zeroKnowledge,
+        ])
+    }
+
+    func testM31SumcheckVerificationReportClassifiesOnlyRevealedFoldingTrace() throws {
+        let evaluations = (0..<16).map { index in
+            UInt32(17 + index * 19)
+        }
+        let proof = try M31SumcheckProofBuilderV1.prove(
+            evaluations: evaluations,
+            rounds: 4
+        )
+
+        let report = try M31SumcheckVerifierV1.verificationReport(
+            proof: proof,
+            statement: proof.statement
+        )
+        XCTAssertTrue(report.proofStatementMatchesExpectedStatement)
+        XCTAssertTrue(report.proofShapeMatchesExpectedStatement)
+        XCTAssertTrue(report.initialEvaluationDigestMatchesRevealedVector)
+        XCTAssertTrue(report.finalVectorDigestMatches)
+        XCTAssertTrue(report.transcriptChallengesVerified)
+        XCTAssertTrue(report.foldRelationVerified)
+        XCTAssertTrue(report.revealedEvaluationVectorFoldingTraceVerified)
+        XCTAssertEqual(report.acceptedClaimScope, .revealedEvaluationVectorFoldingTrace)
+        XCTAssertTrue(report.verifies(.revealedEvaluationVectorFoldingTrace))
+        XCTAssertFalse(report.verifies(.fullMultilinearSumcheck))
+        XCTAssertFalse(report.verifies(.airConstraintSumcheck))
+        XCTAssertFalse(report.verifies(.zeroKnowledgeAIRConstraintSumcheck))
+        XCTAssertFalse(report.airConstraintReductionVerified)
+        XCTAssertFalse(report.fullSumcheckProtocolVerified)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(report.revealsInitialEvaluationVector)
+        XCTAssertEqual(report.openBoundaries, M31SumcheckManifestV1.current.openBoundaries)
+
+        var tamperedChallenges = proof.challenges
+        tamperedChallenges[0] = M31Field.add(tamperedChallenges[0], 1)
+        let tamperedProof = try M31SumcheckProofV1(
+            statement: proof.statement,
+            finalVector: proof.finalVector,
+            coefficients: proof.coefficients,
+            challenges: tamperedChallenges
+        )
+        let tamperedReport = try M31SumcheckVerifierV1.verificationReport(
+            proof: tamperedProof,
+            statement: proof.statement
+        )
+        XCTAssertFalse(tamperedReport.transcriptChallengesVerified)
+        XCTAssertTrue(tamperedReport.foldRelationVerified)
+        XCTAssertFalse(tamperedReport.verifies(.revealedEvaluationVectorFoldingTrace))
+        XCTAssertNil(tamperedReport.acceptedClaimScope)
+    }
+
     func testApplicationProofV1BindsPCSAndSumcheckWithOpaqueAIRGKRDigests() throws {
         let manifest = ApplicationProofManifestV1.current
         XCTAssertEqual(manifest.version, ApplicationProofManifestV1.currentVersion)
@@ -206,11 +277,18 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertTrue(manifest.bindsGKRClaimDigest)
         XCTAssertFalse(manifest.verifiesAIRSemantics)
         XCTAssertFalse(manifest.verifiesGKR)
+        XCTAssertFalse(manifest.producesWitnessAIRTrace)
+        XCTAssertFalse(manifest.verifiesAIRToSumcheckReduction)
+        XCTAssertFalse(manifest.provesEndToEndApplicationTheorem)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertTrue(manifest.m31SumcheckRevealsInitialEvaluationVector)
         XCTAssertEqual(manifest.openBoundaries, [
             .airSemanticVerification,
-            .gkrVerification,
             .witnessToAIRTraceProduction,
             .sumcheckToAIRConstraintReduction,
+            .gkrVerification,
+            .endToEndApplicationTheorem,
+            .m31SumcheckZeroKnowledge,
         ])
 
         let domain = try CircleDomainDescriptor.canonical(logSize: 4)
@@ -262,10 +340,61 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(proof.statementDigest, try statement.digest())
         XCTAssertEqual(assembledProof, proof)
         XCTAssertTrue(try ApplicationProofVerifierV1.verify(proof: proof, statement: statement))
+        XCTAssertTrue(try ApplicationProofVerifierV1.verify(
+            proof: proof,
+            statement: statement,
+            scope: .implementedPCSAndSumcheckSlice
+        ))
+        XCTAssertFalse(try ApplicationProofVerifierV1.verify(
+            proof: proof,
+            statement: statement,
+            scope: .fullWitnessAIRGKRTheorem
+        ))
+        XCTAssertFalse(try ApplicationProofVerifierV1.verifyEndToEndApplicationTheorem(
+            proof: proof,
+            statement: statement
+        ))
+        let report = try ApplicationProofVerifierV1.verificationReport(
+            proof: proof,
+            statement: statement
+        )
+        XCTAssertTrue(report.statementDigestMatches)
+        XCTAssertTrue(report.m31SumcheckVerified)
+        XCTAssertTrue(report.circlePCSVerified)
+        XCTAssertTrue(report.implementedComponentsVerified)
+        XCTAssertEqual(report.acceptedClaimScope, .implementedPCSAndSumcheckSlice)
+        XCTAssertFalse(report.fullApplicationTheoremVerified)
+        XCTAssertFalse(report.airSemanticsVerified)
+        XCTAssertFalse(report.gkrVerified)
+        XCTAssertFalse(report.witnessToAIRTraceProduced)
+        XCTAssertFalse(report.airToSumcheckReductionVerified)
+        XCTAssertFalse(report.m31SumcheckIsZeroKnowledge)
+        XCTAssertTrue(report.m31SumcheckRevealsInitialEvaluationVector)
+        XCTAssertEqual(report.m31SumcheckClaimScope, .revealedEvaluationVectorFoldingTrace)
+        XCTAssertEqual(report.m31SumcheckReport?.acceptedClaimScope, .revealedEvaluationVectorFoldingTrace)
+        XCTAssertTrue(report.m31SumcheckReport?.verifies(.revealedEvaluationVectorFoldingTrace) == true)
+        XCTAssertTrue(report.m31SumcheckReport?.verifies(.fullMultilinearSumcheck) == false)
+        XCTAssertEqual(report.openBoundaries, manifest.openBoundaries)
 
         let encoded = try ApplicationProofCodecV1.encode(proof)
         XCTAssertEqual(try ApplicationProofCodecV1.decode(encoded), proof)
         XCTAssertTrue(try ApplicationProofVerifierV1.verify(encodedProof: encoded, statement: statement))
+        XCTAssertFalse(try ApplicationProofVerifierV1.verify(
+            encodedProof: encoded,
+            statement: statement,
+            scope: .fullWitnessAIRGKRTheorem
+        ))
+        XCTAssertFalse(try ApplicationProofVerifierV1.verifyEndToEndApplicationTheorem(
+            encodedProof: encoded,
+            statement: statement
+        ))
+        XCTAssertEqual(
+            try ApplicationProofVerifierV1.verificationReport(
+                encodedProof: encoded,
+                statement: statement
+            ),
+            report
+        )
 
         var trailing = encoded
         trailing.append(0)
@@ -731,6 +860,29 @@ final class CircleDomainTests: XCTestCase {
 
         let transform = try CircleWitnessToFFTBasisOracleV1.lineBasisTransformScalars(domain: domain)
         XCTAssertEqual(transform.count, domain.halfSize * domain.halfSize)
+        let zero = QM31Element(a: 0, b: 0, c: 0, d: 0)
+        let one = QM31Element(a: 1, b: 0, c: 0, d: 0)
+        for column in 0..<domain.halfSize {
+            var coefficients = Array(repeating: zero, count: column + 1)
+            coefficients[column] = one
+            let basisPolynomial = try CircleCodewordPolynomial(
+                xCoefficients: coefficients,
+                yCoefficients: []
+            )
+            let expectedBasis = try CircleCodewordOracle.circleFFTCoefficients(
+                polynomial: basisPolynomial,
+                domain: domain
+            )
+            for row in 0..<domain.halfSize {
+                XCTAssertEqual(
+                    transform[row * domain.halfSize + column],
+                    expectedBasis[2 * row].constant.real
+                )
+                XCTAssertEqual(expectedBasis[2 * row].constant.imaginary, 0)
+                XCTAssertEqual(expectedBasis[2 * row].uCoefficient.real, 0)
+                XCTAssertEqual(expectedBasis[2 * row].uCoefficient.imaginary, 0)
+            }
+        }
         let commandPlan = try CircleWitnessToFFTBasisCommandPlanV1(
             input: .residentMonomialCoefficientColumns,
             output: .residentCircleFFTBasisBuffer,
@@ -738,8 +890,38 @@ final class CircleDomainTests: XCTestCase {
             outputElementCount: domain.size,
             transformMatrixScalarCount: transform.count
         )
+        XCTAssertEqual(commandPlan.transformStrategy, .denseMatrix)
+        XCTAssertEqual(commandPlan.residentTransformTileScalarCapacity, transform.count)
+        XCTAssertEqual(commandPlan.transformTileRowCapacity, domain.halfSize)
+        XCTAssertTrue(commandPlan.validatesPrivateWitnessCanonicality)
         XCTAssertFalse(commandPlan.verifiesAIRSemantics)
         XCTAssertFalse(commandPlan.producesAIRTrace)
+        let tiledCommandPlan = try CircleWitnessToFFTBasisCommandPlanV1(
+            input: .residentMonomialCoefficientColumns,
+            output: .residentCircleFFTBasisBuffer,
+            coefficientCapacity: domain.halfSize,
+            outputElementCount: domain.size,
+            transformMatrixScalarCount: transform.count,
+            transformStrategy: .tiledDenseMatrix,
+            residentTransformTileScalarCapacity: domain.halfSize * 2,
+            transformTileRowCapacity: 2
+        )
+        XCTAssertEqual(tiledCommandPlan.transformStrategy, .tiledDenseMatrix)
+        XCTAssertTrue(tiledCommandPlan.validatesPrivateWitnessCanonicality)
+        let tile = try CircleWitnessToFFTBasisOracleV1.lineBasisTransformScalars(
+            coefficientCapacity: domain.halfSize,
+            rowOffset: 2,
+            rowCount: 3
+        )
+        XCTAssertEqual(tile.count, domain.halfSize * 3)
+        for localRow in 0..<3 {
+            let fullStart = (2 + localRow) * domain.halfSize
+            let tileStart = localRow * domain.halfSize
+            XCTAssertEqual(
+                Array(tile[tileStart..<(tileStart + domain.halfSize)]),
+                Array(transform[fullStart..<(fullStart + domain.halfSize)])
+            )
+        }
         XCTAssertThrowsError(
             try CircleWitnessToFFTBasisCommandPlanV1(
                 input: .residentMonomialCoefficientColumns,
@@ -748,6 +930,18 @@ final class CircleDomainTests: XCTestCase {
                 outputElementCount: domain.size,
                 transformMatrixScalarCount: transform.count,
                 verifiesAIRSemantics: true
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+        XCTAssertThrowsError(
+            try CircleWitnessToFFTBasisCommandPlanV1(
+                input: .residentMonomialCoefficientColumns,
+                output: .residentCircleFFTBasisBuffer,
+                coefficientCapacity: domain.halfSize,
+                outputElementCount: domain.size,
+                transformMatrixScalarCount: transform.count,
+                validatesPrivateWitnessCanonicality: false
             )
         ) { error in
             XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
@@ -1625,6 +1819,9 @@ final class CircleDomainTests: XCTestCase {
         let witnessBasisPlan = try CircleWitnessToFFTBasisPlanV1(context: context, domain: domain)
         XCTAssertEqual(witnessBasisPlan.commandPlan.input, .residentMonomialCoefficientColumns)
         XCTAssertEqual(witnessBasisPlan.commandPlan.output, .residentCircleFFTBasisBuffer)
+        XCTAssertEqual(witnessBasisPlan.commandPlan.transformStrategy, .denseMatrix)
+        XCTAssertEqual(witnessBasisPlan.commandPlan.transformTileRowCapacity, domain.halfSize)
+        XCTAssertTrue(witnessBasisPlan.commandPlan.validatesPrivateWitnessCanonicality)
         XCTAssertFalse(witnessBasisPlan.commandPlan.verifiesAIRSemantics)
         XCTAssertFalse(witnessBasisPlan.commandPlan.producesAIRTrace)
         let witnessBasisOutput = try MetalBufferFactory.makeSharedBuffer(
@@ -1642,6 +1839,48 @@ final class CircleDomainTests: XCTestCase {
             try Self.readQM31Buffer(witnessBasisOutput, count: domain.size),
             expectedCircleCoefficients
         )
+        let tiledWitnessBasisPlan = try CircleWitnessToFFTBasisPlanV1(
+            context: context,
+            domain: domain,
+            transformTileRowCapacity: 3
+        )
+        XCTAssertEqual(tiledWitnessBasisPlan.commandPlan.transformStrategy, .tiledDenseMatrix)
+        XCTAssertEqual(tiledWitnessBasisPlan.commandPlan.transformTileRowCapacity, 3)
+        let tiledWitnessBasisOutput = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * CircleWitnessToFFTBasisPlanV1.elementByteCount,
+            label: "CircleDomainTests.CircleWitnessToFFTBasisTiledOutput"
+        )
+        _ = try tiledWitnessBasisPlan.executeResident(
+            xWitnessCoefficientBuffer: privateXWitnessBuffer,
+            xWitnessCoefficientCount: polynomial.xCoefficients.count,
+            yWitnessCoefficientBuffer: privateYWitnessBuffer,
+            yWitnessCoefficientCount: polynomial.yCoefficients.count,
+            outputCircleCoefficientBuffer: tiledWitnessBasisOutput
+        )
+        XCTAssertEqual(
+            try Self.readQM31Buffer(tiledWitnessBasisOutput, count: domain.size),
+            expectedCircleCoefficients
+        )
+        let nonCanonicalWitnessBytes = QM31CanonicalEncoding.pack([
+            QM31Element(a: QM31Field.modulus, b: 0, c: 0, d: 0)
+        ])
+        let nonCanonicalPrivateWitness = try Self.makePrivateBuffer(
+            context: context,
+            bytes: nonCanonicalWitnessBytes,
+            label: "CircleDomainTests.CircleCodewordNonCanonicalPrivateWitness"
+        )
+        XCTAssertThrowsError(
+            try witnessBasisPlan.executeResident(
+                xWitnessCoefficientBuffer: nonCanonicalPrivateWitness,
+                xWitnessCoefficientCount: 1,
+                yWitnessCoefficientBuffer: privateYWitnessBuffer,
+                yWitnessCoefficientCount: polynomial.yCoefficients.count,
+                outputCircleCoefficientBuffer: witnessBasisOutput
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
 
         let residentProver = try CirclePCSFRIResidentProverV1(
             context: context,

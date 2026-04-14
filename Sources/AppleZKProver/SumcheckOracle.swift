@@ -158,6 +158,57 @@ public struct SumcheckChunkOracleResult: Equatable, Sendable {
     }
 }
 
+public enum M31SumcheckOpenBoundaryV1: String, Codable, CaseIterable, Sendable {
+    case airConstraintReduction = "air-constraint-reduction"
+    case fullSumcheckProtocol = "full-sumcheck-protocol"
+    case zeroKnowledge = "zero-knowledge"
+}
+
+public enum M31SumcheckClaimScopeV1: String, Codable, CaseIterable, Sendable {
+    case revealedEvaluationVectorFoldingTrace = "revealed-evaluation-vector-folding-trace"
+    case fullMultilinearSumcheck = "full-multilinear-sumcheck"
+    case airConstraintSumcheck = "air-constraint-sumcheck"
+    case zeroKnowledgeAIRConstraintSumcheck = "zero-knowledge-air-constraint-sumcheck"
+}
+
+public struct M31SumcheckManifestV1: Equatable, Codable, Sendable {
+    public static let currentVersion: UInt32 = 1
+    public static let artifactName = "M31SumcheckProofV1"
+    public static let current = M31SumcheckManifestV1()
+
+    public let version: UInt32
+    public let artifact: String
+    public let verifiesChunkTranscriptFolding: Bool
+    public let verifiesAIRConstraintReduction: Bool
+    public let verifiesFullSumcheckProtocol: Bool
+    public let isZeroKnowledge: Bool
+    public let revealsInitialEvaluationVector: Bool
+    public let acceptedClaimScope: M31SumcheckClaimScopeV1
+    public let rejectedClaimScopes: [M31SumcheckClaimScopeV1]
+    public let openBoundaries: [M31SumcheckOpenBoundaryV1]
+
+    public init() {
+        self.version = Self.currentVersion
+        self.artifact = Self.artifactName
+        self.verifiesChunkTranscriptFolding = true
+        self.verifiesAIRConstraintReduction = false
+        self.verifiesFullSumcheckProtocol = false
+        self.isZeroKnowledge = false
+        self.revealsInitialEvaluationVector = true
+        self.acceptedClaimScope = .revealedEvaluationVectorFoldingTrace
+        self.rejectedClaimScopes = [
+            .fullMultilinearSumcheck,
+            .airConstraintSumcheck,
+            .zeroKnowledgeAIRConstraintSumcheck,
+        ]
+        self.openBoundaries = [
+            .airConstraintReduction,
+            .fullSumcheckProtocol,
+            .zeroKnowledge,
+        ]
+    }
+}
+
 public enum SumcheckOracle {
     public static func m31Chunk(
         evaluations: [UInt32],
@@ -396,6 +447,96 @@ public struct M31SumcheckProofV1: Equatable, Sendable {
     }
 }
 
+public struct M31SumcheckVerificationReportV1: Equatable, Sendable {
+    public let proofStatementMatchesExpectedStatement: Bool
+    public let proofShapeMatchesExpectedStatement: Bool
+    public let initialEvaluationDigestMatchesRevealedVector: Bool
+    public let finalVectorDigestMatches: Bool
+    public let transcriptChallengesVerified: Bool
+    public let foldRelationVerified: Bool
+    public let airConstraintReductionVerified: Bool
+    public let fullSumcheckProtocolVerified: Bool
+    public let isZeroKnowledge: Bool
+    public let revealsInitialEvaluationVector: Bool
+    public let openBoundaries: [M31SumcheckOpenBoundaryV1]
+
+    public init(
+        proofStatementMatchesExpectedStatement: Bool,
+        proofShapeMatchesExpectedStatement: Bool,
+        initialEvaluationDigestMatchesRevealedVector: Bool,
+        finalVectorDigestMatches: Bool,
+        transcriptChallengesVerified: Bool,
+        foldRelationVerified: Bool,
+        airConstraintReductionVerified: Bool,
+        fullSumcheckProtocolVerified: Bool,
+        isZeroKnowledge: Bool,
+        revealsInitialEvaluationVector: Bool,
+        openBoundaries: [M31SumcheckOpenBoundaryV1]
+    ) {
+        self.proofStatementMatchesExpectedStatement = proofStatementMatchesExpectedStatement
+        self.proofShapeMatchesExpectedStatement = proofShapeMatchesExpectedStatement
+        self.initialEvaluationDigestMatchesRevealedVector = initialEvaluationDigestMatchesRevealedVector
+        self.finalVectorDigestMatches = finalVectorDigestMatches
+        self.transcriptChallengesVerified = transcriptChallengesVerified
+        self.foldRelationVerified = foldRelationVerified
+        self.airConstraintReductionVerified = airConstraintReductionVerified
+        self.fullSumcheckProtocolVerified = fullSumcheckProtocolVerified
+        self.isZeroKnowledge = isZeroKnowledge
+        self.revealsInitialEvaluationVector = revealsInitialEvaluationVector
+        self.openBoundaries = openBoundaries
+    }
+
+    public var revealedEvaluationVectorFoldingTraceVerified: Bool {
+        proofStatementMatchesExpectedStatement &&
+            proofShapeMatchesExpectedStatement &&
+            initialEvaluationDigestMatchesRevealedVector &&
+            finalVectorDigestMatches &&
+            transcriptChallengesVerified &&
+            foldRelationVerified
+    }
+
+    public var fullMultilinearSumcheckVerified: Bool {
+        revealedEvaluationVectorFoldingTraceVerified && fullSumcheckProtocolVerified
+    }
+
+    public var airConstraintSumcheckVerified: Bool {
+        fullMultilinearSumcheckVerified && airConstraintReductionVerified
+    }
+
+    public var zeroKnowledgeAIRConstraintSumcheckVerified: Bool {
+        airConstraintSumcheckVerified && isZeroKnowledge && !revealsInitialEvaluationVector
+    }
+
+    public var acceptedClaimScope: M31SumcheckClaimScopeV1? {
+        if zeroKnowledgeAIRConstraintSumcheckVerified {
+            return .zeroKnowledgeAIRConstraintSumcheck
+        }
+        if airConstraintSumcheckVerified {
+            return .airConstraintSumcheck
+        }
+        if fullMultilinearSumcheckVerified {
+            return .fullMultilinearSumcheck
+        }
+        if revealedEvaluationVectorFoldingTraceVerified {
+            return .revealedEvaluationVectorFoldingTrace
+        }
+        return nil
+    }
+
+    public func verifies(_ scope: M31SumcheckClaimScopeV1) -> Bool {
+        switch scope {
+        case .revealedEvaluationVectorFoldingTrace:
+            return revealedEvaluationVectorFoldingTraceVerified
+        case .fullMultilinearSumcheck:
+            return fullMultilinearSumcheckVerified
+        case .airConstraintSumcheck:
+            return airConstraintSumcheckVerified
+        case .zeroKnowledgeAIRConstraintSumcheck:
+            return zeroKnowledgeAIRConstraintSumcheckVerified
+        }
+    }
+}
+
 public enum M31SumcheckProofBuilderV1 {
     public static func prove(evaluations: [UInt32], rounds: Int) throws -> M31SumcheckProofV1 {
         let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: rounds)
@@ -415,18 +556,72 @@ public enum M31SumcheckProofBuilderV1 {
 }
 
 public enum M31SumcheckVerifierV1 {
+    public static func verificationReport(
+        proof: M31SumcheckProofV1,
+        statement: M31SumcheckStatementV1
+    ) throws -> M31SumcheckVerificationReportV1 {
+        let manifest = M31SumcheckManifestV1.current
+        let proofStatementMatchesExpectedStatement = proof.statement == statement
+        let proofShapeMatchesExpectedStatement = try proof.finalVector.count == statement.finalLaneCount &&
+            proof.coefficients.count == M31SumcheckStatementV1.totalCoefficientWords(
+                laneCount: statement.laneCount,
+                rounds: statement.rounds
+            ) &&
+            proof.challenges.count == statement.rounds
+
+        var initialEvaluationDigestMatchesRevealedVector = false
+        var finalVectorDigestMatches = false
+        var transcriptChallengesVerified = false
+        var foldRelationVerified = false
+
+        if proofShapeMatchesExpectedStatement {
+            initialEvaluationDigestMatchesRevealedVector =
+                statement.initialEvaluationDigest == (try M31SumcheckEncodingV1.digestWords(
+                    Array(proof.coefficients[0..<statement.laneCount])
+                ))
+            finalVectorDigestMatches =
+                statement.finalVectorDigest == (try M31SumcheckEncodingV1.digestWords(proof.finalVector))
+
+            let replay = try replayTranscriptAndFolds(proof: proof, statement: statement)
+            transcriptChallengesVerified = replay.transcriptChallengesVerified
+            foldRelationVerified = replay.foldRelationVerified
+        }
+
+        return M31SumcheckVerificationReportV1(
+            proofStatementMatchesExpectedStatement: proofStatementMatchesExpectedStatement,
+            proofShapeMatchesExpectedStatement: proofShapeMatchesExpectedStatement,
+            initialEvaluationDigestMatchesRevealedVector: initialEvaluationDigestMatchesRevealedVector,
+            finalVectorDigestMatches: finalVectorDigestMatches,
+            transcriptChallengesVerified: transcriptChallengesVerified,
+            foldRelationVerified: foldRelationVerified,
+            airConstraintReductionVerified: manifest.verifiesAIRConstraintReduction,
+            fullSumcheckProtocolVerified: manifest.verifiesFullSumcheckProtocol,
+            isZeroKnowledge: manifest.isZeroKnowledge,
+            revealsInitialEvaluationVector: manifest.revealsInitialEvaluationVector,
+            openBoundaries: manifest.openBoundaries
+        )
+    }
+
     public static func verify(
         proof: M31SumcheckProofV1,
         statement: M31SumcheckStatementV1
     ) throws -> Bool {
-        guard proof.statement == statement,
-              proof.statement.initialEvaluationDigest == (try M31SumcheckEncodingV1.digestWords(
-                Array(proof.coefficients[0..<statement.laneCount])
-              )),
-              proof.statement.finalVectorDigest == (try M31SumcheckEncodingV1.digestWords(proof.finalVector)) else {
-            return false
-        }
+        try verificationReport(proof: proof, statement: statement)
+            .verifies(.revealedEvaluationVectorFoldingTrace)
+    }
 
+    public static func verify(
+        proof: M31SumcheckProofV1,
+        statement: M31SumcheckStatementV1,
+        scope: M31SumcheckClaimScopeV1
+    ) throws -> Bool {
+        try verificationReport(proof: proof, statement: statement).verifies(scope)
+    }
+
+    private static func replayTranscriptAndFolds(
+        proof: M31SumcheckProofV1,
+        statement: M31SumcheckStatementV1
+    ) throws -> (transcriptChallengesVerified: Bool, foldRelationVerified: Bool) {
         let offsets = try M31SumcheckStatementV1.coefficientOffsets(
             laneCount: statement.laneCount,
             rounds: statement.rounds
@@ -438,6 +633,8 @@ public enum M31SumcheckVerifierV1 {
             fieldModulus: M31Field.modulus
         ))
 
+        var transcriptChallengesVerified = true
+        var foldRelationVerified = true
         var activeLaneCount = statement.laneCount
         for round in 0..<statement.rounds {
             let offset = offsets[round]
@@ -453,25 +650,25 @@ public enum M31SumcheckVerifierV1 {
                 fieldModulus: M31Field.modulus
             ))
             let challenge = try transcript.squeezeUInt32(count: 1, modulus: M31Field.modulus)[0]
-            guard proof.challenges[round] == challenge else {
-                return false
+            if proof.challenges[round] != challenge {
+                transcriptChallengesVerified = false
             }
 
             let folded = try fold(coefficients, challenge: challenge)
             if round + 1 == statement.rounds {
-                guard folded == proof.finalVector else {
-                    return false
+                if folded != proof.finalVector {
+                    foldRelationVerified = false
                 }
             } else {
                 let nextOffset = offsets[round + 1]
                 let nextCoefficients = Array(proof.coefficients[nextOffset..<(nextOffset + folded.count)])
-                guard folded == nextCoefficients else {
-                    return false
+                if folded != nextCoefficients {
+                    foldRelationVerified = false
                 }
             }
             activeLaneCount >>= 1
         }
-        return true
+        return (transcriptChallengesVerified, foldRelationVerified)
     }
 
     private static func fold(_ values: [UInt32], challenge: UInt32) throws -> [UInt32] {

@@ -1,0 +1,101 @@
+{
+  "artifact" : "ApplicationPublicTheoremArtifactV1",
+  "schemaVersion" : 1,
+  "statement" : {
+    "airDefinition" : "fibonacci-m31-v1",
+    "applicationIdentifier" : "apple-zk-prover.test.public-theorem-artifact.v1",
+    "claimedStorageIndices" : [
+      0,
+      5
+    ],
+    "domainLogSize" : 4,
+    "expected" : {
+      "airDefinitionDigestHex" : "5a5d321b39784cb4cd01c7edd86ad00378a31509909f0703fef27279a9c9bae3",
+      "artifactByteCount" : 3085,
+      "artifactDigestHex" : "cc8d3e1dcd9817b8154de9a938cbc84e5b4cd05241c413f08c8cc267b8f11166",
+      "gkrClaimDigestHex" : "a9749199aea0e747cd10a8df23e24567d5dcc71b9d9eeb59720309e3acf36d56",
+      "proofByteCount" : 2076,
+      "proofDigestHex" : "2dbddb7f53d20e1465513f6ed3613ecca5b93042f8551e7f54a8265c06922e60",
+      "statementDigestHex" : "90ccfad0a2fec92b98ad394d09356c450e0fb0b97066ec75faf535c43bb6c71e",
+      "sumcheckFinalDigestHex" : "501f00719f0376bd8caba1b1e78f8a1e709891d8973dbb2c8a074f6a53cb427f",
+      "sumcheckInitialDigestHex" : "306bbb348f3fcbbc4cae23cc13494277b8121fccf2351c496b55af97a861f2fa",
+      "witnessDigestHex" : "0b98034826e1da83709ddba9f4bedbea41fbf8fa279ebef7854c10f7246df1a0"
+    },
+    "gkrClaim" : {
+      "claimedOutputs" : [
+        5,
+        6
+      ],
+      "inputValues" : [
+        2,
+        3
+      ],
+      "layers" : [
+        [
+          {
+            "leftInputIndex" : 0,
+            "operation" : "add",
+            "rightInputIndex" : 1
+          },
+          {
+            "leftInputIndex" : 0,
+            "operation" : "multiply",
+            "rightInputIndex" : 1
+          }
+        ]
+      ]
+    },
+    "parameterSet" : {
+      "foldingStep" : 1,
+      "grindingBits" : 0,
+      "id" : "circle-pcs-fri-v1-conservative-128",
+      "logBlowupFactor" : 2,
+      "nominalSecurityBits" : 4,
+      "queryCount" : 2,
+      "targetSoundnessBits" : 4
+    },
+    "storageOrder" : "circle-domain-bit-reversed",
+    "witnessColumns" : [
+      [
+        1,
+        1,
+        2,
+        3
+      ],
+      [
+        1,
+        2,
+        3,
+        5
+      ]
+    ],
+    "xCoefficientHex" : [
+      "0300000005000000070000000b000000"
+    ],
+    "yCoefficientHex" : [
+      "0d000000110000001300000017000000"
+    ]
+  },
+  "tamperVectors" : [
+    {
+      "description" : "The artifact carries a public witness sidecar whose digest no longer matches the statement.",
+      "expectedVerifierAccepted" : false,
+      "id" : "public-witness-sidecar-digest-mismatch"
+    },
+    {
+      "description" : "The statement and proof are rebuilt around a false GKR output claim, so digest binding still holds but semantic GKR verification fails.",
+      "expectedVerifierAccepted" : false,
+      "id" : "false-gkr-output-with-matching-digest"
+    },
+    {
+      "description" : "The statement and proof are rebuilt around an invalid AIR trace whose AIR-to-sum-check reduction still matches the statement, so AIR semantics fail independently.",
+      "expectedVerifierAccepted" : false,
+      "id" : "invalid-air-semantics-with-matching-reduction"
+    },
+    {
+      "description" : "The canonical artifact bytes are extended with trailing data and must be rejected by the strict decoder.",
+      "expectedVerifierAccepted" : false,
+      "id" : "trailing-byte-decode-rejection"
+    }
+  ]
+}

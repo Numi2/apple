@@ -2,9 +2,16 @@ import Foundation
 
 public enum ApplicationProofOpenBoundaryV1: String, Codable, CaseIterable, Sendable {
     case airSemanticVerification = "air-semantic-verification"
-    case gkrVerification = "gkr-verification"
     case witnessToAIRTraceProduction = "witness-to-air-trace-production"
     case sumcheckToAIRConstraintReduction = "sumcheck-to-air-constraint-reduction"
+    case gkrVerification = "gkr-verification"
+    case endToEndApplicationTheorem = "end-to-end-application-theorem"
+    case m31SumcheckZeroKnowledge = "m31-sumcheck-zero-knowledge"
+}
+
+public enum ApplicationProofClaimScopeV1: String, Codable, CaseIterable, Sendable {
+    case implementedPCSAndSumcheckSlice = "implemented-pcs-and-sumcheck-slice"
+    case fullWitnessAIRGKRTheorem = "full-witness-air-gkr-theorem"
 }
 
 public struct ApplicationProofManifestV1: Equatable, Codable, Sendable {
@@ -22,6 +29,11 @@ public struct ApplicationProofManifestV1: Equatable, Codable, Sendable {
     public let bindsGKRClaimDigest: Bool
     public let verifiesAIRSemantics: Bool
     public let verifiesGKR: Bool
+    public let producesWitnessAIRTrace: Bool
+    public let verifiesAIRToSumcheckReduction: Bool
+    public let provesEndToEndApplicationTheorem: Bool
+    public let isZeroKnowledge: Bool
+    public let m31SumcheckRevealsInitialEvaluationVector: Bool
     public let openBoundaries: [ApplicationProofOpenBoundaryV1]
 
     public init() {
@@ -35,11 +47,18 @@ public struct ApplicationProofManifestV1: Equatable, Codable, Sendable {
         self.bindsGKRClaimDigest = true
         self.verifiesAIRSemantics = false
         self.verifiesGKR = false
+        self.producesWitnessAIRTrace = false
+        self.verifiesAIRToSumcheckReduction = false
+        self.provesEndToEndApplicationTheorem = false
+        self.isZeroKnowledge = false
+        self.m31SumcheckRevealsInitialEvaluationVector = true
         self.openBoundaries = [
             .airSemanticVerification,
-            .gkrVerification,
             .witnessToAIRTraceProduction,
             .sumcheckToAIRConstraintReduction,
+            .gkrVerification,
+            .endToEndApplicationTheorem,
+            .m31SumcheckZeroKnowledge,
         ]
     }
 }
@@ -174,6 +193,80 @@ public struct ApplicationProofV1: Equatable, Sendable {
     }
 }
 
+public struct ApplicationProofVerificationReportV1: Equatable, Sendable {
+    public let statementDigestMatches: Bool
+    public let m31SumcheckVerified: Bool
+    public let circlePCSVerified: Bool
+    public let airSemanticsVerified: Bool
+    public let gkrVerified: Bool
+    public let witnessToAIRTraceProduced: Bool
+    public let airToSumcheckReductionVerified: Bool
+    public let m31SumcheckIsZeroKnowledge: Bool
+    public let m31SumcheckRevealsInitialEvaluationVector: Bool
+    public let m31SumcheckClaimScope: M31SumcheckClaimScopeV1?
+    public let m31SumcheckReport: M31SumcheckVerificationReportV1?
+    public let openBoundaries: [ApplicationProofOpenBoundaryV1]
+
+    public init(
+        statementDigestMatches: Bool,
+        m31SumcheckVerified: Bool,
+        circlePCSVerified: Bool,
+        airSemanticsVerified: Bool,
+        gkrVerified: Bool,
+        witnessToAIRTraceProduced: Bool,
+        airToSumcheckReductionVerified: Bool,
+        m31SumcheckIsZeroKnowledge: Bool,
+        m31SumcheckRevealsInitialEvaluationVector: Bool,
+        m31SumcheckClaimScope: M31SumcheckClaimScopeV1? = nil,
+        m31SumcheckReport: M31SumcheckVerificationReportV1? = nil,
+        openBoundaries: [ApplicationProofOpenBoundaryV1]
+    ) {
+        self.statementDigestMatches = statementDigestMatches
+        self.m31SumcheckVerified = m31SumcheckVerified
+        self.circlePCSVerified = circlePCSVerified
+        self.airSemanticsVerified = airSemanticsVerified
+        self.gkrVerified = gkrVerified
+        self.witnessToAIRTraceProduced = witnessToAIRTraceProduced
+        self.airToSumcheckReductionVerified = airToSumcheckReductionVerified
+        self.m31SumcheckIsZeroKnowledge = m31SumcheckIsZeroKnowledge
+        self.m31SumcheckRevealsInitialEvaluationVector = m31SumcheckRevealsInitialEvaluationVector
+        self.m31SumcheckClaimScope = m31SumcheckClaimScope
+        self.m31SumcheckReport = m31SumcheckReport
+        self.openBoundaries = openBoundaries
+    }
+
+    public var implementedComponentsVerified: Bool {
+        statementDigestMatches && m31SumcheckVerified && circlePCSVerified
+    }
+
+    public var fullApplicationTheoremVerified: Bool {
+        implementedComponentsVerified &&
+            airSemanticsVerified &&
+            gkrVerified &&
+            witnessToAIRTraceProduced &&
+            airToSumcheckReductionVerified
+    }
+
+    public var acceptedClaimScope: ApplicationProofClaimScopeV1? {
+        if fullApplicationTheoremVerified {
+            return .fullWitnessAIRGKRTheorem
+        }
+        if implementedComponentsVerified {
+            return .implementedPCSAndSumcheckSlice
+        }
+        return nil
+    }
+
+    public func verifies(_ scope: ApplicationProofClaimScopeV1) -> Bool {
+        switch scope {
+        case .implementedPCSAndSumcheckSlice:
+            return implementedComponentsVerified
+        case .fullWitnessAIRGKRTheorem:
+            return fullApplicationTheoremVerified
+        }
+    }
+}
+
 public enum ApplicationProofBuilderV1 {
     public static func prove(
         statement: ApplicationProofStatementV1,
@@ -217,22 +310,65 @@ public enum ApplicationProofBuilderV1 {
 }
 
 public enum ApplicationProofVerifierV1 {
+    public static func verificationReport(
+        proof: ApplicationProofV1,
+        statement: ApplicationProofStatementV1
+    ) throws -> ApplicationProofVerificationReportV1 {
+        let manifest = ApplicationProofManifestV1.current
+        let sumcheckReport = try M31SumcheckVerifierV1.verificationReport(
+            proof: proof.sumcheckProof,
+            statement: statement.sumcheckStatement
+        )
+        return try ApplicationProofVerificationReportV1(
+            statementDigestMatches: proof.statementDigest == statement.digest(),
+            m31SumcheckVerified: sumcheckReport.verifies(.revealedEvaluationVectorFoldingTrace),
+            circlePCSVerified: CirclePCSFRIContractVerifierV1.verify(
+                proof: proof.pcsProof,
+                statement: statement.pcsStatement
+            ),
+            airSemanticsVerified: manifest.verifiesAIRSemantics,
+            gkrVerified: manifest.verifiesGKR,
+            witnessToAIRTraceProduced: manifest.producesWitnessAIRTrace,
+            airToSumcheckReductionVerified: manifest.verifiesAIRToSumcheckReduction,
+            m31SumcheckIsZeroKnowledge: manifest.isZeroKnowledge,
+            m31SumcheckRevealsInitialEvaluationVector: manifest.m31SumcheckRevealsInitialEvaluationVector,
+            m31SumcheckClaimScope: sumcheckReport.acceptedClaimScope,
+            m31SumcheckReport: sumcheckReport,
+            openBoundaries: manifest.openBoundaries
+        )
+    }
+
+    public static func verificationReport(
+        encodedProof: Data,
+        statement: ApplicationProofStatementV1
+    ) throws -> ApplicationProofVerificationReportV1 {
+        try verificationReport(
+            proof: ApplicationProofCodecV1.decode(encodedProof),
+            statement: statement
+        )
+    }
+
     public static func verify(
         proof: ApplicationProofV1,
         statement: ApplicationProofStatementV1
     ) throws -> Bool {
-        guard proof.statementDigest == (try statement.digest()),
-              try M31SumcheckVerifierV1.verify(
-                proof: proof.sumcheckProof,
-                statement: statement.sumcheckStatement
-              ),
-              try CirclePCSFRIContractVerifierV1.verify(
-                proof: proof.pcsProof,
-                statement: statement.pcsStatement
-              ) else {
-            return false
-        }
-        return true
+        try verificationReport(proof: proof, statement: statement)
+            .verifies(.implementedPCSAndSumcheckSlice)
+    }
+
+    public static func verify(
+        proof: ApplicationProofV1,
+        statement: ApplicationProofStatementV1,
+        scope: ApplicationProofClaimScopeV1
+    ) throws -> Bool {
+        try verificationReport(proof: proof, statement: statement).verifies(scope)
+    }
+
+    public static func verifyEndToEndApplicationTheorem(
+        proof: ApplicationProofV1,
+        statement: ApplicationProofStatementV1
+    ) throws -> Bool {
+        try verify(proof: proof, statement: statement, scope: .fullWitnessAIRGKRTheorem)
     }
 
     public static func verify(
@@ -242,6 +378,29 @@ public enum ApplicationProofVerifierV1 {
         try verify(
             proof: ApplicationProofCodecV1.decode(encodedProof),
             statement: statement
+        )
+    }
+
+    public static func verify(
+        encodedProof: Data,
+        statement: ApplicationProofStatementV1,
+        scope: ApplicationProofClaimScopeV1
+    ) throws -> Bool {
+        try verify(
+            proof: ApplicationProofCodecV1.decode(encodedProof),
+            statement: statement,
+            scope: scope
+        )
+    }
+
+    public static func verifyEndToEndApplicationTheorem(
+        encodedProof: Data,
+        statement: ApplicationProofStatementV1
+    ) throws -> Bool {
+        try verify(
+            encodedProof: encodedProof,
+            statement: statement,
+            scope: .fullWitnessAIRGKRTheorem
         )
     }
 }

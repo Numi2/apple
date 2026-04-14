@@ -5,7 +5,9 @@ codeword-to-proof emission, a strict production-facing PCS verifier contract,
 and a reproducible proof corpus. `ApplicationProofV1` composes this PCS slice
 with the implemented M31 sum-check chunk proof, but this Circle note remains
 scoped to PCS; AIR semantic verification, GKR verification, and witness-to-AIR
-trace production remain outside this slice.
+trace production remain outside this slice. The application sidecar bridge can
+pack public AIR trace rows into structured PCS polynomial claims, but the PCS
+proof still verifies committed-polynomial semantics only.
 
 This note records the consensus-facing Circle-domain and proof-artifact surface added in
 `CircleDomain.swift` and `CircleProofFormat.swift`.
@@ -217,12 +219,14 @@ and `proveResidentCoefficients` remain convenience paths for the current monomia
 resident command plan. `CircleWitnessToFFTBasisPlanV1` adds a narrow resident producer for
 private monomial coefficient witness columns: it multiplies resident x/y coefficient buffers
 by a public M31 monomial-to-line-basis transform matrix and writes the interleaved Circle
-FFT-basis coefficients into a resident output buffer. `proveResidentWitnessCoefficients`
+FFT-basis coefficients into a resident output buffer. The full public matrix oracle remains
+capped by `CircleWitnessToFFTBasisOracleV1.maximumMatrixCoefficientCapacity`, while the
+resident plan switches to `tiled-dense-matrix` scheduling for larger coefficient capacities
+and materializes only one row tile at a time. `proveResidentWitnessCoefficients`
 uses that producer before the existing coefficient-to-proof path, without reading the
-coefficient witness buffers back to the CPU. This is not AIR trace synthesis and it does not
-verify AIR semantics. The current matrix producer is capped by
-`CircleWitnessToFFTBasisOracleV1.maximumMatrixCoefficientCapacity`; larger witness pipelines
-need a tiled transform rather than a dense public matrix. `proveVerified` and
+coefficient witness buffers back to the CPU. The producer now runs a GPU QM31 canonicality
+scan over each private witness coefficient buffer before transformation. This is not AIR
+trace synthesis and it does not verify AIR semantics. `proveVerified` and
 `proveCircleFFTCoefficientsResidentVerified`
 check the composed path against the CPU codeword oracle, CPU proof builder, and independent
 CPU verifier.

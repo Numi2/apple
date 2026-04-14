@@ -86,6 +86,11 @@ struct QM31VectorParams {
     uint fieldModulus;
 };
 
+struct QM31CanonicalityCheckParams {
+    uint count;
+    uint fieldModulus;
+};
+
 struct QM31FRIFoldParams {
     uint pairCount;
     uint fieldModulus;
@@ -107,6 +112,8 @@ struct CircleWitnessToFFTBasisParams {
     uint xCoefficientCount;
     uint yCoefficientCount;
     uint fieldModulus;
+    uint transformRowOffset;
+    uint transformRowCount;
 };
 
 struct CircleCodewordFFTTwiddleMaterializeParams {
@@ -1642,6 +1649,29 @@ kernel void qm31_vector_arithmetic(
     }
 }
 
+kernel void qm31_check_canonical(
+    const device uint4 *values [[buffer(0)]],
+    device atomic_uint *failureFlag [[buffer(1)]],
+    constant QM31CanonicalityCheckParams &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= params.count) {
+        return;
+    }
+    if (params.fieldModulus != M31_MODULUS_U32) {
+        atomic_store_explicit(failureFlag, 1u, memory_order_relaxed);
+        return;
+    }
+
+    const uint4 value = values[gid];
+    if (value.x >= M31_MODULUS_U32 ||
+        value.y >= M31_MODULUS_U32 ||
+        value.z >= M31_MODULUS_U32 ||
+        value.w >= M31_MODULUS_U32) {
+        atomic_store_explicit(failureFlag, 1u, memory_order_relaxed);
+    }
+}
+
 inline uint circle_bit_reverse_index(uint index, uint logSize) {
     uint value = index;
     uint reversed = 0u;
@@ -1844,10 +1874,13 @@ kernel void circle_witness_to_fft_basis(
         params.coefficientCapacity == 0u ||
         params.xCoefficientCount > params.coefficientCapacity ||
         params.yCoefficientCount > params.coefficientCapacity ||
-        gid >= params.coefficientCapacity) {
+        params.transformRowOffset > params.coefficientCapacity ||
+        params.transformRowCount > (params.coefficientCapacity - params.transformRowOffset) ||
+        gid >= params.transformRowCount) {
         return;
     }
 
+    const uint rowIndex = params.transformRowOffset + gid;
     uint4 xAccumulator = uint4(0u, 0u, 0u, 0u);
     uint4 yAccumulator = uint4(0u, 0u, 0u, 0u);
     const uint rowOffset = gid * params.coefficientCapacity;
@@ -1866,7 +1899,7 @@ kernel void circle_witness_to_fft_basis(
         );
     }
 
-    const uint outputIndex = gid << 1u;
+    const uint outputIndex = rowIndex << 1u;
     circleCoefficients[outputIndex] = xAccumulator;
     circleCoefficients[outputIndex + 1u] = yAccumulator;
 }

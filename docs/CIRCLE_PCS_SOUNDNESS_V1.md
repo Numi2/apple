@@ -27,6 +27,12 @@ behavior, or fused/tiled performance claims. `ApplicationProofV1` composes this
 PCS verifier with the implemented M31 sum-check chunk verifier, but it does not
 extend this PCS soundness note into an end-to-end AIR/GKR theorem.
 
+`AIRTraceToCirclePCSWitnessV1` can build structured
+`CirclePCSFRIPolynomialClaimV1` chunks from public AIR trace rows by packing up
+to four M31 columns into each QM31 polynomial. That bridge is an application
+sidecar helper. It supplies committed-polynomial PCS claims; it does not make
+`CirclePCSFRIProofV1` an AIR semantic proof.
+
 ## Parameter Profile
 
 `CirclePCSFRIParameterSetV1.conservative128` fixes:
@@ -221,7 +227,8 @@ The following remain outside the V1 soundness claim:
 - AIR semantic verification, GKR verification, and AIR-to-sum-check reduction,
 - a reviewed end-to-end proof-system theorem for an application statement,
 - a reviewed production profile that assigns nonzero grinding credit,
-- GPU-resident canonicality checks for private witness buffers,
+- GPU-resident canonicality checks for resident coefficient/proof inputs outside
+  the narrow monomial witness-to-FFT-basis producer,
 - fused/tiled codeword-to-commitment performance claims,
 - side-channel resistance on shared hardware,
 - external cryptography audit.

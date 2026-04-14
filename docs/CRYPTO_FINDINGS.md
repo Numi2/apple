@@ -2,6 +2,135 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: Public AIR Trace Layout And PCS Witness Bridge
+
+Finding:
+
+- The public sidecar theorem path could validate positional witness columns, but
+  arbitrary AIR trace layouts still needed an explicit named-column boundary and
+  there was no reusable bridge from public AIR trace rows into the structured
+  Circle PCS polynomial-claim format.
+
+Work completed:
+
+- Added `ApplicationWitnessColumnV1` and `ApplicationWitnessLayoutV1`, which
+  validate named public M31 witness columns, reject duplicate names and
+  mismatched row counts, and produce ordered `ApplicationWitnessTraceV1` values
+  for the AIR column order requested by the caller.
+- Added `AIRTraceToCirclePCSWitnessV1`, which packs up to four M31 AIR columns
+  into each QM31 polynomial chunk, interpolates those values over the canonical
+  Circle first half-domain, and emits `CirclePCSFRIPolynomialClaimV1` values for
+  selected trace rows.
+- Added `AIRTraceCirclePCSProofBundleBuilderV1` and
+  `AIRTraceCirclePCSProofBundleVerifierV1`, which wrap every generated trace
+  chunk with an ordinary Circle PCS statement/proof pair and verify the bundle
+  against a regenerated public AIR trace witness.
+- Added `AIRTraceCirclePCSProofBundleCodecV1`,
+  `AIRTraceCirclePCSProofBundleDigestV1`, and encoded verifier overloads so the
+  ordered public trace PCS bundle has strict bytes, trailing-byte rejection, and
+  a domain-separated digest.
+- Added regression coverage for named-column reordering, malformed layouts,
+  multi-chunk five-column trace packing, interpolation correctness at every
+  source row, claimed row opening values, proof-bundle verification, strict
+  bundle codec round trips, digest stability, encoded-bundle verification,
+  altered trace rejection, duplicate claim-row rejection, trailing-byte
+  rejection, and domain capacity rejection.
+
+Residual risk:
+
+- This is a CPU/public sidecar bridge. It is not zero-knowledge, not a private
+  resident witness compiler, and not a succinct AIR/GKR proof.
+- The bridge creates committed-polynomial PCS claims from an AIR trace, but the
+  PCS proof still checks only committed-polynomial semantics. AIR and GKR
+  semantics remain in the application theorem verifier or public theorem
+  artifact.
+- The proof bundle is an ordered collection of existing single-polynomial PCS
+  proofs. It is not a new batch PCS protocol and does not add cross-polynomial
+  batching soundness claims.
+- The interpolation helper is intentionally simple and validation-oriented. A
+  production large-trace compiler still needs a reviewed, tiled/interleaved
+  construction path.
+
+## 2026-04-14: Self-Contained Public Application Theorem Artifact
+
+Finding:
+
+- The public AIR/GKR theorem verifier could check semantic sidecars, but callers
+  still had to supply the statement, proof, witness trace, AIR definition, and
+  GKR claim out of band. That left no single verifier-facing artifact for
+  deterministic end-to-end public theorem fixtures.
+
+Work completed:
+
+- Added `ApplicationPublicTheoremArtifactV1`, which packages an
+  `ApplicationProofStatementV1`, `ApplicationProofV1`, public witness trace,
+  AIR definition, and GKR claim.
+- Added `ApplicationPublicTheoremBuilderV1`, which produces the public theorem
+  artifact only after checking AIR semantics and GKR claim truth, computing the
+  AIR-to-M31-sum-check reduction, building the M31 chunk proof, and assembling
+  the application proof.
+- Added strict binary codecs for the public theorem artifact, application
+  statement, public witness trace, AIR definition, and GKR claim.
+- Added verifier overloads that accept a decoded or encoded public theorem
+  artifact and return the existing theorem report.
+- Added `ApplicationPublicTheoremArtifactCorpusV1.json`, pinning deterministic
+  public theorem inputs, stable artifact/proof/statement/sidecar digests, and
+  digest-bound AIR/GKR semantic rejection vectors.
+- Added regression coverage for canonical encoding round trips, trailing-byte
+  rejection, valid artifact verification, digest-mismatched sidecar rejection,
+  stable corpus verification, and builder rejection of invalid AIR or false GKR
+  inputs.
+
+Residual risk:
+
+- This artifact is self-contained only because the witness trace and GKR inputs
+  are public material inside the artifact.
+- This is not zero-knowledge and not a succinct AIR/GKR proof. The existing M31
+  chunk remains non-ZK and still reveals the initial evaluation vector.
+
+## 2026-04-14: Public AIR/GKR Sidecar Theorem Verification
+
+Finding:
+
+- `ApplicationProofV1` correctly bound witness, AIR, and GKR digests, but the
+  repository still needed a concrete way to validate those bound sidecars
+  without pretending the proof bytes were self-contained or zero-knowledge.
+
+Work completed:
+
+- Added `AIRDefinitionV1`, `AIRExecutionTraceV1`, and
+  `AIRSemanticVerifierV1`, a small M31 AIR language with transition and
+  boundary polynomial constraints over current and next trace rows.
+- Added `ApplicationWitnessTraceV1` and `WitnessToAIRTraceProducerV1`, which
+  synthesize a row-major AIR trace from public column-major witness sidecars.
+- Added `AIRToSumcheckReductionV1`, which computes the canonical AIR
+  constraint-evaluation vector, pads it to the implemented M31 chunk shape, and
+  checks that `M31SumcheckStatementV1.initialEvaluationDigest` binds that
+  vector.
+- Added `GKRClaimV1` and `GKRSemanticVerifierV1`, a CPU layered M31 arithmetic
+  circuit evaluator for bound GKR claim sidecars.
+- Added `ApplicationTheoremVerifierV1` and
+  `ApplicationTheoremManifestV1.current`, composing the application proof,
+  public witness, AIR, sum-check reduction, and GKR semantic checks under one
+  explicit public sidecar theorem report.
+- Added `zkmetal-bench --application-public-theorem`, a CPU smoke benchmark
+  that builds the deterministic public Fibonacci AIR theorem artifact,
+  exercises strict artifact serialization/deserialization, runs the public
+  theorem verifier, and reports artifact/proof/statement digests with the
+  accepted application and M31 claim scopes.
+- Added regression coverage for an accepted Fibonacci-style AIR sidecar, a
+  semantically invalid AIR trace whose sum-check reduction still matches the
+  statement digest, and a false GKR output claim.
+
+Residual risk:
+
+- Sidecar verification by itself still expects the AIR trace and GKR inputs to
+  be supplied to the verifier. `ApplicationPublicTheoremArtifactV1` now packages
+  those public sidecars when a single artifact is needed.
+- This path is not zero-knowledge. The existing M31 chunk still reveals its
+  initial evaluation vector, and the sidecar theorem verifier sees the public
+  witness trace.
+
 ## 2026-04-14: Application Proof Envelope For Implemented Components
 
 Finding:
@@ -9,9 +138,9 @@ Finding:
 - The repository had independently verified Circle PCS/FRI and M31 sum-check
   chunk components, but no final application-level artifact that bound those
   proofs together with witness, AIR, and GKR public claims.
-- The repo still has no concrete AIR semantic verifier or GKR verifier, so
-  filling the artifact gap must not turn into an unsupported full proof-system
-  claim.
+- At the time, the repo had no concrete AIR semantic verifier or GKR verifier,
+  so filling the artifact gap could not turn into an unsupported full
+  proof-system claim.
 
 Work completed:
 
@@ -23,14 +152,28 @@ Work completed:
   `M31SumcheckVerifierV1`, and `M31SumcheckProofCodecV1` for the implemented
   M31 chunk transcript. The verifier replays framed challenges, checks fold
   consistency, and binds initial/final vector digests.
+- Added `M31SumcheckClaimScopeV1` and
+  `M31SumcheckVerificationReportV1`. The current accepted scope is only
+  `revealedEvaluationVectorFoldingTrace`; full multilinear sum-check,
+  AIR-constraint sum-check, and zero-knowledge AIR sum-check scopes are
+  explicitly rejected by the report.
 - Added `ApplicationProofV1`, `ApplicationProofBuilderV1`,
   `ApplicationProofVerifierV1`, and `ApplicationProofCodecV1`. The verifier
   rejects statement digest mismatches, invalid M31 sum-check chunks, and invalid
   Circle PCS/FRI contract proofs.
+- Added `ApplicationProofClaimScopeV1` and
+  `ApplicationProofVerificationReportV1`, so callers can distinguish the
+  accepted implemented PCS/sum-check slice from the unsupported witness/AIR/GKR
+  theorem in `ApplicationProofV1` proof bytes alone.
+  `verifyEndToEndApplicationTheorem` returns false for V1 rather than
+  overclaiming.
 - Added `ApplicationProofManifestV1.current`, which records the completed
-  artifact composition and explicitly marks AIR semantic verification, GKR
-  verification, witness-to-AIR trace production, and AIR-to-sum-check reduction
-  as open.
+  artifact composition and explicitly marks AIR semantic verification,
+  witness-to-AIR trace production, AIR-to-sum-check reduction, GKR verification,
+  end-to-end theorem verification, and M31 sum-check zero-knowledge as open.
+- Added `M31SumcheckManifestV1.current`, which records that the M31 artifact
+  verifies only the chunk transcript/folding relation, does not verify AIR
+  reduction, is not a full sum-check protocol, and is not zero-knowledge.
 - Added regression coverage for valid application proof round-trip, mismatched
   GKR digest rejection, sum-check challenge tamper rejection, codec trailing
   byte rejection, and manifest scope.
@@ -45,8 +188,9 @@ Residual risk:
   proof that a witness satisfies an AIR or that a GKR claim is true. The
   sum-check chunk proof reveals the initial evaluation vector and verifies only
   the current chunk transcript/folding relation.
-- Full witness-to-trace production, AIR reduction, GKR verification, and an
-  externally reviewed end-to-end theorem remain future work.
+- Self-contained witness-to-trace proofs, prover-integrated AIR/GKR semantics,
+  zero-knowledge masking for the M31 chunk, and an externally reviewed
+  end-to-end theorem remain future work.
 
 ## 2026-04-14: Resident Witness Coefficient To Circle FFT-Basis Production
 
@@ -67,24 +211,31 @@ Work completed:
 - Added the `circle_witness_to_fft_basis` Metal kernel. It uses a public M31
   monomial-to-line-basis transform matrix and performs the QM31 linear
   combination on GPU, so private coefficient buffers are not read back.
+- Added `QM31CanonicalityCheckPlan` and the `qm31_check_canonical` Metal kernel.
+  The resident witness basis path scans private x/y witness coefficient buffers
+  on GPU and rejects noncanonical QM31 limbs before applying the transform.
+- Added tiled dense transform scheduling for `CircleWitnessToFFTBasisPlanV1`.
+  The full public matrix oracle remains capped for host materialization, but
+  resident execution can materialize bounded row tiles and dispatch the same
+  checked matrix multiplication per tile.
 - Added `CircleWitnessToFFTBasisCommandPlanV1`, recording that this producer
-  consumes resident monomial coefficient columns and explicitly does not produce
-  AIR traces or verify AIR semantics.
+  consumes resident monomial coefficient columns, validates private witness
+  canonicality, records dense versus tiled matrix scheduling, and explicitly
+  does not produce AIR traces or verify AIR semantics.
 - Added `CircleCodewordPCSFRIProverV1.proveResidentWitnessCoefficients` and a
   verified convenience path that feeds the new resident basis producer into the
   existing resident codeword and PCS/FRI proof emitter.
 - Updated `CirclePCSFRIArtifactManifestV1.current` to mark resident
   witness-to-Circle-FFT-basis production as supported for this narrow
-  coefficient-column shape while leaving AIR trace synthesis, sumcheck/GKR
-  integration, and fused/tiled scheduling as open boundaries.
+  coefficient-column shape while leaving AIR trace synthesis and sumcheck/GKR
+  integration as open boundaries.
 
 Residual risk:
 
-- The transform matrix is a correctness-oriented resident bridge, not a
-  fused/tiled performance kernel. It materializes the full Circle FFT-basis
-  buffer before codeword generation and is capped by
-  `CircleWitnessToFFTBasisOracleV1.maximumMatrixCoefficientCapacity` to avoid
-  accidentally allocating unbounded dense matrices.
+- The transform remains a correctness-oriented resident bridge. It materializes
+  the full Circle FFT-basis buffer before codeword generation and uses tiled
+  dense matrix multiplication for larger witness shapes; it is not a
+  matrix-free or AIR-aware witness compiler.
 - This does not construct witness columns from an AIR, check AIR constraints, or
   verify that the coefficient witness is semantically tied to an application
   statement.
@@ -146,9 +297,10 @@ Work completed:
 Residual risk:
 
 - This remains the implemented Circle PCS/FRI slice. `ApplicationProofV1` now
-  composes it with the implemented M31 sum-check chunk proof, but AIR semantic
-  verification, GKR verification, witness-to-AIR trace production, and
-  AIR-to-sum-check reduction are not implemented.
+  composes it with the implemented M31 sum-check chunk proof, and the separate
+  public sidecar theorem path can check AIR/GKR semantics when sidecars are
+  supplied. The PCS proof itself still does not include AIR, sum-check, or GKR
+  semantics.
 - The concrete profile has not received external cryptographic review or a mechanized theorem for exact 128-bit soundness.
 - The production-facing profile still claims no grinding credit, even though lower-level
   V1 artifacts can now carry verifier-checked grinding nonces.
@@ -228,7 +380,9 @@ Work completed:
 Residual risk:
 
 - This closes the CPU verifier semantics for the current `P(x) + yQ(x)` codeword representation. It does not claim production soundness parameters.
-- Resident-only GPU APIs still assume caller-owned buffers are canonical by construction unless a verified convenience path has CPU-side polynomial material available.
+- Resident-only GPU APIs outside the monomial witness-to-FFT-basis producer still
+  assume caller-owned buffers are canonical by construction unless a verified
+  convenience path has CPU-side polynomial material available.
 
 ## 2026-04-14: QM31 FRI Proof Benchmark Gate And Resident Circle Coefficients
 
@@ -248,7 +402,11 @@ Residual risk:
 
 - `--qm31-fri-proof` benchmarks the CPU proof artifact for the current linear radix-2 layout. It is not a GPU proof emitter, not a Circle-domain proof benchmark, and not a production soundness-parameter claim.
 - The QM31 proof format remains deterministic developer JSON. A compact binary format should be specified before treating it as a wire-format commitment.
-- Resident coefficient-buffer execution assumes the caller has already produced canonical QM31 coefficient limbs. The verified convenience method checks the resulting proof against a CPU polynomial oracle, but the resident-only path intentionally avoids reading private buffers back for canonicality checks.
+- Resident coefficient-buffer execution outside the witness-coefficient bridge
+  assumes the caller has already produced canonical QM31 coefficient limbs. The
+  verified convenience method checks the resulting proof against a CPU
+  polynomial oracle, but the resident FFT-basis entry point still intentionally
+  avoids reading private coefficient buffers back for canonicality checks.
 - The legacy resident monomial-buffer API still requires CPU-readable buffers so it can convert into FFT-basis coefficients before dispatch. The resident FFT-basis entry point and resident witness-coefficient bridge supersede this limitation for callers that can provide private Circle FFT-basis coefficients or private monomial coefficient witness columns directly.
 
 ## 2026-04-13: Linear QM31 FRI Query Proof Format And Verifier

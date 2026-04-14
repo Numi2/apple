@@ -58,6 +58,7 @@ struct BenchConfig {
     var circleFRIFoldChain = false
     var circleFRIFoldChainMerkleTranscript = false
     var circleCodewordProver = false
+    var applicationPublicTheorem = false
     var qm31FRIFoldChain = false
     var qm31FRIFoldChainTranscript = false
     var qm31FRIFoldChainMerkleTranscript = false
@@ -103,7 +104,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript && !qm31FRIProof {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !applicationPublicTheorem && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript && !qm31FRIProof {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -193,6 +194,9 @@ struct BenchConfig {
                 m31DotProduct = false
             case "--circle-codeword-prover", "--circle-codeword-pcs-fri":
                 circleCodewordProver = true
+                m31DotProduct = false
+            case "--application-public-theorem", "--public-theorem-artifact":
+                applicationPublicTheorem = true
                 m31DotProduct = false
             case "--qm31-fri-fold-chain":
                 qm31FRIFoldChain = true
@@ -318,6 +322,8 @@ struct BenchConfig {
           --circle-fri-fold-chain-merkle
                                       Commit each current Circle FRI layer on GPU before deriving the next Circle V1 challenge
           --circle-codeword-prover    Generate a Circle codeword on GPU, keep it resident, and emit a Circle PCS/FRI proof
+          --application-public-theorem
+                                      Build, serialize, deserialize, and verify the deterministic public AIR/GKR theorem artifact
           --qm31-fri-fold-chain      Run chained QM31 radix-2 FRI folds instead of hash/Merkle
           --qm31-fri-fold-chain-transcript
                                       Run chained QM31 FRI folds with GPU transcript-derived challenges
@@ -363,13 +369,14 @@ struct BenchConfig {
             circleFRIFoldChain,
             circleFRIFoldChainMerkleTranscript,
             circleCodewordProver,
+            applicationPublicTheorem,
             qm31FRIFoldChain,
             qm31FRIFoldChainTranscript,
             qm31FRIFoldChainMerkleTranscript,
             qm31FRIProof,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, --qm31-fri-fold-chain-merkle, and --qm31-fri-proof are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --application-public-theorem, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, --qm31-fri-fold-chain-merkle, and --qm31-fri-proof are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -480,6 +487,18 @@ struct BenchConfig {
             }
             guard !Self.qm31FRIFoldChainFieldBufferByteOverflow(inputCount: leafCount, outputCount: outputCount) else {
                 return BenchError.invalidArgument("Requested Circle codeword prover buffers are too large for this process.")
+            }
+            return nil
+        }
+        if applicationPublicTheorem {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with --application-public-theorem.")
+            }
+            guard iterations > 0 else {
+                return BenchError.invalidArgument("--iterations must be greater than zero.")
+            }
+            guard warmupIterations >= 0 else {
+                return BenchError.invalidArgument("--warmups must be non-negative.")
             }
             return nil
         }
@@ -1140,6 +1159,41 @@ struct QM31FRIProofBenchmarkReport: Codable {
     let verification: QM31FRIProofVerificationReport
 }
 
+struct ApplicationPublicTheoremBenchmarkConfigReport: Codable {
+    let artifact: String
+    let airProgram: String
+    let claimScope: String
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct ApplicationPublicTheoremVerificationReport: Codable {
+    let enabled: Bool
+    let verifierAccepted: Bool?
+    let applicationProofScope: String?
+    let m31SumcheckScope: String?
+    let artifactDigestHex: String
+    let proofDigestHex: String
+    let statementDigestHex: String
+}
+
+struct ApplicationPublicTheoremBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: ApplicationPublicTheoremBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let proofBuild: FieldMeasurementReport?
+    let serialization: FieldMeasurementReport?
+    let deserialization: FieldMeasurementReport?
+    let proofVerification: FieldMeasurementReport?
+    let proofSizeBytes: Int
+    let artifactSizeBytes: Int
+    let verification: ApplicationPublicTheoremVerificationReport
+}
+
 struct MerkleOpeningBenchmarkConfigReport: Codable {
     let leafCount: Int
     let leafLength: Int
@@ -1517,6 +1571,13 @@ func makeFieldMeasurement(
     )
 }
 
+func measureWallSeconds<T>(_ body: () throws -> T) rethrows -> (seconds: Double, value: T) {
+    let start = DispatchTime.now().uptimeNanoseconds
+    let value = try body()
+    let end = DispatchTime.now().uptimeNanoseconds
+    return (Double(end - start) / 1_000_000_000, value)
+}
+
 func iso8601Now() -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1773,6 +1834,14 @@ func emitJSON(_ report: QM31FRIFoldChainBenchmarkReport) throws {
 }
 
 func emitJSON(_ report: QM31FRIProofBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+func emitJSON(_ report: ApplicationPublicTheoremBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(report)
@@ -2370,6 +2439,52 @@ func emitText(_ report: QM31FRIProofBenchmarkReport) {
     }
 }
 
+func emitText(_ report: ApplicationPublicTheoremBenchmarkReport) {
+    print("zkmetal-bench application-public-theorem")
+    print("  artifact     : \(report.configuration.artifact)")
+    print("  air program  : \(report.configuration.airProgram)")
+    print("  claim scope  : \(report.configuration.claimScope)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+    print("  archive      : \(report.pipelineArchive.mode)")
+
+    if let proofBuild = report.proofBuild {
+        printSeconds("build wall", proofBuild.wallSeconds)
+        print("  builds/sec   : \(String(format: "%.2f", proofBuild.elementsPerSecond))")
+    }
+    if let serialization = report.serialization {
+        printSeconds("ser wall  ", serialization.wallSeconds)
+        print("  serial/sec   : \(String(format: "%.2f", serialization.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", serialization.inputBytesPerSecond))")
+    }
+    if let deserialization = report.deserialization {
+        printSeconds("de wall   ", deserialization.wallSeconds)
+        print("  deser/sec    : \(String(format: "%.2f", deserialization.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", deserialization.inputBytesPerSecond))")
+    }
+    if let proofVerification = report.proofVerification {
+        printSeconds("verify wall", proofVerification.wallSeconds)
+        print("  verify/sec   : \(String(format: "%.2f", proofVerification.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", proofVerification.inputBytesPerSecond))")
+    }
+
+    print("  proof bytes  : \(report.proofSizeBytes)")
+    print("  artifact bytes: \(report.artifactSizeBytes)")
+    print("  artifact dig : \(report.verification.artifactDigestHex)")
+    print("  proof digest : \(report.verification.proofDigestHex)")
+    print("  statement dig: \(report.verification.statementDigestHex)")
+    if let scope = report.verification.applicationProofScope {
+        print("  app scope    : \(scope)")
+    }
+    if let scope = report.verification.m31SumcheckScope {
+        print("  m31 scope    : \(scope)")
+    }
+    if let accepted = report.verification.verifierAccepted {
+        print("  verifier     : \(accepted)")
+    }
+}
+
 func emitText(_ report: MerkleOpeningBenchmarkReport) {
     print("zkmetal-bench merkle-opening")
     print("  leaves       : \(report.configuration.leafCount)")
@@ -2656,6 +2771,18 @@ func verificationFailureMessages(in report: QM31FRIProofBenchmarkReport) -> [Str
     return []
 }
 
+func verificationFailureMessages(in report: ApplicationPublicTheoremBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.verifierAccepted == true else {
+        return [
+            "application-public-theorem artifact-digest=\(report.verification.artifactDigestHex) proof-digest=\(report.verification.proofDigestHex) statement-digest=\(report.verification.statementDigestHex) verifier=\(String(describing: report.verification.verifierAccepted))",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -2874,6 +3001,17 @@ func makeQM31FRIProofConfigReport(
         roundCount: config.friFoldRounds,
         queryCount: config.friQueryCount,
         totalInverseDomainElementCount: totalInverseDomainElementCount,
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeApplicationPublicTheoremConfigReport(config: BenchConfig) -> ApplicationPublicTheoremBenchmarkConfigReport {
+    ApplicationPublicTheoremBenchmarkConfigReport(
+        artifact: ApplicationPublicTheoremArtifactManifestV1.artifactName,
+        airProgram: "fibonacci-m31-v1",
+        claimScope: "public-air-gkr-sidecar-theorem",
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
@@ -4645,6 +4783,229 @@ func runQM31FRIProofBenchmark(_ config: BenchConfig) throws -> QM31FRIProofBench
     )
 }
 
+func makeBenchmarkFibonacciWitness() throws -> ApplicationWitnessTraceV1 {
+    try ApplicationWitnessTraceV1(columns: [
+        [1, 1, 2, 3],
+        [1, 2, 3, 5],
+    ])
+}
+
+func makeBenchmarkBoundaryEquals(
+    row: Int,
+    column: Int,
+    value: UInt32
+) throws -> AIRBoundaryConstraintV1 {
+    try AIRBoundaryConstraintV1(
+        rowIndex: row,
+        polynomial: AIRConstraintPolynomialV1(terms: [
+            try AIRConstraintTermV1(
+                coefficient: 1,
+                factors: [AIRTraceReferenceV1(kind: .current, column: column)]
+            ),
+            try AIRConstraintTermV1(coefficient: M31Field.negate(value)),
+        ])
+    )
+}
+
+func makeBenchmarkFibonacciAIRDefinition() throws -> AIRDefinitionV1 {
+    let currentA = try AIRTraceReferenceV1(kind: .current, column: 0)
+    let currentB = try AIRTraceReferenceV1(kind: .current, column: 1)
+    let nextA = try AIRTraceReferenceV1(kind: .next, column: 0)
+    let nextB = try AIRTraceReferenceV1(kind: .next, column: 1)
+    let minusOne = M31Field.modulus - 1
+
+    return try AIRDefinitionV1(
+        columnCount: 2,
+        transitionConstraints: [
+            AIRConstraintPolynomialV1(terms: [
+                try AIRConstraintTermV1(coefficient: 1, factors: [nextA]),
+                try AIRConstraintTermV1(coefficient: minusOne, factors: [currentB]),
+            ]),
+            AIRConstraintPolynomialV1(terms: [
+                try AIRConstraintTermV1(coefficient: 1, factors: [nextB]),
+                try AIRConstraintTermV1(coefficient: minusOne, factors: [currentA]),
+                try AIRConstraintTermV1(coefficient: minusOne, factors: [currentB]),
+            ]),
+        ],
+        boundaryConstraints: [
+            try makeBenchmarkBoundaryEquals(row: 0, column: 0, value: 1),
+            try makeBenchmarkBoundaryEquals(row: 0, column: 1, value: 1),
+            try makeBenchmarkBoundaryEquals(row: 3, column: 1, value: 5),
+        ]
+    )
+}
+
+func makeBenchmarkGKRClaim() throws -> GKRClaimV1 {
+    try GKRClaimV1(
+        inputValues: [2, 3],
+        layers: [
+            try GKRLayerV1(gates: [
+                try GKRGateV1(operation: .add, leftInputIndex: 0, rightInputIndex: 1),
+                try GKRGateV1(operation: .multiply, leftInputIndex: 0, rightInputIndex: 1),
+            ]),
+        ],
+        claimedOutputs: [5, 6]
+    )
+}
+
+func makeBenchmarkApplicationPCSStatement() throws -> CirclePCSFRIStatementV1 {
+    let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+    let parameterSet = try CirclePCSFRIParameterSetV1(
+        profileID: .conservative128,
+        logBlowupFactor: 2,
+        queryCount: 2,
+        grindingBits: 0,
+        targetSoundnessBits: 4
+    )
+    let polynomial = try CircleCodewordPolynomial(
+        xCoefficients: [QM31Element(a: 3, b: 5, c: 7, d: 11)],
+        yCoefficients: [QM31Element(a: 13, b: 17, c: 19, d: 23)]
+    )
+    let claim = try CirclePCSFRIPolynomialClaimV1.make(
+        domain: domain,
+        polynomial: polynomial,
+        storageIndices: [0, 5]
+    )
+    return try CirclePCSFRIStatementV1(
+        parameterSet: parameterSet,
+        polynomialClaim: claim
+    )
+}
+
+func makeBenchmarkApplicationPublicTheoremArtifact() throws -> ApplicationPublicTheoremArtifactV1 {
+    try ApplicationPublicTheoremBuilderV1.prove(
+        applicationIdentifier: "apple-zk-prover.bench.public-theorem.fibonacci-m31-v1",
+        witness: makeBenchmarkFibonacciWitness(),
+        airDefinition: makeBenchmarkFibonacciAIRDefinition(),
+        gkrClaim: makeBenchmarkGKRClaim(),
+        pcsStatement: makeBenchmarkApplicationPCSStatement(),
+        sumcheckRounds: 4
+    )
+}
+
+@inline(never)
+func runApplicationPublicTheoremBenchmark(
+    _ config: BenchConfig
+) throws -> ApplicationPublicTheoremBenchmarkReport {
+    let configReport = makeApplicationPublicTheoremConfigReport(config: config)
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            let artifact = try makeBenchmarkApplicationPublicTheoremArtifact()
+            let encoded = try ApplicationPublicTheoremArtifactCodecV1.encode(artifact)
+            let decoded = try ApplicationPublicTheoremArtifactCodecV1.decode(encoded)
+            _ = try ApplicationTheoremVerifierV1.verifyPublicTheoremArtifact(decoded)
+        }
+    }
+
+    var buildWallSeconds: [Double] = []
+    var artifact: ApplicationPublicTheoremArtifactV1?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try makeBenchmarkApplicationPublicTheoremArtifact()
+        }
+        artifact = measured.value
+        buildWallSeconds.append(measured.seconds)
+    }
+    guard let artifact else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var serializationWallSeconds: [Double] = []
+    var encodedArtifact: Data?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try ApplicationPublicTheoremArtifactCodecV1.encode(artifact)
+        }
+        encodedArtifact = measured.value
+        serializationWallSeconds.append(measured.seconds)
+    }
+    guard let encodedArtifact else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var deserializationWallSeconds: [Double] = []
+    var decodedArtifact: ApplicationPublicTheoremArtifactV1?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try ApplicationPublicTheoremArtifactCodecV1.decode(encodedArtifact)
+        }
+        decodedArtifact = measured.value
+        deserializationWallSeconds.append(measured.seconds)
+    }
+    guard let decodedArtifact else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var verificationWallSeconds: [Double] = []
+    var verifierAccepted: Bool?
+    var theoremReport: ApplicationTheoremVerificationReportV1?
+    if config.verifyWithCPU {
+        for _ in 0..<config.iterations {
+            let measured = try measureWallSeconds {
+                try ApplicationTheoremVerifierV1.verificationReport(artifact: decodedArtifact)
+            }
+            theoremReport = measured.value
+            verifierAccepted = measured.value.publicSidecarTheoremVerified
+            verificationWallSeconds.append(measured.seconds)
+        }
+    }
+
+    let proofBytes = try ApplicationProofCodecV1.encode(artifact.proof)
+    let artifactDigest = SHA3Oracle.sha3_256(encodedArtifact).hexString
+    let proofDigest = SHA3Oracle.sha3_256(proofBytes).hexString
+    let statementDigestData = try artifact.statement.digest()
+    let statementDigest = statementDigestData.hexString
+    let emptyGPUSamples = Array<Double?>(repeating: nil, count: config.iterations)
+    let verificationMeasurement = config.verifyWithCPU
+        ? makeFieldMeasurement(
+            wallSeconds: verificationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        )
+        : nil
+
+    return ApplicationPublicTheoremBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        proofBuild: makeFieldMeasurement(
+            wallSeconds: buildWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        serialization: makeFieldMeasurement(
+            wallSeconds: serializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        deserialization: makeFieldMeasurement(
+            wallSeconds: deserializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        proofVerification: verificationMeasurement,
+        proofSizeBytes: proofBytes.count,
+        artifactSizeBytes: encodedArtifact.count,
+        verification: ApplicationPublicTheoremVerificationReport(
+            enabled: config.verifyWithCPU,
+            verifierAccepted: verifierAccepted,
+            applicationProofScope: theoremReport?.componentReport.acceptedClaimScope?.rawValue,
+            m31SumcheckScope: theoremReport?.componentReport.m31SumcheckClaimScope?.rawValue,
+            artifactDigestHex: artifactDigest,
+            proofDigestHex: proofDigest,
+            statementDigestHex: statementDigest
+        )
+    )
+}
+
 @inline(never)
 func runM31DotProductBenchmark(_ config: BenchConfig) throws -> M31DotProductBenchmarkReport {
     let lhs = makeDeterministicM31Vector(count: config.leafCount, salt: 0x31)
@@ -5370,6 +5731,20 @@ func runCLI() -> Int32 {
             }
         } else if config.circleCodewordProver {
             let report = try runCircleCodewordProverBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.applicationPublicTheorem {
+            let report = try runApplicationPublicTheoremBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {
