@@ -9,8 +9,9 @@ AppleZKProver is not production proving software yet. It is a GPU-accelerated cr
 - Merkle leaves and internal nodes,
 - future field/codeword buffers,
 - future transcript challenges,
-- final commitments, openings, and proofs.
+- final commitments, openings, and proofs,
 - public PCS statements and verifier decisions.
+- public application proof statements, statement digests, and verifier decisions.
 
 ## Attacker Model
 
@@ -66,10 +67,14 @@ The current package aims to guarantee:
 - the resident Circle PCS/FRI proof emitter returns canonical proof bytes from an already-resident evaluation/codeword buffer, keeps the materialized committed-layer log private, and `proveVerified` decodes those bytes before checking them with the independent CPU verifier,
 - the Circle FFT codeword plan validates canonical bounded `P(x) + yQ(x)` coefficients, rejects overlapping coefficient/output resident ranges, writes codewords into resident buffers with FFT stages, and is checked against a direct CPU Circle-domain oracle before feeding the resident proof emitter in the verified path,
 - the composed Circle coefficient-to-proof plan accepts Circle FFT-basis coefficient buffers, keeps the generated codeword and intermediate FRI layers private, and reads back only public proof material: commitments, final layer, queried leaves, sibling paths, and encoded proof bytes,
+- `CircleWitnessToFFTBasisPlanV1` transforms private resident monomial coefficient witness columns into resident Circle FFT-basis coefficients with a public M31 transform matrix; this avoids coefficient readback but does not synthesize AIR traces or verify AIR semantics,
 - `CirclePCSFRIParameterSetV1.conservative128` fixes the V1 Circle PCS/FRI verifier profile at `logBlowupFactor = 4`, `queryCount = 36`, `foldingStep = 1`, and `grindingBits = 0`; lower-level V1 proof and transcript surfaces support verifier-checked nonzero grinding through an 8-byte nonce, but the conservative public profile claims no grinding credit,
-- `CirclePCSFRIArtifactManifestV1.current` records the implemented PCS slice and explicitly marks witness/AIR, sumcheck/GKR artifact integration, resident witness-to-Circle-FFT-basis production, and fused/tiled codeword-to-commitment scheduling as unsupported,
+- `CirclePCSFRIArtifactManifestV1.current` records the implemented PCS slice and explicitly marks AIR trace synthesis, sumcheck/GKR artifact integration, and fused/tiled codeword-to-commitment scheduling as unsupported,
 - `CirclePCSFRIContractVerifierV1` is the public CPU-only verifier contract for the implemented Circle PCS/FRI slice. It enforces the profile, canonical domain, exact round count, terminal constant final layer, combined coefficient budget, transcript binding, Merkle openings, structured polynomial claims, and claimed first-layer evaluation openings,
 - the checked-in Circle PCS/FRI corpus pins canonical accepted proof bytes, expected proof digests, and tamper/rejection vectors for the strict contract,
+- `M31SumcheckProofV1` serializes the narrow M31 chunk coefficient log, transcript challenges, and final folded vector; `M31SumcheckVerifierV1` independently replays the framed transcript, checks fold consistency, and binds initial/final vector digests,
+- `ApplicationProofV1` binds witness commitment, AIR definition, and GKR claim digests into one `ApplicationProofStatementV1` digest, then verifies the embedded `M31SumcheckProofV1` and `CirclePCSFRIProofV1` with CPU-only verifier code,
+- `ApplicationProofManifestV1.current` records that AIR semantic verification, GKR verification, witness-to-AIR trace production, and AIR-to-sum-check reduction remain unsupported,
 - Keccak-F1600 permutation-only batch plans are differentially tested against the CPU permutation oracle for scalar and opt-in simdgroup kernels,
 - reusable hash, Keccak-F permutation, Merkle, M31 vector, and M31 sum-check plans expose explicit buffer clearing methods; Merkle and M31 clearing includes shared upload ring slots and private scratch buffers,
 - shared upload ring copies clear unused slot tails before reuse, and strided GPU result buffers clear unwritten padding before returning `Data`,
@@ -120,7 +125,7 @@ The current SHA3/Merkle kernels operate on public lengths and regular memory lay
 - secret-dependent command topology,
 - logging or serializing private intermediate data.
 
-The M31 sum-check and dot-product uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the GPU path; callers that need CPU-side input validation must use the public array API. M31 vector inversion rejects zero through the public array API before dispatch because zero has no field inverse.
+The M31 sum-check and dot-product uploaded-buffer APIs assume canonical field elements already reside in the buffer. They intentionally do not modulo-reduce uploaded values in the GPU path; callers that need CPU-side input validation must use the public array API. M31 vector inversion rejects zero through the public array API before dispatch because zero has no field inverse. `M31SumcheckProofV1` is not zero-knowledge; its first coefficient slice is the initial evaluation vector for the narrow chunk proof.
 
 When avoiding those patterns is impossible, the API must document the leakage and the code must not be used for private-witness production proving.
 
@@ -145,6 +150,6 @@ Before this project claims production security:
 - fuzzing must cover public deserialization and verifier inputs,
 - GPU/CPU differential tests must run over randomized workloads,
 - cryptographic parameter choices must be documented,
-- Circle witness/AIR/sumcheck/GKR outputs must be integrated into the same proof artifact before any full proof-system claim,
+- Circle witness/AIR/sumcheck/GKR outputs must either have semantic verifiers integrated into the same proof artifact or be explicitly excluded from the statement class before any full proof-system claim,
 - lattice-based parameter choices, if added later, must include an independent lattice-estimator reproduction artifact,
 - an external cryptography review must be completed.

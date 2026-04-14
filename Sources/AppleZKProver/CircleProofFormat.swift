@@ -163,6 +163,7 @@ public enum CirclePCSFRICodewordCommitmentScheduleV1: String, Codable, CaseItera
 
 public enum CirclePCSFRIOpenBoundaryV1: String, Codable, CaseIterable, Sendable {
     case witnessAIRToCircleFFTBasis = "witness-air-to-circle-fft-basis"
+    case airTraceSynthesis = "air-trace-synthesis"
     case sumcheckGKRArtifactIntegration = "sumcheck-gkr-artifact-integration"
     case nonzeroGrinding = "nonzero-grinding"
     case fusedTiledCodewordCommitmentScheduling = "fused-tiled-codeword-commitment-scheduling"
@@ -192,10 +193,10 @@ public struct CirclePCSFRIArtifactManifestV1: Equatable, Codable, Sendable {
         self.includesSumcheck = false
         self.includesGKR = false
         self.supportsNonzeroGrinding = true
-        self.residentWitnessToCircleFFTBasis = false
+        self.residentWitnessToCircleFFTBasis = true
         self.codewordCommitmentSchedule = .materializedCodewordThenCommit
         self.openBoundaries = [
-            .witnessAIRToCircleFFTBasis,
+            .airTraceSynthesis,
             .sumcheckGKRArtifactIntegration,
             .fusedTiledCodewordCommitmentScheduling,
         ]

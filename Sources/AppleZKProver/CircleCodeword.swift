@@ -301,6 +301,7 @@ public struct CircleCodewordResult: Sendable {
 public enum CircleCodewordPCSFRICoefficientInputV1: String, Codable, CaseIterable, Sendable {
     case hostMonomialPolynomial = "host-monomial-polynomial"
     case cpuVisibleResidentMonomialBuffers = "cpu-visible-resident-monomial-buffers"
+    case residentWitnessMonomialCoefficientColumns = "resident-witness-monomial-coefficient-columns"
     case residentCircleFFTBasisBuffer = "resident-circle-fft-basis-buffer"
 }
 
@@ -757,15 +758,18 @@ public final class CircleCodewordPlan: @unchecked Sendable {
 
 public struct CircleCodewordPCSFRIProverV1Result: Sendable {
     public let proofResult: CirclePCSFRIResidentProverV1Result
+    public let witnessBasisStats: GPUExecutionStats?
     public let codewordStats: GPUExecutionStats
     public let stats: GPUExecutionStats
 
     public init(
         proofResult: CirclePCSFRIResidentProverV1Result,
+        witnessBasisStats: GPUExecutionStats? = nil,
         codewordStats: GPUExecutionStats,
         stats: GPUExecutionStats
     ) {
         self.proofResult = proofResult
+        self.witnessBasisStats = witnessBasisStats
         self.codewordStats = codewordStats
         self.stats = stats
     }
@@ -794,6 +798,8 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
     private let codewordPlan: CircleCodewordPlan
     private let proofProver: CirclePCSFRIResidentProverV1
     private let codewordBuffer: MTLBuffer
+    private var witnessBasisPlan: CircleWitnessToFFTBasisPlanV1?
+    private var circleCoefficientBuffer: MTLBuffer?
     private let executionLock = NSLock()
 
     public init(
@@ -908,6 +914,27 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         )
     }
 
+    public func proveResidentWitnessCoefficients(
+        xWitnessCoefficientBuffer: MTLBuffer,
+        xWitnessCoefficientOffset: Int = 0,
+        xWitnessCoefficientCount: Int,
+        yWitnessCoefficientBuffer: MTLBuffer,
+        yWitnessCoefficientOffset: Int = 0,
+        yWitnessCoefficientCount: Int
+    ) throws -> CircleCodewordPCSFRIProverV1Result {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        return try proveResidentWitnessCoefficientsLocked(
+            xWitnessCoefficientBuffer: xWitnessCoefficientBuffer,
+            xWitnessCoefficientOffset: xWitnessCoefficientOffset,
+            xWitnessCoefficientCount: xWitnessCoefficientCount,
+            yWitnessCoefficientBuffer: yWitnessCoefficientBuffer,
+            yWitnessCoefficientOffset: yWitnessCoefficientOffset,
+            yWitnessCoefficientCount: yWitnessCoefficientCount
+        )
+    }
+
     public func proveCircleFFTCoefficientsResidentVerified(
         polynomial: CircleCodewordPolynomial,
         circleCoefficientBuffer: MTLBuffer,
@@ -935,6 +962,44 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
               ) else {
             throw AppleZKProverError.correctnessValidationFailed(
                 "Circle codeword PCS/FRI resident FFT-coefficient prover emitted a proof rejected by the CPU oracle or verifier."
+            )
+        }
+        return result
+    }
+
+    public func proveResidentWitnessCoefficientsVerified(
+        polynomial: CircleCodewordPolynomial,
+        xWitnessCoefficientBuffer: MTLBuffer,
+        xWitnessCoefficientOffset: Int = 0,
+        yWitnessCoefficientBuffer: MTLBuffer,
+        yWitnessCoefficientOffset: Int = 0
+    ) throws -> CircleCodewordPCSFRIProverV1Result {
+        let expectedCodeword = try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            domain: domain
+        )
+        let result = try proveResidentWitnessCoefficients(
+            xWitnessCoefficientBuffer: xWitnessCoefficientBuffer,
+            xWitnessCoefficientOffset: xWitnessCoefficientOffset,
+            xWitnessCoefficientCount: polynomial.xCoefficients.count,
+            yWitnessCoefficientBuffer: yWitnessCoefficientBuffer,
+            yWitnessCoefficientOffset: yWitnessCoefficientOffset,
+            yWitnessCoefficientCount: polynomial.yCoefficients.count
+        )
+        let expectedProof = try CircleFRIProofBuilderV1.prove(
+            evaluations: expectedCodeword,
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputs: publicInputs,
+            roundCount: roundCount
+        )
+        guard result.proof == expectedProof,
+              try CirclePCSFRIProofVerifierV1.verify(
+                proof: result.proof,
+                publicInputs: publicInputs
+              ) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Circle codeword PCS/FRI resident witness-coefficient prover emitted a proof rejected by the CPU oracle or verifier."
             )
         }
         return result
@@ -1011,11 +1076,78 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
 
         codewordPlan.clearReusableBuffers()
         try proofProver.clearReusableBuffers()
+        var buffersToClear = [codewordBuffer]
+        if let circleCoefficientBuffer {
+            buffersToClear.append(circleCoefficientBuffer)
+        }
         try MetalBufferFactory.zeroPrivateBuffers(
-            [codewordBuffer],
+            buffersToClear,
             context: context,
             label: "AppleZKProver.CircleCodewordPCSFRIProver.Clear"
         )
+    }
+
+    private func proveResidentWitnessCoefficientsLocked(
+        xWitnessCoefficientBuffer: MTLBuffer,
+        xWitnessCoefficientOffset: Int,
+        xWitnessCoefficientCount: Int,
+        yWitnessCoefficientBuffer: MTLBuffer,
+        yWitnessCoefficientOffset: Int,
+        yWitnessCoefficientCount: Int
+    ) throws -> CircleCodewordPCSFRIProverV1Result {
+        let start = DispatchTime.now()
+        let witnessBasisPlan = try requireWitnessBasisPlanLocked()
+        let circleCoefficientBuffer = try requireCircleCoefficientBufferLocked()
+        let witnessBasisStats = try witnessBasisPlan.executeResident(
+            xWitnessCoefficientBuffer: xWitnessCoefficientBuffer,
+            xWitnessCoefficientOffset: xWitnessCoefficientOffset,
+            xWitnessCoefficientCount: xWitnessCoefficientCount,
+            yWitnessCoefficientBuffer: yWitnessCoefficientBuffer,
+            yWitnessCoefficientOffset: yWitnessCoefficientOffset,
+            yWitnessCoefficientCount: yWitnessCoefficientCount,
+            outputCircleCoefficientBuffer: circleCoefficientBuffer
+        )
+        let codewordStats = try codewordPlan.executeResident(
+            circleCoefficientBuffer: circleCoefficientBuffer,
+            outputBuffer: codewordBuffer
+        )
+        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        let end = DispatchTime.now()
+        return CircleCodewordPCSFRIProverV1Result(
+            proofResult: proofResult,
+            witnessBasisStats: witnessBasisStats,
+            codewordStats: codewordStats,
+            stats: GPUExecutionStats(
+                cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
+                gpuSeconds: Self.sumGPUSeconds(
+                    witnessBasisStats.gpuSeconds,
+                    codewordStats.gpuSeconds,
+                    proofResult.stats.gpuSeconds
+                )
+            )
+        )
+    }
+
+    private func requireWitnessBasisPlanLocked() throws -> CircleWitnessToFFTBasisPlanV1 {
+        if let witnessBasisPlan {
+            return witnessBasisPlan
+        }
+        let plan = try CircleWitnessToFFTBasisPlanV1(context: context, domain: domain)
+        witnessBasisPlan = plan
+        return plan
+    }
+
+    private func requireCircleCoefficientBufferLocked() throws -> MTLBuffer {
+        if let circleCoefficientBuffer {
+            return circleCoefficientBuffer
+        }
+        let buffer = try MetalBufferFactory.makePrivateBuffer(
+            device: context.device,
+            length: try checkedBufferLength(domain.size, CircleCodewordPlan.elementByteCount),
+            label: "AppleZKProver.CircleCodewordPCSFRIProver.CircleFFTCoefficients"
+        )
+        circleCoefficientBuffer = buffer
+        return buffer
     }
 
     private func proveCircleFFTCoefficientsResidentLocked(
@@ -1045,6 +1177,13 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
             return nil
         }
         return lhs + rhs
+    }
+
+    private static func sumGPUSeconds(_ first: Double?, _ second: Double?, _ third: Double?) -> Double? {
+        guard let first, let second, let third else {
+            return nil
+        }
+        return first + second + third
     }
 }
 #endif

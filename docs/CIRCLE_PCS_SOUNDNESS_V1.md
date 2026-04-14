@@ -21,9 +21,11 @@ commitments over canonical QM31 leaves, Fiat-Shamir transcript binding, FRI
 fold consistency, final terminal-layer shape, and claimed first-layer
 evaluation openings.
 
-It does not cover witness/AIR/sumcheck/GKR generation, a full application proof
-artifact, external review, side-channel resistance, malicious GPU/driver
-behavior, or fused/tiled performance claims.
+It does not cover AIR trace generation, AIR semantic verification, GKR
+verification, external review, side-channel resistance, malicious GPU/driver
+behavior, or fused/tiled performance claims. `ApplicationProofV1` composes this
+PCS verifier with the implemented M31 sum-check chunk verifier, but it does not
+extend this PCS soundness note into an end-to-end AIR/GKR theorem.
 
 ## Parameter Profile
 
@@ -121,10 +123,10 @@ The checked-in corpus includes this rejection vector.
 
 `CirclePCSFRIArtifactManifestV1.current` is the code-level scope manifest for this
 boundary. It records that the artifact includes only the Circle PCS/FRI slice,
-does not include witness/AIR, sumcheck, or GKR output, does not produce Circle
-FFT-basis coefficients from a resident witness pipeline, does not use fused/tiled
-codeword-to-commitment scheduling, and supports verifier-checked nonzero
-grinding.
+does not include witness/AIR, sumcheck, or GKR output inside the PCS proof
+itself, supports the narrow resident monomial coefficient witness-column to
+Circle FFT-basis producer, does not use fused/tiled codeword-to-commitment scheduling, and
+supports verifier-checked nonzero grinding.
 
 ## Fiat-Shamir Binding
 
@@ -214,8 +216,9 @@ expected accept/reject result.
 
 The following remain outside the V1 soundness claim:
 
-- witness/AIR/sumcheck/GKR output into Circle FFT-basis coefficients,
-- one combined final proof artifact that includes sumcheck/GKR and PCS data,
+- AIR/sumcheck/GKR output into Circle FFT-basis coefficients beyond resident
+  monomial coefficient witness columns,
+- AIR semantic verification, GKR verification, and AIR-to-sum-check reduction,
 - a reviewed end-to-end proof-system theorem for an application statement,
 - a reviewed production profile that assigns nonzero grinding credit,
 - GPU-resident canonicality checks for private witness buffers,

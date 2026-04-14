@@ -2,8 +2,10 @@
 
 Status: implementation foundation with resident Circle FRI folding, Circle FFT
 codeword-to-proof emission, a strict production-facing PCS verifier contract,
-and a reproducible proof corpus. This is still not a complete application
-prover because witness/AIR/sumcheck/GKR integration remains outside this slice.
+and a reproducible proof corpus. `ApplicationProofV1` composes this PCS slice
+with the implemented M31 sum-check chunk proof, but this Circle note remains
+scoped to PCS; AIR semantic verification, GKR verification, and witness-to-AIR
+trace production remain outside this slice.
 
 This note records the consensus-facing Circle-domain and proof-artifact surface added in
 `CircleDomain.swift` and `CircleProofFormat.swift`.
@@ -212,7 +214,16 @@ caller-owned Circle FFT-basis coefficient buffer and never reads that coefficien
 the generated codeword, or intermediate FRI layers back to the CPU. `prove(polynomial:)`
 and `proveResidentCoefficients` remain convenience paths for the current monomial
 `P(x) + yQ(x)` API; they may prepare FFT-basis coefficients on the host before entering the
-resident command plan. `proveVerified` and `proveCircleFFTCoefficientsResidentVerified`
+resident command plan. `CircleWitnessToFFTBasisPlanV1` adds a narrow resident producer for
+private monomial coefficient witness columns: it multiplies resident x/y coefficient buffers
+by a public M31 monomial-to-line-basis transform matrix and writes the interleaved Circle
+FFT-basis coefficients into a resident output buffer. `proveResidentWitnessCoefficients`
+uses that producer before the existing coefficient-to-proof path, without reading the
+coefficient witness buffers back to the CPU. This is not AIR trace synthesis and it does not
+verify AIR semantics. The current matrix producer is capped by
+`CircleWitnessToFFTBasisOracleV1.maximumMatrixCoefficientCapacity`; larger witness pipelines
+need a tiled transform rather than a dense public matrix. `proveVerified` and
+`proveCircleFFTCoefficientsResidentVerified`
 check the composed path against the CPU codeword oracle, CPU proof builder, and independent
 CPU verifier.
 
@@ -252,7 +263,8 @@ profile.
 
 `CirclePCSFRIArtifactManifestV1.current` is the machine-checkable V1 scope manifest. It
 records that the artifact includes the Circle PCS/FRI slice, does not include witness/AIR,
-sumcheck, or GKR data, does not support resident witness-to-Circle-FFT-basis generation,
+sumcheck, or GKR data inside the PCS proof itself, supports the narrow resident
+monomial-coefficient witness-to-Circle-FFT-basis producer,
 supports verifier-checked nonzero grinding, and uses the current
 materialized-codeword-then-commit schedule rather than a fused/tiled commitment schedule.
 
@@ -396,6 +408,8 @@ Implemented:
 - composed Circle FFT-basis coefficient input plus resident PCS/FRI proof emission as one
   explicit command-plan surface
 - resident coefficient-buffer entry point for composed Circle codeword plus PCS/FRI proof emission
+- resident monomial coefficient witness-column to Circle FFT-basis production using a public
+  M31 transform matrix
 - Circle fold-chain benchmark modes for explicit and Merkle-transcript challenges,
   including query-extraction and full proof-emission timing for the Merkle-transcript mode
 - Circle codeword prover benchmark mode with codeword, proof-emission, full-prover, proof-size,
@@ -417,7 +431,8 @@ Implemented:
 Not yet implemented:
 
 - fused/tiled Circle FFT codeword plus commitment command plans
-- end-to-end witness-to-Circle-FFT-basis generation beyond the current coefficient-to-proof slice
-- sumcheck/GKR integration into the same proof artifact
+- AIR trace synthesis and end-to-end proof-system witness generation beyond resident
+  coefficient-witness columns
+- AIR semantic verification, GKR verification, and witness-to-AIR trace production
 - a reviewed production-facing parameter profile that assigns grinding credit
 - external cryptographic review of the concrete parameter profile

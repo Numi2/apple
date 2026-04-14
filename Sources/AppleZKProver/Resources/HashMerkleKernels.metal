@@ -102,6 +102,13 @@ struct CircleCodewordFFTStageParams {
     uint fieldModulus;
 };
 
+struct CircleWitnessToFFTBasisParams {
+    uint coefficientCapacity;
+    uint xCoefficientCount;
+    uint yCoefficientCount;
+    uint fieldModulus;
+};
+
 struct CircleCodewordFFTTwiddleMaterializeParams {
     uint twiddleCount;
     uint stage;
@@ -1823,6 +1830,45 @@ kernel void circle_codeword_fft_stage(
     const uint4 scaledRight = qm31_mul_m31_mod(values[rightIndex], twiddle);
     values[leftIndex] = qm31_add_mod(left, scaledRight);
     values[rightIndex] = qm31_sub_mod(left, scaledRight);
+}
+
+kernel void circle_witness_to_fft_basis(
+    const device uint4 *xCoefficients [[buffer(0)]],
+    const device uint4 *yCoefficients [[buffer(1)]],
+    const device uint *transformMatrix [[buffer(2)]],
+    device uint4 *circleCoefficients [[buffer(3)]],
+    constant CircleWitnessToFFTBasisParams &params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.coefficientCapacity == 0u ||
+        params.xCoefficientCount > params.coefficientCapacity ||
+        params.yCoefficientCount > params.coefficientCapacity ||
+        gid >= params.coefficientCapacity) {
+        return;
+    }
+
+    uint4 xAccumulator = uint4(0u, 0u, 0u, 0u);
+    uint4 yAccumulator = uint4(0u, 0u, 0u, 0u);
+    const uint rowOffset = gid * params.coefficientCapacity;
+    for (uint column = 0u; column < params.xCoefficientCount; ++column) {
+        const uint scalar = transformMatrix[rowOffset + column];
+        xAccumulator = qm31_add_mod(
+            xAccumulator,
+            qm31_mul_m31_mod(xCoefficients[column], scalar)
+        );
+    }
+    for (uint column = 0u; column < params.yCoefficientCount; ++column) {
+        const uint scalar = transformMatrix[rowOffset + column];
+        yAccumulator = qm31_add_mod(
+            yAccumulator,
+            qm31_mul_m31_mod(yCoefficients[column], scalar)
+        );
+    }
+
+    const uint outputIndex = gid << 1u;
+    circleCoefficients[outputIndex] = xAccumulator;
+    circleCoefficients[outputIndex + 1u] = yAccumulator;
 }
 
 kernel void qm31_fri_fold(

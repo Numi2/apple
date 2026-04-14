@@ -2,6 +2,93 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: Application Proof Envelope For Implemented Components
+
+Finding:
+
+- The repository had independently verified Circle PCS/FRI and M31 sum-check
+  chunk components, but no final application-level artifact that bound those
+  proofs together with witness, AIR, and GKR public claims.
+- The repo still has no concrete AIR semantic verifier or GKR verifier, so
+  filling the artifact gap must not turn into an unsupported full proof-system
+  claim.
+
+Work completed:
+
+- Added `ApplicationProofStatementV1`, which binds an application identifier,
+  witness commitment digest, AIR definition digest, GKR claim digest,
+  `M31SumcheckStatementV1`, and `CirclePCSFRIStatementV1` into a SHA3-256
+  statement digest.
+- Added `M31SumcheckProofV1`, `M31SumcheckProofBuilderV1`,
+  `M31SumcheckVerifierV1`, and `M31SumcheckProofCodecV1` for the implemented
+  M31 chunk transcript. The verifier replays framed challenges, checks fold
+  consistency, and binds initial/final vector digests.
+- Added `ApplicationProofV1`, `ApplicationProofBuilderV1`,
+  `ApplicationProofVerifierV1`, and `ApplicationProofCodecV1`. The verifier
+  rejects statement digest mismatches, invalid M31 sum-check chunks, and invalid
+  Circle PCS/FRI contract proofs.
+- Added `ApplicationProofManifestV1.current`, which records the completed
+  artifact composition and explicitly marks AIR semantic verification, GKR
+  verification, witness-to-AIR trace production, and AIR-to-sum-check reduction
+  as open.
+- Added regression coverage for valid application proof round-trip, mismatched
+  GKR digest rejection, sum-check challenge tamper rejection, codec trailing
+  byte rejection, and manifest scope.
+- Added `Tests/AppleZKProverTests/Resources/ApplicationProofCorpusV1.json`, a
+  checked-in application proof corpus with canonical accepted bytes, expected
+  proof digest, statement-digest mismatch rejection, sum-check challenge tamper
+  rejection, and embedded PCS final-layer tamper rejection.
+
+Residual risk:
+
+- This is a final envelope for the implemented verifier components, not a
+  proof that a witness satisfies an AIR or that a GKR claim is true. The
+  sum-check chunk proof reveals the initial evaluation vector and verifies only
+  the current chunk transcript/folding relation.
+- Full witness-to-trace production, AIR reduction, GKR verification, and an
+  externally reviewed end-to-end theorem remain future work.
+
+## 2026-04-14: Resident Witness Coefficient To Circle FFT-Basis Production
+
+Finding:
+
+- The resident Circle PCS path could consume a private Circle FFT-basis
+  coefficient buffer, but callers with private monomial coefficient witness
+  columns still had to convert those coefficients on the host or precompute the
+  FFT-basis buffer elsewhere.
+- Closing that residency gap must not be described as AIR trace synthesis or
+  AIR semantic verification.
+
+Work completed:
+
+- Added `CircleWitnessToFFTBasisPlanV1`, which accepts private resident x/y
+  monomial coefficient buffers and writes interleaved Circle FFT-basis
+  coefficients into a resident output buffer.
+- Added the `circle_witness_to_fft_basis` Metal kernel. It uses a public M31
+  monomial-to-line-basis transform matrix and performs the QM31 linear
+  combination on GPU, so private coefficient buffers are not read back.
+- Added `CircleWitnessToFFTBasisCommandPlanV1`, recording that this producer
+  consumes resident monomial coefficient columns and explicitly does not produce
+  AIR traces or verify AIR semantics.
+- Added `CircleCodewordPCSFRIProverV1.proveResidentWitnessCoefficients` and a
+  verified convenience path that feeds the new resident basis producer into the
+  existing resident codeword and PCS/FRI proof emitter.
+- Updated `CirclePCSFRIArtifactManifestV1.current` to mark resident
+  witness-to-Circle-FFT-basis production as supported for this narrow
+  coefficient-column shape while leaving AIR trace synthesis, sumcheck/GKR
+  integration, and fused/tiled scheduling as open boundaries.
+
+Residual risk:
+
+- The transform matrix is a correctness-oriented resident bridge, not a
+  fused/tiled performance kernel. It materializes the full Circle FFT-basis
+  buffer before codeword generation and is capped by
+  `CircleWitnessToFFTBasisOracleV1.maximumMatrixCoefficientCapacity` to avoid
+  accidentally allocating unbounded dense matrices.
+- This does not construct witness columns from an AIR, check AIR constraints, or
+  verify that the coefficient witness is semantically tied to an application
+  statement.
+
 ## 2026-04-14: V1 Scope Manifest And Grinding Nonce Support
 
 Finding:
@@ -17,8 +104,7 @@ Work completed:
 
 - Added `CirclePCSFRIArtifactManifestV1.current`, which records that V1 includes the
   Circle PCS/FRI slice and explicitly does not include witness/AIR, sumcheck, or GKR
-  output, resident witness-to-Circle-FFT-basis production, or fused/tiled
-  codeword-to-commitment scheduling.
+  output, and records the remaining unsupported boundaries.
 - Extended `CircleCodewordPCSFRIResidentCommandPlanV1` with an explicit
   materialized-codeword-then-commit schedule and a `usesFusedTiledCodewordCommitment`
   flag fixed to `false`.
@@ -33,10 +119,13 @@ Work completed:
 
 Residual risk:
 
-- This deliberately does not implement witness/AIR/sumcheck/GKR integration, resident
-  witness-to-FFT-basis generation, or fused/tiled scheduling. The production-facing
-  `conservative128` profile still uses `grindingBits = 0`; assigning grinding credit to a
-  public profile remains separate parameter-review work.
+- This deliberately does not implement AIR semantic verification, GKR
+  verification, or fused/tiled scheduling. A later resident coefficient-witness
+  bridge covers only monomial coefficient columns to Circle FFT-basis buffers.
+  `ApplicationProofV1` is the separate final envelope for the implemented PCS
+  and M31 sum-check components. The production-facing `conservative128` profile
+  still uses `grindingBits = 0`; assigning grinding credit to a public profile
+  remains separate parameter-review work.
 
 ## 2026-04-14: Production-Facing Circle PCS Contract, Parameters, And Corpus
 
@@ -56,7 +145,10 @@ Work completed:
 
 Residual risk:
 
-- This is still the implemented Circle PCS/FRI slice, not a complete application proof system. Witness/AIR/sumcheck/GKR generation is not integrated into the final proof artifact.
+- This remains the implemented Circle PCS/FRI slice. `ApplicationProofV1` now
+  composes it with the implemented M31 sum-check chunk proof, but AIR semantic
+  verification, GKR verification, witness-to-AIR trace production, and
+  AIR-to-sum-check reduction are not implemented.
 - The concrete profile has not received external cryptographic review or a mechanized theorem for exact 128-bit soundness.
 - The production-facing profile still claims no grinding credit, even though lower-level
   V1 artifacts can now carry verifier-checked grinding nonces.
@@ -78,8 +170,8 @@ Work completed:
 
 Residual risk:
 
-- This closes the resident coefficient-to-proof boundary for the current Circle FFT-basis input model. It does not generate witness polynomials or FFT-basis coefficients on GPU from a larger proving system.
-- `prove(polynomial:)` and the legacy resident monomial-buffer convenience path still perform the monomial-to-Circle-FFT-basis conversion on the host. Callers that require a no-host-read resident path should provide Circle FFT-basis coefficients directly.
+- This closes the resident coefficient-to-proof boundary for the current Circle FFT-basis input model. The resident witness-coefficient bridge covers monomial coefficient columns, but still does not generate AIR witness polynomials from a larger proving system.
+- `prove(polynomial:)` and the legacy resident monomial-buffer convenience path still perform the monomial-to-Circle-FFT-basis conversion on the host. Callers that require a no-host-read resident path can now provide either Circle FFT-basis coefficients directly or private monomial coefficient witness columns through `proveResidentWitnessCoefficients`.
 - Legacy artifact/prover APIs still allow caller-selected developer parameters for development and lower-level tests. Public production-facing verification should use `CirclePCSFRIContractVerifierV1` with the fixed conservative profile; external cryptographic review of that concrete profile is still required.
 - The path writes a full private codeword before committing it. Fused/tiled codeword-to-commitment scheduling remains performance work and must be benchmarked before any stronger throughput claim.
 
@@ -157,7 +249,7 @@ Residual risk:
 - `--qm31-fri-proof` benchmarks the CPU proof artifact for the current linear radix-2 layout. It is not a GPU proof emitter, not a Circle-domain proof benchmark, and not a production soundness-parameter claim.
 - The QM31 proof format remains deterministic developer JSON. A compact binary format should be specified before treating it as a wire-format commitment.
 - Resident coefficient-buffer execution assumes the caller has already produced canonical QM31 coefficient limbs. The verified convenience method checks the resulting proof against a CPU polynomial oracle, but the resident-only path intentionally avoids reading private buffers back for canonicality checks.
-- The legacy resident monomial-buffer API still requires CPU-readable buffers so it can convert into FFT-basis coefficients before dispatch. The resident FFT-basis entry point described above supersedes this limitation for callers that can provide Circle FFT-basis coefficients directly.
+- The legacy resident monomial-buffer API still requires CPU-readable buffers so it can convert into FFT-basis coefficients before dispatch. The resident FFT-basis entry point and resident witness-coefficient bridge supersede this limitation for callers that can provide private Circle FFT-basis coefficients or private monomial coefficient witness columns directly.
 
 ## 2026-04-13: Linear QM31 FRI Query Proof Format And Verifier
 

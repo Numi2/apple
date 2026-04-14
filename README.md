@@ -10,7 +10,8 @@ FRI fold layer, resident multi-layer Circle FRI fold chains with explicit or
 Circle V1 Merkle-transcript challenges, multi-layer CPU Circle FRI proof
 verification, Circle FFT codeword generation feeding resident PCS/FRI proof
 emission, a strict Circle PCS verifier contract for the implemented slice, and
-early M31 sum-check execution.
+early M31 sum-check execution plus an application proof envelope that binds
+witness/AIR/GKR digests to verified M31 sum-check and Circle PCS components.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
 a broad cryptography catalog and does not claim production proof-system security
@@ -28,9 +29,9 @@ round-trips.
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
 | M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, canonical Circle first-fold and multi-layer fold plans with explicit or Circle V1 Merkle-transcript challenges, Circle FFT codeword generation over `P(x) + yQ(x)` into resident buffers, a multi-layer CPU Circle FRI proof verifier, and a linear QM31 FRI proof/decommitment verifier |
-| Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer |
+| Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer; CPU verifier-facing `M31SumcheckProofV1` for the narrow chunk transcript |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
-| Verification | CPU-differential tests and verified accelerator APIs for the implemented slice |
+| Verification | CPU-differential tests, verified accelerator APIs, strict Circle PCS verification, and `ApplicationProofV1` composition for the implemented slice |
 | Measurement | `zkmetal-bench` CLI with warmups, repeated samples, JSON output, CPU verification gates, and checked-in Apple M4 / Apple9 baselines |
 
 ## Why This Exists
@@ -123,7 +124,10 @@ Implemented today:
   input, codeword generation, Merkle roots, transcript challenges, FRI folds,
   query extraction, and proof serialization. It keeps the generated codeword
   and materialized FRI layers private, with readback limited to public proof
-  material. A structured `CirclePCSFRIPolynomialClaimV1` plus
+  material. `CircleWitnessToFFTBasisPlanV1` adds the narrow resident production
+  path for private monomial coefficient witness columns into Circle FFT-basis
+  coefficients using a public M31 transform matrix; it does not synthesize AIR
+  traces or verify AIR semantics. A structured `CirclePCSFRIPolynomialClaimV1` plus
   `CirclePCSFRIPolynomialVerifierV1` now binds polynomial coefficients, domain
   points, claimed evaluations, and first-layer Merkle openings on the CPU.
   `CirclePCSFRIParameterSetV1.conservative128` fixes the production-facing V1
@@ -133,11 +137,22 @@ Implemented today:
   transcript surfaces support verifier-checked nonzero grinding through an
   8-byte nonce, while the conservative public profile still claims no grinding
   credit. `CirclePCSFRIArtifactManifestV1` records the implemented PCS slice
-  and the remaining non-capabilities: no witness/AIR, sum-check/GKR artifact
-  integration, resident witness-to-Circle-FFT basis pipeline, or fused/tiled
+  and the remaining non-capabilities: no AIR trace synthesis, no sum-check/GKR
+  artifact integration inside the PCS artifact, and no fused/tiled
   codeword-to-commitment schedule. The checked-in corpus under
   `Tests/AppleZKProverTests/Resources/` pins canonical accepted proof bytes and
   tamper/rejection vectors for that contract.
+- A verifier-facing `ApplicationProofV1` envelope that binds an application
+  identifier, witness commitment digest, AIR definition digest, GKR claim
+  digest, `M31SumcheckStatementV1`, and `CirclePCSFRIStatementV1` into one
+  SHA3-256 statement digest. The application verifier checks the embedded
+  `M31SumcheckProofV1` and `CirclePCSFRIProofV1` against that statement. This
+  closes the final artifact composition boundary for the implemented
+  components; AIR semantic verification, GKR verification, witness-to-AIR trace
+  production, and AIR-to-sum-check reduction remain explicit open boundaries in
+  `ApplicationProofManifestV1`. The checked-in application corpus under
+  `Tests/AppleZKProverTests/Resources/` pins canonical accepted proof bytes and
+  statement/sum-check/PCS rejection vectors for that final artifact.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
   buffer plus concatenated per-round inverse-domain buffers, encodes every fold
   round into one command buffer, ping-pongs private scratch between intermediate
@@ -243,6 +258,7 @@ computing base:
 - Circle Merkle-transcript FRI fold chain `executeVerified`
 - QM31 linear FRI proof `QM31FRIProofVerifier.verify`
 - Circle PCS/FRI contract proof `CirclePCSFRIContractVerifierV1.verify`
+- Application proof composition `ApplicationProofVerifierV1.verify`
 
 These APIs recompute the result with the CPU oracle and throw
 `AppleZKProverError.correctnessValidationFailed` if the GPU result diverges.
@@ -365,6 +381,8 @@ rules.
 | `Sources/AppleZKProver/M31VectorArithmetic.swift` | GPU M31 vector arithmetic |
 | `Sources/AppleZKProver/M31DotProduct.swift` | GPU M31 dot-product reductions |
 | `Sources/AppleZKProver/SumcheckOracle.swift` | CPU M31 sum-check chunk oracle |
+| `Sources/AppleZKProver/CircleWitnessFFTBasis.swift` | Resident monomial coefficient witness-column to Circle FFT-basis production |
+| `Sources/AppleZKProver/ApplicationProofFormat.swift` | Application proof envelope binding M31 sum-check and Circle PCS proofs |
 | `Sources/AppleZKProver/Planner/` | Planning, tuning, transcript, and residency runtime |
 | `Sources/AppleZKProver/Resources/HashMerkleKernels.metal` | Metal kernels |
 | `Sources/zkmetal-bench/main.swift` | Benchmark and smoke-test CLI |
@@ -400,8 +418,10 @@ designed to be testable and conservative:
 - Shared upload slots clear unused tails before reuse.
 - Strided GPU result buffers clear unwritten padding before returning `Data`.
 - A production verifier must remain CPU-only and deterministic.
-- The current Circle PCS/FRI contract is scoped to the implemented
-  coefficient-to-proof slice; witness/AIR/sumcheck/GKR integration and external
+- `ApplicationProofV1` integrates the implemented M31 sum-check chunk proof and
+  Circle PCS/FRI contract proof into one statement-bound artifact, but it only
+  binds witness/AIR/GKR digests. AIR semantic verification, GKR verification,
+  witness-to-AIR trace production, AIR-to-sum-check reduction, and external
   cryptographic review remain open before any full proof-system security claim.
 - Lower-level V1 artifacts can carry verifier-checked nonzero grinding nonces,
   but the conservative public profile still claims no grinding credit until a
@@ -420,7 +440,7 @@ The roadmap is deliberately staged:
 3. Hash and Merkle leadership on Apple GPUs.
 4. Prime-field lanes for transparent proving systems.
 5. Codeword, FRI, and PCS kernels that feed commitments without CPU readback.
-6. Wider sum-check and GKR integration.
+6. Full AIR, sum-check reduction, and GKR semantic integration.
 7. A documented end-to-end transparent proof with stable vectors and an
    independent CPU verifier.
 

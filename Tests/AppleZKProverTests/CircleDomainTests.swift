@@ -184,14 +184,125 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertFalse(manifest.includesSumcheck)
         XCTAssertFalse(manifest.includesGKR)
         XCTAssertTrue(manifest.supportsNonzeroGrinding)
-        XCTAssertFalse(manifest.residentWitnessToCircleFFTBasis)
+        XCTAssertTrue(manifest.residentWitnessToCircleFFTBasis)
         XCTAssertEqual(manifest.codewordCommitmentSchedule, .materializedCodewordThenCommit)
         XCTAssertEqual(manifest.openBoundaries, [
-            .witnessAIRToCircleFFTBasis,
+            .airTraceSynthesis,
             .sumcheckGKRArtifactIntegration,
             .fusedTiledCodewordCommitmentScheduling,
         ])
         XCTAssertFalse(manifest.openBoundaries.contains(.nonzeroGrinding))
+    }
+
+    func testApplicationProofV1BindsPCSAndSumcheckWithOpaqueAIRGKRDigests() throws {
+        let manifest = ApplicationProofManifestV1.current
+        XCTAssertEqual(manifest.version, ApplicationProofManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, ApplicationProofManifestV1.artifactName)
+        XCTAssertTrue(manifest.includesFinalApplicationArtifact)
+        XCTAssertTrue(manifest.bindsWitnessCommitmentDigest)
+        XCTAssertTrue(manifest.bindsAIRDefinitionDigest)
+        XCTAssertTrue(manifest.verifiesM31Sumcheck)
+        XCTAssertTrue(manifest.verifiesCirclePCS)
+        XCTAssertTrue(manifest.bindsGKRClaimDigest)
+        XCTAssertFalse(manifest.verifiesAIRSemantics)
+        XCTAssertFalse(manifest.verifiesGKR)
+        XCTAssertEqual(manifest.openBoundaries, [
+            .airSemanticVerification,
+            .gkrVerification,
+            .witnessToAIRTraceProduction,
+            .sumcheckToAIRConstraintReduction,
+        ])
+
+        let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+        let parameterSet = try CirclePCSFRIParameterSetV1(
+            profileID: .conservative128,
+            logBlowupFactor: 2,
+            queryCount: 2,
+            grindingBits: 0,
+            targetSoundnessBits: 4
+        )
+        let polynomial = try CircleCodewordPolynomial(
+            xCoefficients: [QM31Element(a: 3, b: 5, c: 7, d: 11)],
+            yCoefficients: [QM31Element(a: 13, b: 17, c: 19, d: 23)]
+        )
+        let claim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: polynomial,
+            storageIndices: [0, 5]
+        )
+        let pcsStatement = try CirclePCSFRIStatementV1(
+            parameterSet: parameterSet,
+            polynomialClaim: claim
+        )
+        let sumcheckEvaluations = (0..<16).map { index in
+            UInt32(91 + index * 17)
+        }
+        let sumcheckProof = try M31SumcheckProofBuilderV1.prove(
+            evaluations: sumcheckEvaluations,
+            rounds: 3
+        )
+        let statement = try ApplicationProofStatementV1(
+            applicationIdentifier: "apple-zk-prover.test.application-proof.v1",
+            witnessCommitmentDigest: Data(repeating: 0x91, count: 32),
+            airDefinitionDigest: Data(repeating: 0x92, count: 32),
+            gkrClaimDigest: Data(repeating: 0x93, count: 32),
+            sumcheckStatement: sumcheckProof.statement,
+            pcsStatement: pcsStatement
+        )
+        let proof = try ApplicationProofBuilderV1.prove(
+            statement: statement,
+            sumcheckProof: sumcheckProof
+        )
+        let assembledProof = try ApplicationProofBuilderV1.assemble(
+            statement: statement,
+            sumcheckProof: sumcheckProof,
+            pcsProof: proof.pcsProof
+        )
+
+        XCTAssertEqual(proof.statementDigest, try statement.digest())
+        XCTAssertEqual(assembledProof, proof)
+        XCTAssertTrue(try ApplicationProofVerifierV1.verify(proof: proof, statement: statement))
+
+        let encoded = try ApplicationProofCodecV1.encode(proof)
+        XCTAssertEqual(try ApplicationProofCodecV1.decode(encoded), proof)
+        XCTAssertTrue(try ApplicationProofVerifierV1.verify(encodedProof: encoded, statement: statement))
+
+        var trailing = encoded
+        trailing.append(0)
+        XCTAssertThrowsError(try ApplicationProofCodecV1.decode(trailing)) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        let mismatchedGKRStatement = try ApplicationProofStatementV1(
+            applicationIdentifier: statement.applicationIdentifier,
+            witnessCommitmentDigest: statement.witnessCommitmentDigest,
+            airDefinitionDigest: statement.airDefinitionDigest,
+            gkrClaimDigest: Data(repeating: 0x94, count: 32),
+            sumcheckStatement: statement.sumcheckStatement,
+            pcsStatement: statement.pcsStatement
+        )
+        XCTAssertFalse(try ApplicationProofVerifierV1.verify(
+            proof: proof,
+            statement: mismatchedGKRStatement
+        ))
+
+        var tamperedChallenges = proof.sumcheckProof.challenges
+        tamperedChallenges[0] = M31Field.add(tamperedChallenges[0], 1)
+        let tamperedSumcheck = try M31SumcheckProofV1(
+            statement: proof.sumcheckProof.statement,
+            finalVector: proof.sumcheckProof.finalVector,
+            coefficients: proof.sumcheckProof.coefficients,
+            challenges: tamperedChallenges
+        )
+        let tamperedProof = try ApplicationProofV1(
+            statementDigest: proof.statementDigest,
+            sumcheckProof: tamperedSumcheck,
+            pcsProof: proof.pcsProof
+        )
+        XCTAssertFalse(try ApplicationProofVerifierV1.verify(
+            proof: tamperedProof,
+            statement: statement
+        ))
     }
 
     func testCircleProofV1SupportsVerifierCheckedGrindingNonce() throws {
@@ -603,6 +714,46 @@ final class CircleDomainTests: XCTestCase {
         ))
     }
 
+    func testCircleWitnessToFFTBasisOracleRecordsNarrowNonAIRScope() throws {
+        let domain = try CircleDomainDescriptor.canonical(logSize: 5)
+        let polynomial = try Self.makeStableCircleCodewordPolynomial()
+        XCTAssertEqual(
+            try CircleWitnessToFFTBasisOracleV1.transformMonomialColumns(
+                xWitnessCoefficients: polynomial.xCoefficients,
+                yWitnessCoefficients: polynomial.yCoefficients,
+                domain: domain
+            ),
+            try CircleCodewordOracle.circleFFTCoefficients(
+                polynomial: polynomial,
+                domain: domain
+            )
+        )
+
+        let transform = try CircleWitnessToFFTBasisOracleV1.lineBasisTransformScalars(domain: domain)
+        XCTAssertEqual(transform.count, domain.halfSize * domain.halfSize)
+        let commandPlan = try CircleWitnessToFFTBasisCommandPlanV1(
+            input: .residentMonomialCoefficientColumns,
+            output: .residentCircleFFTBasisBuffer,
+            coefficientCapacity: domain.halfSize,
+            outputElementCount: domain.size,
+            transformMatrixScalarCount: transform.count
+        )
+        XCTAssertFalse(commandPlan.verifiesAIRSemantics)
+        XCTAssertFalse(commandPlan.producesAIRTrace)
+        XCTAssertThrowsError(
+            try CircleWitnessToFFTBasisCommandPlanV1(
+                input: .residentMonomialCoefficientColumns,
+                output: .residentCircleFFTBasisBuffer,
+                coefficientCapacity: domain.halfSize,
+                outputElementCount: domain.size,
+                transformMatrixScalarCount: transform.count,
+                verifiesAIRSemantics: true
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
     func testCirclePCSContractVerifierEnforcesProductionProfileAndTerminalLayer() throws {
         let domain = try CircleDomainDescriptor.canonical(logSize: 6)
         let parameterSet = CirclePCSFRIParameterSetV1.conservative128
@@ -753,6 +904,38 @@ final class CircleDomainTests: XCTestCase {
                     polynomialClaim: statement.polynomialClaim
                 ))
             }
+        }
+    }
+
+    func testApplicationProofCorpusV1PinsCanonicalBytesDigestsAndRejections() throws {
+        let corpus = try Self.loadApplicationProofCorpus()
+        XCTAssertEqual(corpus.schemaVersion, 1)
+        XCTAssertEqual(corpus.artifact, ApplicationProofManifestV1.artifactName)
+
+        let (statement, sumcheckProof) = try Self.makeApplicationCorpusStatement(corpus.statement)
+        XCTAssertEqual(try statement.digest().hexString, corpus.statement.statementDigestHex)
+        let validProof = try Self.assertEncodedApplicationCorpusProof(
+            corpus.validCase,
+            statement: statement
+        )
+        XCTAssertTrue(corpus.validCase.expectedVerifierAccepted)
+        XCTAssertEqual(validProof.statementDigest.hexString, corpus.statement.statementDigestHex)
+        XCTAssertEqual(validProof.sumcheckProof.statement, sumcheckProof.statement)
+
+        let assembled = try ApplicationProofBuilderV1.assemble(
+            statement: statement,
+            sumcheckProof: sumcheckProof,
+            pcsProof: validProof.pcsProof
+        )
+        XCTAssertEqual(try ApplicationProofCodecV1.encode(assembled), try Self.decodeHex(corpus.validCase.proofHex))
+
+        XCTAssertEqual(corpus.tamperVectors.count, 3)
+        for vector in corpus.tamperVectors {
+            XCTAssertFalse(vector.expectedVerifierAccepted, vector.id)
+            _ = try Self.assertEncodedApplicationCorpusProof(
+                vector,
+                statement: statement
+            )
         }
     }
 
@@ -1425,6 +1608,40 @@ final class CircleDomainTests: XCTestCase {
             try Self.readQM31Buffer(residentCoefficientOutput, count: domain.size),
             expectedCodeword
         )
+        let expectedCircleCoefficients = try CircleCodewordOracle.circleFFTCoefficients(
+            polynomial: polynomial,
+            domain: domain
+        )
+        let privateXWitnessBuffer = try Self.makePrivateBuffer(
+            context: context,
+            bytes: xCoefficientBytes,
+            label: "CircleDomainTests.CircleCodewordPrivateXWitness"
+        )
+        let privateYWitnessBuffer = try Self.makePrivateBuffer(
+            context: context,
+            bytes: yCoefficientBytes,
+            label: "CircleDomainTests.CircleCodewordPrivateYWitness"
+        )
+        let witnessBasisPlan = try CircleWitnessToFFTBasisPlanV1(context: context, domain: domain)
+        XCTAssertEqual(witnessBasisPlan.commandPlan.input, .residentMonomialCoefficientColumns)
+        XCTAssertEqual(witnessBasisPlan.commandPlan.output, .residentCircleFFTBasisBuffer)
+        XCTAssertFalse(witnessBasisPlan.commandPlan.verifiesAIRSemantics)
+        XCTAssertFalse(witnessBasisPlan.commandPlan.producesAIRTrace)
+        let witnessBasisOutput = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * CircleWitnessToFFTBasisPlanV1.elementByteCount,
+            label: "CircleDomainTests.CircleWitnessToFFTBasisOutput"
+        )
+        _ = try witnessBasisPlan.executeVerified(
+            polynomial: polynomial,
+            xWitnessCoefficientBuffer: privateXWitnessBuffer,
+            yWitnessCoefficientBuffer: privateYWitnessBuffer,
+            outputCircleCoefficientBuffer: witnessBasisOutput
+        )
+        XCTAssertEqual(
+            try Self.readQM31Buffer(witnessBasisOutput, count: domain.size),
+            expectedCircleCoefficients
+        )
 
         let residentProver = try CirclePCSFRIResidentProverV1(
             context: context,
@@ -1459,6 +1676,7 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertEqual(codewordProver.commandPlan.codewordCommitmentSchedule, .materializedCodewordThenCommit)
         XCTAssertFalse(codewordProver.commandPlan.usesFusedTiledCodewordCommitment)
         XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentCircleFFTBasisBuffer))
+        XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentWitnessMonomialCoefficientColumns))
         let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
         XCTAssertEqual(proofResult.proof, expectedProof)
         XCTAssertEqual(try CirclePCSFRIProofCodecV1.decode(proofResult.encodedProof), expectedProof)
@@ -1474,12 +1692,18 @@ final class CircleDomainTests: XCTestCase {
             try CirclePCSFRIProofCodecV1.decode(residentCoefficientProof.encodedProof),
             expectedProof
         )
-        let circleCoefficientBytes = try QM31CanonicalEncoding.pack(
-            CircleCodewordOracle.circleFFTCoefficients(
-                polynomial: polynomial,
-                domain: domain
-            )
+        let residentWitnessProof = try codewordProver.proveResidentWitnessCoefficientsVerified(
+            polynomial: polynomial,
+            xWitnessCoefficientBuffer: privateXWitnessBuffer,
+            yWitnessCoefficientBuffer: privateYWitnessBuffer
         )
+        XCTAssertNotNil(residentWitnessProof.witnessBasisStats)
+        XCTAssertEqual(residentWitnessProof.proof, expectedProof)
+        XCTAssertEqual(
+            try CirclePCSFRIProofCodecV1.decode(residentWitnessProof.encodedProof),
+            expectedProof
+        )
+        let circleCoefficientBytes = QM31CanonicalEncoding.pack(expectedCircleCoefficients)
         let circleCoefficientBuffer = try Self.makePrivateBuffer(
             context: context,
             bytes: circleCoefficientBytes,
@@ -1943,6 +2167,49 @@ final class CircleDomainTests: XCTestCase {
         let proofHex: String
     }
 
+    private struct ApplicationProofCorpusFixture: Decodable {
+        let artifact: String
+        let schemaVersion: Int
+        let statement: ApplicationProofCorpusStatement
+        let tamperVectors: [ApplicationProofCorpusCase]
+        let validCase: ApplicationProofCorpusCase
+    }
+
+    private struct ApplicationProofCorpusStatement: Decodable {
+        let airDefinitionDigestHex: String
+        let applicationIdentifier: String
+        let claimedStorageIndices: [Int]
+        let domainLogSize: UInt32
+        let gkrClaimDigestHex: String
+        let parameterSet: ApplicationProofCorpusParameterSet
+        let statementDigestHex: String
+        let storageOrder: String
+        let sumcheckEvaluationWords: [UInt32]
+        let sumcheckRounds: Int
+        let witnessCommitmentDigestHex: String
+        let xCoefficientHex: [String]
+        let yCoefficientHex: [String]
+    }
+
+    private struct ApplicationProofCorpusParameterSet: Decodable {
+        let foldingStep: UInt32
+        let grindingBits: UInt32
+        let id: String
+        let logBlowupFactor: UInt32
+        let nominalSecurityBits: UInt32
+        let queryCount: UInt32
+        let targetSoundnessBits: UInt32
+    }
+
+    private struct ApplicationProofCorpusCase: Decodable {
+        let description: String?
+        let expectedVerifierAccepted: Bool
+        let id: String
+        let proofByteCount: Int
+        let proofDigestHex: String
+        let proofHex: String
+    }
+
     private static func loadCirclePCSFRIProofCorpus() throws -> CirclePCSFRIProofCorpusFixture {
         let url = try XCTUnwrap(Bundle.module.url(
             forResource: "CirclePCSFRIProofCorpusV1",
@@ -1952,6 +2219,85 @@ final class CircleDomainTests: XCTestCase {
             CirclePCSFRIProofCorpusFixture.self,
             from: try Data(contentsOf: url)
         )
+    }
+
+    private static func loadApplicationProofCorpus() throws -> ApplicationProofCorpusFixture {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: "ApplicationProofCorpusV1",
+            withExtension: "json"
+        ))
+        return try JSONDecoder().decode(
+            ApplicationProofCorpusFixture.self,
+            from: try Data(contentsOf: url)
+        )
+    }
+
+    private static func makeApplicationCorpusStatement(
+        _ proofStatement: ApplicationProofCorpusStatement
+    ) throws -> (ApplicationProofStatementV1, M31SumcheckProofV1) {
+        XCTAssertEqual(proofStatement.storageOrder, "circle-domain-bit-reversed")
+        XCTAssertEqual(proofStatement.parameterSet.id, CirclePCSFRIParameterSetV1.ProfileID.conservative128.rawValue)
+        XCTAssertEqual(proofStatement.parameterSet.foldingStep, 1)
+        let parameterSet = try CirclePCSFRIParameterSetV1(
+            profileID: .conservative128,
+            logBlowupFactor: proofStatement.parameterSet.logBlowupFactor,
+            queryCount: proofStatement.parameterSet.queryCount,
+            grindingBits: proofStatement.parameterSet.grindingBits,
+            targetSoundnessBits: proofStatement.parameterSet.targetSoundnessBits
+        )
+        XCTAssertEqual(parameterSet.securityParameters.nominalSecurityBits, proofStatement.parameterSet.nominalSecurityBits)
+
+        let domain = try CircleDomainDescriptor.canonical(logSize: proofStatement.domainLogSize)
+        let polynomial = try CircleCodewordPolynomial(
+            xCoefficients: try qm31Elements(fromHexStrings: proofStatement.xCoefficientHex),
+            yCoefficients: try qm31Elements(fromHexStrings: proofStatement.yCoefficientHex)
+        )
+        let claim = try CirclePCSFRIPolynomialClaimV1.make(
+            domain: domain,
+            polynomial: polynomial,
+            storageIndices: proofStatement.claimedStorageIndices
+        )
+        let pcsStatement = try CirclePCSFRIStatementV1(
+            parameterSet: parameterSet,
+            polynomialClaim: claim
+        )
+        let sumcheckProof = try M31SumcheckProofBuilderV1.prove(
+            evaluations: proofStatement.sumcheckEvaluationWords,
+            rounds: proofStatement.sumcheckRounds
+        )
+        let statement = try ApplicationProofStatementV1(
+            applicationIdentifier: proofStatement.applicationIdentifier,
+            witnessCommitmentDigest: try decodeHex(proofStatement.witnessCommitmentDigestHex),
+            airDefinitionDigest: try decodeHex(proofStatement.airDefinitionDigestHex),
+            gkrClaimDigest: try decodeHex(proofStatement.gkrClaimDigestHex),
+            sumcheckStatement: sumcheckProof.statement,
+            pcsStatement: pcsStatement
+        )
+        return (statement, sumcheckProof)
+    }
+
+    @discardableResult
+    private static func assertEncodedApplicationCorpusProof(
+        _ proofCase: ApplicationProofCorpusCase,
+        statement: ApplicationProofStatementV1
+    ) throws -> ApplicationProofV1 {
+        let proofBytes = try decodeHex(proofCase.proofHex)
+        XCTAssertEqual(proofBytes.count, proofCase.proofByteCount, proofCase.id)
+        XCTAssertEqual(SHA3Oracle.sha3_256(proofBytes).hexString, proofCase.proofDigestHex, proofCase.id)
+
+        let proof = try ApplicationProofCodecV1.decode(proofBytes)
+        XCTAssertEqual(try ApplicationProofCodecV1.encode(proof), proofBytes, proofCase.id)
+        XCTAssertEqual(
+            try ApplicationProofVerifierV1.verify(proof: proof, statement: statement),
+            proofCase.expectedVerifierAccepted,
+            proofCase.id
+        )
+        XCTAssertEqual(
+            try ApplicationProofVerifierV1.verify(encodedProof: proofBytes, statement: statement),
+            proofCase.expectedVerifierAccepted,
+            proofCase.id
+        )
+        return proof
     }
 
     private static func makeCorpusStatement(

@@ -251,6 +251,343 @@ public enum SumcheckOracle {
     }
 }
 
+public struct M31SumcheckStatementV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let laneCount: Int
+    public let rounds: Int
+    public let initialEvaluationDigest: Data
+    public let finalVectorDigest: Data
+
+    public init(
+        version: UInt32 = currentVersion,
+        laneCount: Int,
+        rounds: Int,
+        initialEvaluationDigest: Data,
+        finalVectorDigest: Data
+    ) throws {
+        guard version == Self.currentVersion,
+              laneCount > 1,
+              laneCount.nonzeroBitCount == 1,
+              rounds > 0,
+              rounds <= Self.log2(laneCount),
+              initialEvaluationDigest.count == 32,
+              finalVectorDigest.count == 32 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.version = version
+        self.laneCount = laneCount
+        self.rounds = rounds
+        self.initialEvaluationDigest = initialEvaluationDigest
+        self.finalVectorDigest = finalVectorDigest
+    }
+
+    public var finalLaneCount: Int {
+        laneCount >> rounds
+    }
+
+    public func digest() throws -> Data {
+        var data = Data()
+        data.append(Self.statementFrame())
+        CanonicalBinary.appendUInt64(UInt64(laneCount), to: &data)
+        CanonicalBinary.appendUInt32(try checkedUInt32(rounds), to: &data)
+        data.append(initialEvaluationDigest)
+        data.append(finalVectorDigest)
+        return SHA3Oracle.sha3_256(data)
+    }
+
+    static func totalCoefficientWords(laneCount: Int, rounds: Int) throws -> Int {
+        guard laneCount > 1,
+              laneCount.nonzeroBitCount == 1,
+              rounds > 0,
+              rounds <= log2(laneCount) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var activeLaneCount = laneCount
+        var total = 0
+        for _ in 0..<rounds {
+            let next = total.addingReportingOverflow(activeLaneCount)
+            guard !next.overflow else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            total = next.partialValue
+            activeLaneCount >>= 1
+        }
+        return total
+    }
+
+    static func coefficientOffsets(laneCount: Int, rounds: Int) throws -> [Int] {
+        guard laneCount > 1,
+              laneCount.nonzeroBitCount == 1,
+              rounds > 0,
+              rounds <= log2(laneCount) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var offsets: [Int] = []
+        offsets.reserveCapacity(rounds)
+        var activeLaneCount = laneCount
+        var offset = 0
+        for _ in 0..<rounds {
+            offsets.append(offset)
+            let next = offset.addingReportingOverflow(activeLaneCount)
+            guard !next.overflow else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            offset = next.partialValue
+            activeLaneCount >>= 1
+        }
+        return offsets
+    }
+
+    private static func statementFrame() -> Data {
+        var frame = Data()
+        let domain = Data("AppleZKProver.M31Sumcheck.Statement.V1".utf8)
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &frame)
+        frame.append(domain)
+        CanonicalBinary.appendUInt32(currentVersion, to: &frame)
+        return frame
+    }
+
+    private static func log2(_ value: Int) -> Int {
+        var remaining = max(1, value)
+        var result = 0
+        while remaining > 1 {
+            remaining >>= 1
+            result += 1
+        }
+        return result
+    }
+}
+
+public struct M31SumcheckProofV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let statement: M31SumcheckStatementV1
+    public let finalVector: [UInt32]
+    public let coefficients: [UInt32]
+    public let challenges: [UInt32]
+
+    public init(
+        version: UInt32 = currentVersion,
+        statement: M31SumcheckStatementV1,
+        finalVector: [UInt32],
+        coefficients: [UInt32],
+        challenges: [UInt32]
+    ) throws {
+        guard version == Self.currentVersion,
+              finalVector.count == statement.finalLaneCount,
+              coefficients.count == (try M31SumcheckStatementV1.totalCoefficientWords(
+                laneCount: statement.laneCount,
+                rounds: statement.rounds
+              )),
+              challenges.count == statement.rounds else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try M31Field.validateCanonical(finalVector)
+        try M31Field.validateCanonical(coefficients)
+        try M31Field.validateCanonical(challenges)
+        self.version = version
+        self.statement = statement
+        self.finalVector = finalVector
+        self.coefficients = coefficients
+        self.challenges = challenges
+    }
+}
+
+public enum M31SumcheckProofBuilderV1 {
+    public static func prove(evaluations: [UInt32], rounds: Int) throws -> M31SumcheckProofV1 {
+        let result = try SumcheckOracle.m31Chunk(evaluations: evaluations, rounds: rounds)
+        let statement = try M31SumcheckStatementV1(
+            laneCount: evaluations.count,
+            rounds: rounds,
+            initialEvaluationDigest: try M31SumcheckEncodingV1.digestWords(evaluations),
+            finalVectorDigest: try M31SumcheckEncodingV1.digestWords(result.finalVector)
+        )
+        return try M31SumcheckProofV1(
+            statement: statement,
+            finalVector: result.finalVector,
+            coefficients: result.coefficients,
+            challenges: result.challenges
+        )
+    }
+}
+
+public enum M31SumcheckVerifierV1 {
+    public static func verify(
+        proof: M31SumcheckProofV1,
+        statement: M31SumcheckStatementV1
+    ) throws -> Bool {
+        guard proof.statement == statement,
+              proof.statement.initialEvaluationDigest == (try M31SumcheckEncodingV1.digestWords(
+                Array(proof.coefficients[0..<statement.laneCount])
+              )),
+              proof.statement.finalVectorDigest == (try M31SumcheckEncodingV1.digestWords(proof.finalVector)) else {
+            return false
+        }
+
+        let offsets = try M31SumcheckStatementV1.coefficientOffsets(
+            laneCount: statement.laneCount,
+            rounds: statement.rounds
+        )
+        var transcript = SHA3Oracle.TranscriptState()
+        try transcript.absorb(SumcheckTranscriptFraming.header(
+            laneCount: statement.laneCount,
+            rounds: statement.rounds,
+            fieldModulus: M31Field.modulus
+        ))
+
+        var activeLaneCount = statement.laneCount
+        for round in 0..<statement.rounds {
+            let offset = offsets[round]
+            let coefficients = Array(proof.coefficients[offset..<(offset + activeLaneCount)])
+            try transcript.absorb(SumcheckTranscriptFraming.round(
+                roundIndex: round,
+                activeLaneCount: activeLaneCount,
+                coefficientWordCount: coefficients.count
+            ))
+            try transcript.absorb(M31SumcheckEncodingV1.packWords(coefficients))
+            try transcript.absorb(SumcheckTranscriptFraming.challenge(
+                roundIndex: round,
+                fieldModulus: M31Field.modulus
+            ))
+            let challenge = try transcript.squeezeUInt32(count: 1, modulus: M31Field.modulus)[0]
+            guard proof.challenges[round] == challenge else {
+                return false
+            }
+
+            let folded = try fold(coefficients, challenge: challenge)
+            if round + 1 == statement.rounds {
+                guard folded == proof.finalVector else {
+                    return false
+                }
+            } else {
+                let nextOffset = offsets[round + 1]
+                let nextCoefficients = Array(proof.coefficients[nextOffset..<(nextOffset + folded.count)])
+                guard folded == nextCoefficients else {
+                    return false
+                }
+            }
+            activeLaneCount >>= 1
+        }
+        return true
+    }
+
+    private static func fold(_ values: [UInt32], challenge: UInt32) throws -> [UInt32] {
+        guard values.count > 1, values.count.isMultiple(of: 2) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var folded: [UInt32] = []
+        folded.reserveCapacity(values.count / 2)
+        for index in 0..<(values.count / 2) {
+            folded.append(M31Field.add(
+                values[index * 2],
+                M31Field.multiply(values[index * 2 + 1], challenge)
+            ))
+        }
+        return folded
+    }
+}
+
+public enum M31SumcheckProofCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x53, 0x43, 0x56, 0x31, 0x00])
+
+    public static func encode(_ proof: M31SumcheckProofV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        CanonicalBinary.appendUInt32(proof.version, to: &data)
+        CanonicalBinary.appendUInt32(proof.statement.version, to: &data)
+        CanonicalBinary.appendUInt64(UInt64(proof.statement.laneCount), to: &data)
+        CanonicalBinary.appendUInt32(try checkedUInt32(proof.statement.rounds), to: &data)
+        data.append(proof.statement.initialEvaluationDigest)
+        data.append(proof.statement.finalVectorDigest)
+        appendWords(proof.finalVector, to: &data)
+        appendWords(proof.coefficients, to: &data)
+        appendWords(proof.challenges, to: &data)
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> M31SumcheckProofV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let proofVersion = try reader.readUInt32()
+        let statementVersion = try reader.readUInt32()
+        let laneCount = try checkedInt(try reader.readUInt64())
+        let rounds = Int(try reader.readUInt32())
+        let initialEvaluationDigest = try reader.readBytes(count: 32)
+        let finalVectorDigest = try reader.readBytes(count: 32)
+        let finalVector = try readWords(from: &reader)
+        let coefficients = try readWords(from: &reader)
+        let challenges = try readWords(from: &reader)
+        try reader.finish()
+        let statement = try M31SumcheckStatementV1(
+            version: statementVersion,
+            laneCount: laneCount,
+            rounds: rounds,
+            initialEvaluationDigest: initialEvaluationDigest,
+            finalVectorDigest: finalVectorDigest
+        )
+        return try M31SumcheckProofV1(
+            version: proofVersion,
+            statement: statement,
+            finalVector: finalVector,
+            coefficients: coefficients,
+            challenges: challenges
+        )
+    }
+
+    private static func appendWords(_ words: [UInt32], to data: inout Data) {
+        CanonicalBinary.appendUInt64(UInt64(words.count), to: &data)
+        for word in words {
+            CanonicalBinary.appendUInt32(word, to: &data)
+        }
+    }
+
+    private static func readWords(from reader: inout CanonicalByteReader) throws -> [UInt32] {
+        let count = try checkedInt(try reader.readUInt64())
+        var words: [UInt32] = []
+        words.reserveCapacity(count)
+        for _ in 0..<count {
+            words.append(try reader.readUInt32())
+        }
+        try M31Field.validateCanonical(words)
+        return words
+    }
+
+    private static func checkedInt(_ value: UInt64) throws -> Int {
+        guard value <= UInt64(Int.max) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return Int(value)
+    }
+}
+
+enum M31SumcheckEncodingV1 {
+    static func digestWords(_ words: [UInt32]) throws -> Data {
+        try M31Field.validateCanonical(words)
+        var framed = Data()
+        let domain = Data("AppleZKProver.M31Sumcheck.Words.V1".utf8)
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &framed)
+        framed.append(domain)
+        CanonicalBinary.appendUInt32(M31SumcheckStatementV1.currentVersion, to: &framed)
+        CanonicalBinary.appendUInt64(UInt64(words.count), to: &framed)
+        framed.append(packWords(words))
+        return SHA3Oracle.sha3_256(framed)
+    }
+
+    static func packWords(_ words: [UInt32]) -> Data {
+        var data = Data()
+        data.reserveCapacity(words.count * MemoryLayout<UInt32>.stride)
+        for word in words {
+            CanonicalBinary.appendUInt32(word, to: &data)
+        }
+        return data
+    }
+}
+
 enum SumcheckTranscriptFraming {
     static let version: UInt32 = 1
 
