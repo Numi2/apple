@@ -1,6 +1,9 @@
 import Foundation
 import XCTest
 @testable import AppleZKProver
+#if canImport(Metal)
+import Metal
+#endif
 
 final class ApplicationTheoremTests: XCTestCase {
     func testAIRProofManifestRecordsPublicRevealedTraceScope() {
@@ -96,6 +99,25 @@ final class ApplicationTheoremTests: XCTestCase {
         ])
     }
 
+    func testApplicationPublicTheoremIntegratedArtifactManifestRecordsPublicAIRPCSScope() {
+        let manifest = ApplicationPublicTheoremIntegratedArtifactManifestV1.current
+        XCTAssertEqual(manifest.version, ApplicationPublicTheoremIntegratedArtifactManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, ApplicationPublicTheoremIntegratedArtifactManifestV1.artifactName)
+        XCTAssertTrue(manifest.includesPublicTheoremArtifact)
+        XCTAssertTrue(manifest.includesAIRConstraintMultilinearSumcheck)
+        XCTAssertTrue(manifest.includesSharedDomainQuotientIdentityPCS)
+        XCTAssertTrue(manifest.verifiesPublicAIRGKRTheorem)
+        XCTAssertTrue(manifest.verifiesAIRConstraintSumcheck)
+        XCTAssertTrue(manifest.verifiesSharedDomainQuotientIdentity)
+        XCTAssertTrue(manifest.verifiesGKRClaimSemantics)
+        XCTAssertFalse(manifest.isSuccinctAIRGKRProof)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertEqual(manifest.openBoundaries, [
+            .succinctAIRGKRProof,
+            .zeroKnowledge,
+        ])
+    }
+
     func testWitnessLayoutProducesNamedAIRTrace() throws {
         let layout = try ApplicationWitnessLayoutV1(columns: [
             try ApplicationWitnessColumnV1(name: "next", values: [1, 2, 3]),
@@ -127,6 +149,94 @@ final class ApplicationTheoremTests: XCTestCase {
         XCTAssertThrowsError(try layout.trace(columnOrder: ["current", "current"]))
         XCTAssertThrowsError(try layout.trace(columnOrder: ["missing"]))
     }
+
+#if canImport(Metal)
+    func testResidentAIRTraceSynthesisMatchesCPUOracleAndFeedsAIRSemantics() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+        let context = try MetalContext(device: device)
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let expectedTrace = try WitnessToAIRTraceProducerV1.produce(witness: witness, for: air)
+        let witnessBytes = try AIRTraceResidentSynthesisOracleV1.packColumnMajorWitness(witness)
+        let privateWitnessBuffer = try Self.makePrivateBuffer(
+            context: context,
+            bytes: witnessBytes,
+            label: "ApplicationTheoremTests.ResidentAIRTraceWitness"
+        )
+        let privateTraceBuffer = try MetalBufferFactory.makePrivateBuffer(
+            device: device,
+            length: witnessBytes.count,
+            label: "ApplicationTheoremTests.ResidentAIRTraceOutput"
+        )
+        let plan = try AIRTraceResidentSynthesisPlanV1(
+            context: context,
+            rowCount: witness.rowCount,
+            columnCount: witness.columnCount
+        )
+
+        XCTAssertEqual(plan.commandPlan.inputLayout, .privateColumnMajorM31Witness)
+        XCTAssertEqual(plan.commandPlan.outputLayout, .residentRowMajorM31AIRTrace)
+        XCTAssertTrue(plan.commandPlan.validatesPrivateWitnessCanonicality)
+        XCTAssertTrue(plan.commandPlan.producesAIRTrace)
+        XCTAssertFalse(plan.commandPlan.verifiesAIRSemantics)
+        XCTAssertFalse(plan.commandPlan.isZeroKnowledge)
+
+        let result = try plan.executeVerified(
+            witness: witness,
+            definition: air,
+            witnessColumnMajorBuffer: privateWitnessBuffer,
+            outputTraceBuffer: privateTraceBuffer
+        )
+        XCTAssertEqual(result.trace, expectedTrace)
+
+        let composition = try AIRCompositionOracleV1.evaluate(
+            definition: air,
+            trace: result.trace
+        )
+        XCTAssertTrue(composition.allConstraintsVanish)
+    }
+
+    func testResidentAIRTraceSynthesisRejectsNonCanonicalPrivateWitness() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device on this test machine")
+        }
+        let context = try MetalContext(device: device)
+        let witness = try Self.fibonacciWitness()
+        var witnessBytes = try AIRTraceResidentSynthesisOracleV1.packColumnMajorWitness(witness)
+        witnessBytes.replaceSubrange(0..<4, with: [
+            UInt8(M31Field.modulus & 0xff),
+            UInt8((M31Field.modulus >> 8) & 0xff),
+            UInt8((M31Field.modulus >> 16) & 0xff),
+            UInt8((M31Field.modulus >> 24) & 0xff),
+        ])
+        let privateWitnessBuffer = try Self.makePrivateBuffer(
+            context: context,
+            bytes: witnessBytes,
+            label: "ApplicationTheoremTests.NonCanonicalResidentAIRTraceWitness"
+        )
+        let privateTraceBuffer = try MetalBufferFactory.makePrivateBuffer(
+            device: device,
+            length: witnessBytes.count,
+            label: "ApplicationTheoremTests.NonCanonicalResidentAIRTraceOutput"
+        )
+        let plan = try AIRTraceResidentSynthesisPlanV1(
+            context: context,
+            rowCount: witness.rowCount,
+            columnCount: witness.columnCount
+        )
+
+        XCTAssertThrowsError(
+            try plan.executeResident(
+                witnessColumnMajorBuffer: privateWitnessBuffer,
+                outputTraceBuffer: privateTraceBuffer
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+#endif
 
     func testAIRProofV1BuildsComposesEncodesAndRejectsTampering() throws {
         let witness = try Self.fibonacciWitness()
@@ -984,6 +1094,125 @@ final class ApplicationTheoremTests: XCTestCase {
         XCTAssertFalse(mismatchedReport.verifiedPublicOpeningAlignment)
     }
 
+    func testSharedDomainQuotientIdentityChecksAIREquationFromPCSOpenings() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: witness,
+            for: air
+        )
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+        let airProof = try AIRProofBuilderV1.prove(
+            witness: witness,
+            airDefinition: air
+        )
+
+        let identityBundle = try AIRSharedDomainQuotientIdentityPCSProofBundleBuilderV1.prove(
+            proof: airProof.proof,
+            domain: domain,
+            parameterSet: parameterSet,
+            queryCount: 2
+        )
+        let report = try AIRSharedDomainQuotientIdentityPCSProofBundleVerifierV1
+            .verificationReport(
+                identityBundle,
+                definition: air,
+                quotientProof: airProof.proof.publicQuotientProof
+            )
+
+        XCTAssertEqual(identityBundle.queryPlan.queryCount, 2)
+        XCTAssertEqual(identityBundle.queryPlan.traceRowCount, witness.rowCount)
+        XCTAssertEqual(identityBundle.queryPlan.traceColumnCount, witness.columnCount)
+        XCTAssertEqual(identityBundle.queryPlan.quotientPolynomialCount, 5)
+        XCTAssertEqual(
+            identityBundle.currentTracePCSProofBundle.witness.claimedStorageIndices,
+            identityBundle.queryPlan.claimedStorageIndices
+        )
+        XCTAssertEqual(
+            identityBundle.nextTracePCSProofBundle.witness.claimedStorageIndices,
+            identityBundle.queryPlan.claimedStorageIndices
+        )
+        XCTAssertEqual(
+            identityBundle.quotientPCSProofBundle.witness.claimedStorageIndices,
+            identityBundle.queryPlan.claimedStorageIndices
+        )
+        XCTAssertTrue(identityBundle.queryPlan.claimedStorageIndices.allSatisfy { storageIndex in
+            guard let naturalIndex = try? CircleDomainOracle.naturalDomainIndex(
+                forStorageIndex: storageIndex,
+                descriptor: domain
+            ),
+                  let point = try? CircleDomainOracle.point(
+                    in: domain,
+                    naturalDomainIndex: naturalIndex
+                  ) else {
+                return false
+            }
+            return point.x >= UInt32(witness.rowCount)
+        })
+        XCTAssertTrue(report.currentTracePCSBundleProofsVerify)
+        XCTAssertTrue(report.nextTracePCSBundleProofsVerify)
+        XCTAssertTrue(report.quotientPCSBundleProofsVerify)
+        XCTAssertTrue(report.currentTraceBundleMatchesQuotientTraceDigest)
+        XCTAssertTrue(report.nextTraceBundleMatchesShiftedTrace)
+        XCTAssertTrue(report.quotientPCSBundleMatchesQuotientProof)
+        XCTAssertTrue(report.queryPlanMatchesCommitments)
+        XCTAssertTrue(report.bundlesOpenExactlyQueryPoints)
+        XCTAssertTrue(report.domainsMatch)
+        XCTAssertTrue(report.parameterSetsMatch)
+        XCTAssertTrue(report.coordinateDomainsAlignedForAIRQuotientIdentity)
+        XCTAssertTrue(report.quotientIdentityChecked)
+        XCTAssertTrue(report.verifiesPCSOpeningInputs)
+        XCTAssertTrue(report.provesAIRQuotientIdentity)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try AIRSharedDomainQuotientIdentityPCSProofBundleVerifierV1.verify(
+            identityBundle,
+            definition: air,
+            quotientProof: airProof.proof.publicQuotientProof
+        ))
+        XCTAssertEqual(
+            identityBundle.queryPlan,
+            try AIRQuotientIdentityOpeningQueryPlannerV1.make(
+                definition: air,
+                quotientProof: airProof.proof.publicQuotientProof,
+                currentTraceBundle: identityBundle.currentTracePCSProofBundle,
+                nextTraceBundle: identityBundle.nextTracePCSProofBundle,
+                quotientBundle: identityBundle.quotientPCSProofBundle,
+                queryCount: 2
+            )
+        )
+
+        var tamperedRecords = airProof.proof.publicQuotientProof.quotientPolynomials
+        let firstRecord = tamperedRecords[0]
+        var tamperedCoefficients = firstRecord.quotientCoefficients
+        tamperedCoefficients[0] = M31Field.add(
+            tamperedCoefficients[0],
+            tamperedCoefficients[0] == M31Field.modulus - 1 ? 2 : 1
+        )
+        tamperedRecords[0] = try AIRConstraintQuotientPolynomialV1(
+            kind: firstRecord.kind,
+            constraintIndex: firstRecord.constraintIndex,
+            numeratorDegreeBound: firstRecord.numeratorDegreeBound,
+            vanishingDegree: firstRecord.vanishingDegree,
+            quotientDegreeBound: firstRecord.quotientDegreeBound,
+            quotientCoefficients: tamperedCoefficients
+        )
+        let tamperedQuotientProof = try AIRPublicQuotientProofV1(
+            traceRowCount: airProof.proof.publicQuotientProof.traceRowCount,
+            traceColumnCount: airProof.proof.publicQuotientProof.traceColumnCount,
+            tracePolynomialDigest: airProof.proof.publicQuotientProof.tracePolynomialDigest,
+            quotientPolynomials: tamperedRecords
+        )
+        XCTAssertThrowsError(try AIRSharedDomainQuotientIdentityPCSProofBundleBuilderV1.prove(
+            trace: trace,
+            definition: air,
+            quotientProof: tamperedQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            queryCount: 2
+        ))
+    }
+
     func testPublicSidecarTheoremVerifiesAIRReductionAndGKRClaim() throws {
         let witness = try Self.fibonacciWitness()
         let air = try Self.fibonacciAIRDefinition()
@@ -1062,6 +1291,181 @@ final class ApplicationTheoremTests: XCTestCase {
             airDefinition: air,
             gkrClaim: gkrClaim
         ))
+    }
+
+    func testAIRConstraintMultilinearSumcheckBindsReductionVector() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let trace = try WitnessToAIRTraceProducerV1.produce(witness: witness, for: air)
+        let proof = try AIRConstraintMultilinearSumcheckProofBuilderV1.prove(
+            definition: air,
+            trace: trace
+        )
+        let report = try AIRConstraintMultilinearSumcheckVerifierV1.verificationReport(
+            proof,
+            definition: air,
+            trace: trace
+        )
+
+        XCTAssertEqual(proof.traceRowCount, trace.rowCount)
+        XCTAssertEqual(proof.traceColumnCount, trace.columnCount)
+        XCTAssertEqual(proof.sumcheckProof.statement.claimedHypercubeSum, 0)
+        XCTAssertTrue(report.sumcheckReport.fullMultilinearSumcheckVerified)
+        XCTAssertTrue(report.airDefinitionDigestMatches)
+        XCTAssertTrue(report.traceShapeMatches)
+        XCTAssertTrue(report.airEvaluationDigestMatches)
+        XCTAssertTrue(report.sumcheckInitialDigestMatchesAIRReduction)
+        XCTAssertTrue(report.zeroSumClaimVerified)
+        XCTAssertTrue(report.airSemanticsVerified)
+        XCTAssertTrue(report.provesAIRConstraintSumcheck)
+        XCTAssertTrue(report.provesPublicAIRSemantics)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try AIRConstraintMultilinearSumcheckVerifierV1.verify(
+            proof,
+            definition: air,
+            trace: trace
+        ))
+
+        let encodedProof = try AIRConstraintMultilinearSumcheckProofCodecV1.encode(proof)
+        XCTAssertEqual(
+            try AIRConstraintMultilinearSumcheckProofCodecV1.decode(encodedProof),
+            proof
+        )
+        XCTAssertEqual(try AIRConstraintMultilinearSumcheckProofDigestV1.digest(proof).count, 32)
+        var trailingProof = encodedProof
+        trailingProof.append(0)
+        XCTAssertThrowsError(try AIRConstraintMultilinearSumcheckProofCodecV1.decode(trailingProof))
+
+        let invalidTrace = try WitnessToAIRTraceProducerV1.produce(
+            witness: ApplicationWitnessTraceV1(columns: [
+                [1, 1, 2, 3],
+                [1, 2, 4, 5],
+            ]),
+            for: air
+        )
+        let invalidReport = try AIRConstraintMultilinearSumcheckVerifierV1.verificationReport(
+            proof,
+            definition: air,
+            trace: invalidTrace
+        )
+        XCTAssertTrue(invalidReport.sumcheckReport.fullMultilinearSumcheckVerified)
+        XCTAssertFalse(invalidReport.airEvaluationDigestMatches)
+        XCTAssertFalse(invalidReport.sumcheckInitialDigestMatchesAIRReduction)
+        XCTAssertFalse(invalidReport.airSemanticsVerified)
+        XCTAssertFalse(invalidReport.provesAIRConstraintSumcheck)
+        XCTAssertFalse(invalidReport.provesPublicAIRSemantics)
+    }
+
+    func testIntegratedPublicTheoremArtifactVerifiesAIRSumcheckQuotientAndGKR() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let gkrClaim = try Self.validGKRClaim()
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+        let artifact = try ApplicationPublicTheoremIntegratedArtifactBuilderV1.prove(
+            applicationIdentifier: "apple-zk-prover.test.integrated-public-theorem.v1",
+            witness: witness,
+            airDefinition: air,
+            gkrClaim: gkrClaim,
+            pcsStatement: Self.pcsStatement(),
+            domain: domain,
+            parameterSet: parameterSet,
+            quotientIdentityQueryCount: 2
+        )
+
+        let report = try ApplicationPublicTheoremIntegratedArtifactVerifierV1
+            .verificationReport(artifact)
+        XCTAssertTrue(report.publicTheoremReport.publicSidecarTheoremVerified)
+        XCTAssertTrue(report.airConstraintSumcheckReport.provesPublicAIRSemantics)
+        XCTAssertTrue(report.quotientIdentityReport.provesAIRQuotientIdentity)
+        XCTAssertTrue(report.quotientProofDerivedFromPublicTrace)
+        XCTAssertTrue(report.airConstraintSumcheckMatchesPublicTheoremTrace)
+        XCTAssertTrue(report.quotientIdentityMatchesPublicTheoremTrace)
+        XCTAssertTrue(report.verifiesIntegratedPublicTheorem)
+        XCTAssertFalse(report.isSuccinctAIRGKRProof)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(artifact))
+
+        let encodedAirSumcheck = try AIRConstraintMultilinearSumcheckProofCodecV1.encode(
+            artifact.airConstraintSumcheckProof
+        )
+        XCTAssertEqual(
+            try AIRConstraintMultilinearSumcheckProofCodecV1.decode(encodedAirSumcheck),
+            artifact.airConstraintSumcheckProof
+        )
+        let encodedQueryPlan = try AIRQuotientIdentityOpeningQueryPlanCodecV1.encode(
+            artifact.quotientIdentityPCSProofBundle.queryPlan
+        )
+        XCTAssertEqual(
+            try AIRQuotientIdentityOpeningQueryPlanCodecV1.decode(encodedQueryPlan),
+            artifact.quotientIdentityPCSProofBundle.queryPlan
+        )
+        let encodedCurrentTraceBundle = try AIRRowDomainTracePCSProofBundleCodecV1.encode(
+            artifact.quotientIdentityPCSProofBundle.currentTracePCSProofBundle
+        )
+        XCTAssertEqual(
+            try AIRRowDomainTracePCSProofBundleCodecV1.decode(encodedCurrentTraceBundle),
+            artifact.quotientIdentityPCSProofBundle.currentTracePCSProofBundle
+        )
+        let encodedQuotientIdentityBundle = try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1
+            .encode(artifact.quotientIdentityPCSProofBundle)
+        XCTAssertEqual(
+            try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1.decode(
+                encodedQuotientIdentityBundle
+            ),
+            artifact.quotientIdentityPCSProofBundle
+        )
+        XCTAssertEqual(
+            try AIRSharedDomainQuotientIdentityPCSProofBundleDigestV1.digest(
+                artifact.quotientIdentityPCSProofBundle
+            ).count,
+            32
+        )
+        let encodedArtifact = try ApplicationPublicTheoremIntegratedArtifactCodecV1.encode(artifact)
+        XCTAssertEqual(
+            try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(encodedArtifact),
+            artifact
+        )
+        XCTAssertEqual(
+            try ApplicationPublicTheoremIntegratedArtifactDigestV1.digest(artifact).count,
+            32
+        )
+        XCTAssertEqual(
+            try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verificationReport(
+                encodedArtifact: encodedArtifact
+            ),
+            report
+        )
+        XCTAssertTrue(try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(
+            encodedArtifact: encodedArtifact
+        ))
+        var trailingArtifact = encodedArtifact
+        trailingArtifact.append(0)
+        XCTAssertThrowsError(try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(trailingArtifact))
+
+        var tamperedDigest = artifact.airConstraintSumcheckProof.airEvaluationDigest
+        tamperedDigest[0] ^= 0x42
+        let tamperedAirSumcheck = try AIRConstraintMultilinearSumcheckProofV1(
+            airDefinitionDigest: artifact.airConstraintSumcheckProof.airDefinitionDigest,
+            traceRowCount: artifact.airConstraintSumcheckProof.traceRowCount,
+            traceColumnCount: artifact.airConstraintSumcheckProof.traceColumnCount,
+            airEvaluationDigest: tamperedDigest,
+            sumcheckProof: artifact.airConstraintSumcheckProof.sumcheckProof
+        )
+        let tamperedArtifact = try ApplicationPublicTheoremIntegratedArtifactV1(
+            publicTheoremArtifact: artifact.publicTheoremArtifact,
+            airConstraintSumcheckProof: tamperedAirSumcheck,
+            quotientIdentityPCSProofBundle: artifact.quotientIdentityPCSProofBundle
+        )
+        let tamperedReport = try ApplicationPublicTheoremIntegratedArtifactVerifierV1
+            .verificationReport(tamperedArtifact)
+        XCTAssertTrue(tamperedReport.publicTheoremReport.publicSidecarTheoremVerified)
+        XCTAssertTrue(tamperedReport.airConstraintSumcheckReport.sumcheckReport.fullMultilinearSumcheckVerified)
+        XCTAssertFalse(tamperedReport.airConstraintSumcheckReport.airEvaluationDigestMatches)
+        XCTAssertFalse(tamperedReport.airConstraintSumcheckReport.provesAIRConstraintSumcheck)
+        XCTAssertTrue(tamperedReport.quotientIdentityReport.provesAIRQuotientIdentity)
+        XCTAssertFalse(tamperedReport.verifiesIntegratedPublicTheorem)
+        XCTAssertFalse(try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(tamperedArtifact))
     }
 
     func testPublicTheoremArtifactBuildsEncodesAndVerifiesEndToEnd() throws {
@@ -1326,6 +1730,134 @@ final class ApplicationTheoremTests: XCTestCase {
         }
     }
 
+    func testApplicationPublicTheoremIntegratedArtifactCorpusV1PinsCanonicalDigestsAndRejections() throws {
+        let corpus = try Self.loadApplicationPublicTheoremIntegratedArtifactCorpus()
+        XCTAssertEqual(corpus.schemaVersion, 1)
+        XCTAssertEqual(corpus.artifact, ApplicationPublicTheoremIntegratedArtifactManifestV1.artifactName)
+        XCTAssertEqual(corpus.sourceCorpus, "ApplicationPublicTheoremArtifactCorpusV1")
+
+        let sourceCorpus = try Self.loadApplicationPublicTheoremArtifactCorpus()
+        let fixture = try Self.makePublicTheoremCorpusFixture(sourceCorpus.statement)
+        let artifact = try ApplicationPublicTheoremIntegratedArtifactBuilderV1.prove(
+            applicationIdentifier: fixture.artifact.statement.applicationIdentifier,
+            witness: fixture.witness,
+            airDefinition: fixture.airDefinition,
+            gkrClaim: fixture.gkrClaim,
+            pcsStatement: fixture.pcsStatement,
+            domain: CircleDomainDescriptor.canonical(logSize: corpus.statement.quotientIdentityDomainLogSize),
+            parameterSet: Self.smallPCSParameterSet(),
+            quotientIdentityQueryCount: corpus.statement.quotientIdentityQueryCount
+        )
+        let encodedArtifact = try ApplicationPublicTheoremIntegratedArtifactCodecV1.encode(artifact)
+        let encodedAIRSumcheck = try AIRConstraintMultilinearSumcheckProofCodecV1.encode(
+            artifact.airConstraintSumcheckProof
+        )
+        let encodedQuotientIdentityBundle =
+            try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1.encode(
+                artifact.quotientIdentityPCSProofBundle
+            )
+
+        XCTAssertEqual(encodedArtifact.count, corpus.statement.expected.artifactByteCount)
+        XCTAssertEqual(SHA3Oracle.sha3_256(encodedArtifact).hexString, corpus.statement.expected.artifactDigestHex)
+        XCTAssertEqual(
+            try ApplicationPublicTheoremIntegratedArtifactDigestV1.digest(artifact).hexString,
+            corpus.statement.expected.artifactDomainDigestHex
+        )
+        XCTAssertEqual(encodedAIRSumcheck.count, corpus.statement.expected.airSumcheckByteCount)
+        XCTAssertEqual(SHA3Oracle.sha3_256(encodedAIRSumcheck).hexString, corpus.statement.expected.airSumcheckDigestHex)
+        XCTAssertEqual(
+            try AIRConstraintMultilinearSumcheckProofDigestV1.digest(artifact.airConstraintSumcheckProof).hexString,
+            corpus.statement.expected.airSumcheckDomainDigestHex
+        )
+        XCTAssertEqual(
+            encodedQuotientIdentityBundle.count,
+            corpus.statement.expected.quotientIdentityBundleByteCount
+        )
+        XCTAssertEqual(
+            SHA3Oracle.sha3_256(encodedQuotientIdentityBundle).hexString,
+            corpus.statement.expected.quotientIdentityBundleDigestHex
+        )
+        XCTAssertEqual(
+            try AIRSharedDomainQuotientIdentityPCSProofBundleDigestV1.digest(
+                artifact.quotientIdentityPCSProofBundle
+            ).hexString,
+            corpus.statement.expected.quotientIdentityBundleDomainDigestHex
+        )
+        XCTAssertEqual(
+            artifact.quotientIdentityPCSProofBundle.queryPlan.commitmentDigest.hexString,
+            corpus.statement.expected.quotientIdentityQueryPlanCommitmentDigestHex
+        )
+        XCTAssertEqual(try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(encodedArtifact), artifact)
+        XCTAssertTrue(try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(
+            encodedArtifact: encodedArtifact
+        ))
+
+        XCTAssertEqual(corpus.tamperVectors.count, 3)
+        for vector in corpus.tamperVectors {
+            XCTAssertFalse(vector.expectedVerifierAccepted, vector.id)
+            switch vector.id {
+            case "air-sumcheck-evaluation-digest-mismatch":
+                var digest = artifact.airConstraintSumcheckProof.airEvaluationDigest
+                digest[0] ^= 0x42
+                let tamperedAIR = try AIRConstraintMultilinearSumcheckProofV1(
+                    airDefinitionDigest: artifact.airConstraintSumcheckProof.airDefinitionDigest,
+                    traceRowCount: artifact.airConstraintSumcheckProof.traceRowCount,
+                    traceColumnCount: artifact.airConstraintSumcheckProof.traceColumnCount,
+                    airEvaluationDigest: digest,
+                    sumcheckProof: artifact.airConstraintSumcheckProof.sumcheckProof
+                )
+                let tamperedArtifact = try ApplicationPublicTheoremIntegratedArtifactV1(
+                    publicTheoremArtifact: artifact.publicTheoremArtifact,
+                    airConstraintSumcheckProof: tamperedAIR,
+                    quotientIdentityPCSProofBundle: artifact.quotientIdentityPCSProofBundle
+                )
+                let report = try ApplicationPublicTheoremIntegratedArtifactVerifierV1
+                    .verificationReport(tamperedArtifact)
+                XCTAssertFalse(report.airConstraintSumcheckReport.airEvaluationDigestMatches, vector.id)
+                XCTAssertFalse(report.verifiesIntegratedPublicTheorem, vector.id)
+            case "quotient-identity-query-plan-commitment-mismatch":
+                var commitmentDigest = artifact.quotientIdentityPCSProofBundle.queryPlan.commitmentDigest
+                commitmentDigest[0] ^= 0x24
+                let queryPlan = artifact.quotientIdentityPCSProofBundle.queryPlan
+                let tamperedQueryPlan = try AIRQuotientIdentityOpeningQueryPlanV1(
+                    traceRowCount: queryPlan.traceRowCount,
+                    traceColumnCount: queryPlan.traceColumnCount,
+                    quotientPolynomialCount: queryPlan.quotientPolynomialCount,
+                    queryCount: queryPlan.queryCount,
+                    airDefinitionDigest: queryPlan.airDefinitionDigest,
+                    quotientProofDigest: queryPlan.quotientProofDigest,
+                    commitmentDigest: commitmentDigest,
+                    claimedStorageIndices: queryPlan.claimedStorageIndices
+                )
+                let tamperedBundle = try AIRSharedDomainQuotientIdentityPCSProofBundleV1(
+                    queryPlan: tamperedQueryPlan,
+                    currentTracePCSProofBundle: artifact.quotientIdentityPCSProofBundle.currentTracePCSProofBundle,
+                    nextTracePCSProofBundle: artifact.quotientIdentityPCSProofBundle.nextTracePCSProofBundle,
+                    quotientPCSProofBundle: artifact.quotientIdentityPCSProofBundle.quotientPCSProofBundle
+                )
+                let tamperedArtifact = try ApplicationPublicTheoremIntegratedArtifactV1(
+                    publicTheoremArtifact: artifact.publicTheoremArtifact,
+                    airConstraintSumcheckProof: artifact.airConstraintSumcheckProof,
+                    quotientIdentityPCSProofBundle: tamperedBundle
+                )
+                let report = try ApplicationPublicTheoremIntegratedArtifactVerifierV1
+                    .verificationReport(tamperedArtifact)
+                XCTAssertFalse(report.quotientIdentityReport.queryPlanMatchesCommitments, vector.id)
+                XCTAssertFalse(report.quotientIdentityReport.provesAIRQuotientIdentity, vector.id)
+                XCTAssertFalse(report.verifiesIntegratedPublicTheorem, vector.id)
+            case "trailing-byte-decode-rejection":
+                var trailing = encodedArtifact
+                trailing.append(0)
+                XCTAssertThrowsError(
+                    try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(trailing),
+                    vector.id
+                )
+            default:
+                XCTFail("Unhandled integrated corpus tamper vector \(vector.id)")
+            }
+        }
+    }
+
     func testPublicTheoremArtifactBuilderRejectsFalseTheoremInputs() throws {
         XCTAssertThrowsError(try ApplicationPublicTheoremBuilderV1.prove(
             applicationIdentifier: "apple-zk-prover.test.invalid-air-artifact.v1",
@@ -1511,6 +2043,33 @@ final class ApplicationTheoremTests: XCTestCase {
         let id: String
     }
 
+    private struct ApplicationPublicTheoremIntegratedCorpusFixture: Decodable {
+        let artifact: String
+        let schemaVersion: Int
+        let sourceCorpus: String
+        let statement: ApplicationPublicTheoremIntegratedCorpusStatement
+        let tamperVectors: [ApplicationPublicTheoremCorpusTamperVector]
+    }
+
+    private struct ApplicationPublicTheoremIntegratedCorpusStatement: Decodable {
+        let quotientIdentityDomainLogSize: UInt32
+        let quotientIdentityQueryCount: Int
+        let expected: ApplicationPublicTheoremIntegratedCorpusExpected
+    }
+
+    private struct ApplicationPublicTheoremIntegratedCorpusExpected: Decodable {
+        let airSumcheckByteCount: Int
+        let airSumcheckDigestHex: String
+        let airSumcheckDomainDigestHex: String
+        let artifactByteCount: Int
+        let artifactDigestHex: String
+        let artifactDomainDigestHex: String
+        let quotientIdentityBundleByteCount: Int
+        let quotientIdentityBundleDigestHex: String
+        let quotientIdentityBundleDomainDigestHex: String
+        let quotientIdentityQueryPlanCommitmentDigestHex: String
+    }
+
     private struct PublicTheoremCorpusFixture {
         let artifact: ApplicationPublicTheoremArtifactV1
         let witness: ApplicationWitnessTraceV1
@@ -1526,6 +2085,18 @@ final class ApplicationTheoremTests: XCTestCase {
         ))
         return try JSONDecoder().decode(
             ApplicationPublicTheoremCorpusFixture.self,
+            from: try Data(contentsOf: url)
+        )
+    }
+
+    private static func loadApplicationPublicTheoremIntegratedArtifactCorpus()
+        throws -> ApplicationPublicTheoremIntegratedCorpusFixture {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: "ApplicationPublicTheoremIntegratedArtifactCorpusV1",
+            withExtension: "json"
+        ))
+        return try JSONDecoder().decode(
+            ApplicationPublicTheoremIntegratedCorpusFixture.self,
             from: try Data(contentsOf: url)
         )
     }
@@ -1744,6 +2315,50 @@ final class ApplicationTheoremTests: XCTestCase {
         }
         return data
     }
+
+#if canImport(Metal)
+    private static func makePrivateBuffer(
+        context: MetalContext,
+        bytes: Data,
+        label: String
+    ) throws -> MTLBuffer {
+        let buffer = try MetalBufferFactory.makePrivateBuffer(
+            device: context.device,
+            length: bytes.count,
+            label: label
+        )
+        let staging = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            bytes: bytes,
+            declaredLength: bytes.count,
+            label: "\(label).Staging"
+        )
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "\(label).Upload"
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            throw AppleZKProverError.failedToCreateEncoder
+        }
+        blit.label = "\(label).Upload.Copy"
+        if bytes.count > 0 {
+            blit.copy(
+                from: staging,
+                sourceOffset: 0,
+                to: buffer,
+                destinationOffset: 0,
+                size: bytes.count
+            )
+        }
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+        return buffer
+    }
+#endif
 
     private static func fibonacciWitness() throws -> ApplicationWitnessTraceV1 {
         try ApplicationWitnessTraceV1(columns: [

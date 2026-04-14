@@ -269,20 +269,26 @@ profile.
 records that the artifact includes the Circle PCS/FRI slice, does not include witness/AIR,
 sumcheck, or GKR data inside the PCS proof itself, supports the narrow resident
 monomial-coefficient witness-to-Circle-FFT-basis producer,
+supports resident private M31 witness-column to row-major AIR trace synthesis outside the
+PCS proof bytes,
 supports verifier-checked nonzero grinding, and uses the current
-materialized-codeword-then-commit schedule rather than a fused/tiled commitment schedule.
+final-FFT-stage leaf-hash commitment schedule. The resident prover writes the finalized
+Circle FFT values directly into the first committed-layer buffer, hashes both finalized
+leaves inside the last FFT butterfly stage, and reduces those prehashed leaves to the first
+Merkle root without a separate full-codeword leaf-hash pass.
 
 `CirclePCSFRIContractProverV1` is a deterministic CPU helper for tests and corpus
 generation. It is not the resident production prover path; resident coefficient-to-proof
 emission remains under `CircleCodewordPCSFRIProverV1`.
 
-`zkmetal-bench --circle-codeword-prover` now emits schema v3 for this boundary. Timed
+`zkmetal-bench --circle-codeword-prover` now emits schema v4 for this boundary. Timed
 codeword and full-prover rows use a pre-uploaded private Circle FFT-basis coefficient
-buffer, keep the generated codeword private, and report `readbackPolicy` with
-`fullCodewordReadback == false` and `intermediateFRILayerReadback == false`. When CPU
-verification is enabled, the codeword digest in the report is explicitly marked as coming
-from the CPU oracle instead of a GPU codeword readback. Proof equality and verifier
-acceptance are the GPU-resident correctness gates.
+buffer, keep the generated first layer private in the committed-layer arena, and report
+`readbackPolicy` with `fullCodewordReadback == false` and
+`intermediateFRILayerReadback == false`. When CPU verification is enabled, the codeword
+digest in the report is explicitly marked as coming from the CPU oracle instead of a GPU
+codeword readback. Proof equality and verifier acceptance are the GPU-resident correctness
+gates.
 
 ## Binary Proof Format
 
@@ -434,9 +440,9 @@ Implemented:
 
 Not yet implemented:
 
-- fused/tiled Circle FFT codeword plus commitment command plans
-- AIR trace synthesis and end-to-end proof-system witness generation beyond resident
-  coefficient-witness columns
-- AIR semantic verification, GKR verification, and witness-to-AIR trace production
+- end-to-end proof-system witness generation beyond resident coefficient-witness and
+  resident AIR trace layout synthesis
+- AIR semantic verification over private resident traces, GKR verification, and
+  succinct witness-to-AIR proof integration
 - a reviewed production-facing parameter profile that assigns grinding credit
 - external cryptographic review of the concrete parameter profile

@@ -29,9 +29,9 @@ round-trips.
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
 | M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, canonical Circle first-fold and multi-layer fold plans with explicit or Circle V1 Merkle-transcript challenges, Circle FFT codeword generation over `P(x) + yQ(x)` into resident buffers, a multi-layer CPU Circle FRI proof verifier, and a linear QM31 FRI proof/decommitment verifier |
-| Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer; CPU verifier-facing `M31SumcheckProofV1` for the narrow chunk transcript |
+| Sum-check | GPU-resident canonical M31 chunk: round evaluation, transcript absorb, challenge squeeze, and fold/halve in one command buffer; CPU verifier-facing `M31SumcheckProofV1` for the narrow chunk transcript; public `M31MultilinearSumcheckProofV1` and `AIRConstraintMultilinearSumcheckProofV1` for evaluation-table sum-check and AIR reduction binding |
 | Runtime | Pipeline caching, optional Metal binary archives, reusable execution plans, shared upload rings, private residency arenas, device-scoped planning |
-| Verification | CPU-differential tests, verified accelerator APIs, strict Circle PCS verification, and `ApplicationProofV1` composition for the implemented slice |
+| Verification | CPU-differential tests, verified accelerator APIs, strict Circle PCS verification, `ApplicationProofV1` composition for the implemented slice, and `ApplicationPublicTheoremIntegratedArtifactV1` for the public AIR/GKR theorem sidecar |
 | Measurement | `zkmetal-bench` CLI with warmups, repeated samples, JSON output, CPU verification gates, and checked-in Apple M4 / Apple9 baselines |
 
 ## Why This Exists
@@ -123,13 +123,18 @@ Implemented today:
   surface for Circle FFT-basis coefficients through proof bytes: coefficient
   input, codeword generation, Merkle roots, transcript challenges, FRI folds,
   query extraction, and proof serialization. It keeps the generated codeword
-  and materialized FRI layers private, with readback limited to public proof
-  material. `CircleWitnessToFFTBasisPlanV1` adds the narrow resident production
+  and materialized FRI layers private, fuses the final Circle FFT stage with the
+  first-layer SHA3 leaf hashing, and limits readback to public proof material.
+  `CircleWitnessToFFTBasisPlanV1` adds the narrow resident production
   path for private monomial coefficient witness columns into Circle FFT-basis
   coefficients using a public M31 transform matrix. The resident witness path
   rejects noncanonical private QM31 limbs on GPU before transformation and tiles
-  the transform matrix for shapes beyond the full-matrix oracle cap; it does not
-  synthesize AIR traces or verify AIR semantics. A structured
+  the transform matrix for shapes beyond the full-matrix oracle cap.
+  `AIRTraceResidentSynthesisPlanV1` adds the resident private AIR trace layout
+  step: private column-major M31 witness columns are canonicality-checked on GPU
+  and transposed into the row-major `AIRExecutionTraceV1` object that the CPU AIR
+  semantics expect. It does not yet verify AIR semantics or add zero-knowledge
+  masking. A structured
   `CirclePCSFRIPolynomialClaimV1` plus
   `CirclePCSFRIPolynomialVerifierV1` now binds polynomial coefficients, domain
   points, claimed evaluations, and first-layer Merkle openings on the CPU.
@@ -140,9 +145,8 @@ Implemented today:
   transcript surfaces support verifier-checked nonzero grinding through an
   8-byte nonce, while the conservative public profile still claims no grinding
   credit. `CirclePCSFRIArtifactManifestV1` records the implemented PCS slice
-  and the remaining non-capabilities: no AIR trace synthesis, no sum-check/GKR
-  artifact integration inside the PCS artifact, and no fused/tiled
-  codeword-to-commitment schedule. The checked-in corpus under
+  and the remaining non-capability: no sum-check/GKR artifact integration inside
+  the PCS artifact. The checked-in corpus under
   `Tests/AppleZKProverTests/Resources/` pins canonical accepted proof bytes and
   tamper/rejection vectors for that contract.
 - A verifier-facing `ApplicationProofV1` envelope that binds an application
@@ -155,9 +159,11 @@ Implemented today:
   `ApplicationProofClaimScopeV1` now separate that accepted slice from the
   unsupported witness/AIR/GKR theorem in the proof bytes alone.
   `M31SumcheckVerificationReportV1` classifies the embedded M31 component as a
-  `revealedEvaluationVectorFoldingTrace`, and leaves full multilinear
-  sum-check, AIR-constraint sum-check, and zero-knowledge sum-check scopes
-  unverified. AIR semantic verification,
+  `revealedEvaluationVectorFoldingTrace`. The separate
+  `M31MultilinearSumcheckProofV1` verifies the full public multilinear
+  evaluation-table protocol, and `AIRConstraintMultilinearSumcheckProofV1`
+  binds that proof to the canonical AIR constraint-reduction vector with a
+  zero-sum claim. AIR semantic verification,
   witness-to-AIR trace production, AIR-to-sum-check reduction, GKR verification,
   end-to-end theorem verification, and M31 sum-check zero-knowledge remain
   explicit open boundaries in `ApplicationProofManifestV1`. The checked-in
@@ -198,9 +204,23 @@ Implemented today:
   transcript-derived rows plus the required boundary rows.
   `AIRTraceQuotientPCSQueryAlignmentVerifierV1` checks the matching public
   quotient PCS bundle opens at those same bit-reversed storage indices and is
-  bound to the supplied public quotient proof, while explicitly reporting that
-  the AIR quotient identity is not checked because the current trace PCS bridge
-  and CPU quotient oracle use different semantic coordinate domains.
+  bound to the supplied public quotient proof.
+  `AIRSharedDomainQuotientIdentityPCSProofBundleV1` adds the quotient-identity
+  path: it commits row-domain current trace polynomials, row-domain shifted-next
+  trace polynomials, and quotient polynomials over the same Circle PCS challenge
+  x-coordinates, samples non-root opening points from their commitment roots, and
+  checks the opened AIR equation `N(z) = Z(z) * Q(z)`.
+  `ApplicationPublicTheoremIntegratedArtifactV1` packages the public theorem
+  artifact, public AIR constraint multilinear sumcheck, and shared-domain
+  quotient identity bundle into one verifier-facing report that also keeps GKR
+  semantic verification in the same public theorem path.
+  `ApplicationPublicTheoremIntegratedArtifactCodecV1` gives that integrated
+  surface a strict binary form; the checked-in integrated corpus pins canonical
+  bytes, domain-separated digests, quotient-identity commitment binding, and
+  tamper/trailing-byte rejection vectors. `zkmetal-bench
+  --application-integrated-theorem` exercises the same integrated public
+  artifact path and reports build, serialization, deserialization, verification,
+  size, and digest metrics.
   `AIRTraceCirclePCSProofBundleCodecV1` gives that ordered bundle a strict
   binary form, and `AIRTraceCirclePCSProofBundleDigestV1` domain-separates the
   encoded bundle for fixture and artifact binding. `GKRClaimV1` adds a CPU
@@ -447,6 +467,7 @@ rules.
 | `Sources/AppleZKProver/M31VectorArithmetic.swift` | GPU M31 vector arithmetic |
 | `Sources/AppleZKProver/M31DotProduct.swift` | GPU M31 dot-product reductions |
 | `Sources/AppleZKProver/SumcheckOracle.swift` | CPU M31 sum-check chunk oracle |
+| `Sources/AppleZKProver/AIRTraceResidentSynthesis.swift` | Resident private witness columns to row-major AIR trace synthesis |
 | `Sources/AppleZKProver/CircleWitnessFFTBasis.swift` | Resident monomial coefficient witness-column to Circle FFT-basis production |
 | `Sources/AppleZKProver/ApplicationProofFormat.swift` | Application proof envelope binding M31 sum-check and Circle PCS proofs |
 | `Sources/AppleZKProver/ApplicationTheorem.swift` | Public AIR/GKR theorem verifier, public theorem artifact, and AIR-to-PCS witness bridge |
@@ -492,8 +513,11 @@ designed to be testable and conservative:
   false for the proof bytes alone. The public sidecar theorem path can check
   AIR/GKR semantics when sidecars are supplied, and
   `ApplicationPublicTheoremArtifactV1` packages those public sidecars into one
-  decodable artifact. Zero-knowledge masking, succinct AIR/GKR proof
-  integration, and external cryptographic review remain open.
+  decodable artifact. `ApplicationPublicTheoremIntegratedArtifactV1` now has a
+  strict codec and corpus for the public AIR sumcheck plus shared-domain
+  quotient-identity surface, plus a dedicated `zkmetal-bench
+  --application-integrated-theorem` report. Zero-knowledge masking, succinct
+  AIR/GKR proof integration, and external cryptographic review remain open.
 - Lower-level V1 artifacts can carry verifier-checked nonzero grinding nonces,
   but the conservative public profile still claims no grinding credit until a
   reviewed parameter profile assigns it.

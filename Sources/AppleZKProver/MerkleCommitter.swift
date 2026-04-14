@@ -311,6 +311,218 @@ public final class SHA3MerkleCommitter: @unchecked Sendable {
     }
 }
 
+public final class SHA3PrehashedLeavesMerkleCommitPlan: @unchecked Sendable {
+    public static let leafHashByteCount = 32
+
+    private let context: MetalContext
+    private let leafCount: Int
+    private let leafHashByteCount: Int
+    private let leafHashBufferByteCount: Int
+    private let arena: ResidencyArena
+    private let scratchA: ArenaSlice
+    private let scratchB: ArenaSlice
+    private let rootReadback: MTLBuffer
+    private let parentPipeline: MTLComputePipelineState
+    private let fusedUpperPipeline: MTLComputePipelineState
+    private let fusedUpperNodeLimit: Int
+    private let executionLock = NSLock()
+
+    public init(context: MetalContext, leafCount: Int) throws {
+        guard leafCount > 0, leafCount.nonzeroBitCount == 1 else {
+            throw AppleZKProverError.invalidLeafCount(leafCount)
+        }
+        _ = try checkedUInt32(leafCount)
+        let parentPipeline = try context.pipeline(for: MerkleKernelSpecs.parent32x32())
+        let fusedUpperPipeline = try context.pipeline(for: MerkleKernelSpecs.fusedUpper32())
+        let leafHashBufferByteCount = try checkedBufferLength(leafCount, Self.leafHashByteCount)
+        let scratchLength = max(Self.leafHashByteCount, leafHashBufferByteCount)
+        let arena = try ResidencyArena(
+            device: context.device,
+            capacity: scratchLength * 2 + 256,
+            label: "Merkle.PrehashedPlanArena"
+        )
+
+        self.context = context
+        self.leafCount = leafCount
+        self.leafHashByteCount = Self.leafHashByteCount
+        self.leafHashBufferByteCount = leafHashBufferByteCount
+        self.arena = arena
+        self.scratchA = try arena.allocate(length: scratchLength, role: .leafHashes)
+        self.scratchB = try arena.allocate(length: scratchLength, role: .frontierNodes)
+        self.rootReadback = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            length: Self.leafHashByteCount,
+            label: "Merkle.PrehashedPlanRoot"
+        )
+        self.parentPipeline = parentPipeline
+        self.fusedUpperPipeline = fusedUpperPipeline
+        self.fusedUpperNodeLimit = Self.fusedUpperNodeLimit(device: context.device, pipeline: fusedUpperPipeline)
+    }
+
+    public func commit(
+        leafHashBuffer: MTLBuffer,
+        leafHashOffset: Int = 0
+    ) throws -> MerkleCommitment {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let start = DispatchTime.now()
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "Merkle.CommitPrehashedResident"
+
+        try encodeCommitmentRoot(
+            leafHashBuffer: leafHashBuffer,
+            leafHashOffset: leafHashOffset,
+            rootBuffer: rootReadback,
+            rootOffset: 0,
+            on: commandBuffer
+        )
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        return MerkleCommitment(
+            root: Data(bytes: rootReadback.contents(), count: Self.leafHashByteCount),
+            stats: GPUExecutionStats(
+                cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
+                gpuSeconds: gpuDuration(commandBuffer)
+            )
+        )
+    }
+
+    func encodeCommitmentRoot(
+        leafHashBuffer: MTLBuffer,
+        leafHashOffset: Int = 0,
+        rootBuffer: MTLBuffer,
+        rootOffset: Int,
+        on commandBuffer: MTLCommandBuffer
+    ) throws {
+        try Self.validateBufferRange(
+            buffer: leafHashBuffer,
+            offset: leafHashOffset,
+            byteCount: leafHashBufferByteCount
+        )
+        try Self.validateBufferRange(
+            buffer: rootBuffer,
+            offset: rootOffset,
+            byteCount: Self.leafHashByteCount
+        )
+
+        var currentBuffer = leafHashBuffer
+        var currentOffset = leafHashOffset
+        var alternate = scratchA
+        var currentCount = leafCount
+
+        while currentCount > max(1, fusedUpperNodeLimit) {
+            var parentParams = MerkleParentParams(pairCount: try checkedUInt32(currentCount / 2))
+            guard let parentEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            parentEncoder.label = "Merkle.Prehashed.Reduce.\(currentCount)"
+            parentEncoder.setComputePipelineState(parentPipeline)
+            parentEncoder.setBuffer(currentBuffer, offset: currentOffset, index: 0)
+            parentEncoder.setBuffer(alternate.buffer, offset: alternate.offset, index: 1)
+            parentEncoder.setBytes(&parentParams, length: MemoryLayout<MerkleParentParams>.stride, index: 2)
+            context.dispatch1D(parentEncoder, pipeline: parentPipeline, elementCount: currentCount / 2)
+            parentEncoder.endEncoding()
+
+            currentBuffer = alternate.buffer
+            currentOffset = alternate.offset
+            alternate = alternate.buffer === scratchA.buffer && alternate.offset == scratchA.offset ? scratchB : scratchA
+            currentCount /= 2
+        }
+
+        if currentCount > 1 {
+            var fuseParams = MerkleFuseParams(nodeCount: try checkedUInt32(currentCount))
+            guard let fusedEncoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            fusedEncoder.label = "Merkle.Prehashed.FuseUpper.\(currentCount)"
+            fusedEncoder.setComputePipelineState(fusedUpperPipeline)
+            fusedEncoder.setBuffer(currentBuffer, offset: currentOffset, index: 0)
+            fusedEncoder.setBuffer(rootBuffer, offset: rootOffset, index: 1)
+            fusedEncoder.setBytes(&fuseParams, length: MemoryLayout<MerkleFuseParams>.stride, index: 2)
+            fusedEncoder.setThreadgroupMemoryLength(try checkedBufferLength(currentCount, 64), index: 0)
+            fusedEncoder.dispatchThreadgroups(
+                MTLSize(width: 1, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: currentCount, height: 1, depth: 1)
+            )
+            fusedEncoder.endEncoding()
+        } else {
+            guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+                throw AppleZKProverError.failedToCreateEncoder
+            }
+            blit.label = "Merkle.Prehashed.Root"
+            blit.copy(
+                from: currentBuffer,
+                sourceOffset: currentOffset,
+                to: rootBuffer,
+                destinationOffset: rootOffset,
+                size: Self.leafHashByteCount
+            )
+            blit.endEncoding()
+        }
+    }
+
+    public func clearReusableBuffers() throws {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        MetalBufferFactory.zeroSharedBuffer(rootReadback)
+        try MetalBufferFactory.zeroPrivateBuffers(
+            [arena.buffer],
+            context: context,
+            label: "Merkle.PrehashedPlanClear"
+        )
+    }
+
+    private static func validateBufferRange(
+        buffer: MTLBuffer,
+        offset: Int,
+        byteCount: Int
+    ) throws {
+        let end = offset.addingReportingOverflow(max(1, byteCount))
+        guard offset >= 0,
+              byteCount >= 0,
+              !end.overflow,
+              buffer.length >= end.partialValue else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    private static func fusedUpperNodeLimit(device: MTLDevice, pipeline: MTLComputePipelineState) -> Int {
+        let maxNodesByThreadgroupMemory = device.maxThreadgroupMemoryLength / 64
+        let maxNodesByThreads = pipeline.maxTotalThreadsPerThreadgroup
+        let candidate = min(512, min(maxNodesByThreadgroupMemory, maxNodesByThreads))
+        guard candidate >= 2 else {
+            return 0
+        }
+        return floorPowerOfTwo(candidate)
+    }
+
+    private static func floorPowerOfTwo(_ value: Int) -> Int {
+        var power = 1
+        while power <= value / 2 {
+            power <<= 1
+        }
+        return power
+    }
+
+    private func gpuDuration(_ commandBuffer: MTLCommandBuffer) -> Double? {
+        guard commandBuffer.gpuEndTime > commandBuffer.gpuStartTime else {
+            return nil
+        }
+        return commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+    }
+}
+
 public final class SHA3RawLeavesMerkleCommitPlan: @unchecked Sendable {
     private let context: MetalContext
     private let leafCount: Int

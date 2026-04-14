@@ -360,8 +360,8 @@ public struct CircleCodewordPCSFRIResidentCommandPlanV1: Equatable, Codable, Sen
               !coefficientInputs.isEmpty,
               phases == Self.canonicalPhases,
               publicReadbacks == Self.canonicalPublicReadbacks,
-              codewordCommitmentSchedule == .materializedCodewordThenCommit,
-              !usesFusedTiledCodewordCommitment,
+              codewordCommitmentSchedule == .finalFFTStageLeafHashThenCommit,
+              usesFusedTiledCodewordCommitment,
               forbidsFullCodewordReadback,
               forbidsIntermediateFRILayerReadback,
               codewordElementCount > 1,
@@ -419,9 +419,11 @@ public final class CircleCodewordPlan: @unchecked Sendable {
 
     private let context: MetalContext
     private let fftPipeline: MTLComputePipelineState
+    private let fftLeafHashPipeline: MTLComputePipelineState
     private let domainMaterialization: CircleDomainMaterializationPlan
     private let outputByteCount: Int
     private let coefficientByteCount: Int
+    private let leafHashByteCount: Int
     private let executionLock = NSLock()
 
     public init(
@@ -439,8 +441,12 @@ public final class CircleCodewordPlan: @unchecked Sendable {
         self.fftPipeline = try context.pipeline(
             for: KernelSpec(kernel: "circle_codeword_fft_stage", family: .scalar, queueMode: .metal3)
         )
+        self.fftLeafHashPipeline = try context.pipeline(
+            for: KernelSpec(kernel: "circle_codeword_fft_stage_leaf_hash", family: .scalar, queueMode: .metal3)
+        )
         self.outputByteCount = try checkedBufferLength(domain.size, Self.elementByteCount)
         self.coefficientByteCount = outputByteCount
+        self.leafHashByteCount = try checkedBufferLength(domain.size, SHA3PrehashedLeavesMerkleCommitPlan.leafHashByteCount)
         self.domainMaterialization = try CircleDomainMaterializationPlan(
             context: context,
             domain: domain,
@@ -546,6 +552,34 @@ public final class CircleCodewordPlan: @unchecked Sendable {
         )
     }
 
+    func encodeResidentWithFinalStageLeafHashes(
+        circleCoefficientBuffer: MTLBuffer,
+        circleCoefficientOffset: Int = 0,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int = 0,
+        leafHashBuffer: MTLBuffer,
+        leafHashOffset: Int = 0,
+        on commandBuffer: MTLCommandBuffer
+    ) throws {
+        try validateResidentFFTBuffers(
+            circleCoefficientBuffer: circleCoefficientBuffer,
+            circleCoefficientOffset: circleCoefficientOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset,
+            leafHashBuffer: leafHashBuffer,
+            leafHashOffset: leafHashOffset
+        )
+        try encodeFFT(
+            coefficientBuffer: circleCoefficientBuffer,
+            coefficientOffset: circleCoefficientOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset,
+            leafHashBuffer: leafHashBuffer,
+            leafHashOffset: leafHashOffset,
+            on: commandBuffer
+        )
+    }
+
     public func executeResident(
         xCoefficientBuffer: MTLBuffer,
         xCoefficientOffset: Int = 0,
@@ -626,12 +660,54 @@ public final class CircleCodewordPlan: @unchecked Sendable {
         outputBuffer: MTLBuffer,
         outputOffset: Int
     ) throws -> GPUExecutionStats {
+        try validateResidentFFTBuffers(
+            circleCoefficientBuffer: coefficientBuffer,
+            circleCoefficientOffset: coefficientOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset,
+            leafHashBuffer: nil,
+            leafHashOffset: 0
+        )
+
         let start = DispatchTime.now()
         guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
             throw AppleZKProverError.failedToCreateCommandBuffer
         }
         commandBuffer.label = "Circle.Codeword.FFT"
 
+        try encodeFFT(
+            coefficientBuffer: coefficientBuffer,
+            coefficientOffset: coefficientOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset,
+            leafHashBuffer: nil,
+            leafHashOffset: 0,
+            on: commandBuffer
+        )
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        return GPUExecutionStats(
+            cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
+            gpuSeconds: gpuDuration(commandBuffer)
+        )
+    }
+
+    private func encodeFFT(
+        coefficientBuffer: MTLBuffer,
+        coefficientOffset: Int,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int,
+        leafHashBuffer: MTLBuffer?,
+        leafHashOffset: Int,
+        on commandBuffer: MTLCommandBuffer
+    ) throws {
         guard let uploadBlit = commandBuffer.makeBlitCommandEncoder() else {
             throw AppleZKProverError.failedToCreateEncoder
         }
@@ -649,11 +725,15 @@ public final class CircleCodewordPlan: @unchecked Sendable {
             throw AppleZKProverError.failedToCreateEncoder
         }
         encoder.label = "Circle.Codeword.FFT.Stages"
-        encoder.setComputePipelineState(fftPipeline)
         encoder.setBuffer(outputBuffer, offset: outputOffset, index: 0)
         encoder.setBuffer(try domainMaterialization.requireCodewordTwiddleBuffer(), offset: 0, index: 1)
         let stages = Array(stride(from: Int(domain.logSize) - 1, through: 1, by: -1)) + [0]
         for stage in stages {
+            let isHashedFinalStage = stage == 0 && leafHashBuffer != nil
+            encoder.setComputePipelineState(isHashedFinalStage ? fftLeafHashPipeline : fftPipeline)
+            if let leafHashBuffer, isHashedFinalStage {
+                encoder.setBuffer(leafHashBuffer, offset: leafHashOffset, index: 2)
+            }
             var params = CircleCodewordFFTStageParams(
                 elementCount: try checkedUInt32(outputCount),
                 stage: try checkedUInt32(stage),
@@ -662,23 +742,18 @@ public final class CircleCodewordPlan: @unchecked Sendable {
                 ),
                 fieldModulus: QM31Field.modulus
             )
-            encoder.setBytes(&params, length: MemoryLayout<CircleCodewordFFTStageParams>.stride, index: 2)
-            context.dispatch1D(encoder, pipeline: fftPipeline, elementCount: outputCount / 2)
+            encoder.setBytes(
+                &params,
+                length: MemoryLayout<CircleCodewordFFTStageParams>.stride,
+                index: isHashedFinalStage ? 3 : 2
+            )
+            context.dispatch1D(
+                encoder,
+                pipeline: isHashedFinalStage ? fftLeafHashPipeline : fftPipeline,
+                elementCount: outputCount / 2
+            )
         }
         encoder.endEncoding()
-
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-
-        if let error = commandBuffer.error {
-            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
-        }
-
-        let end = DispatchTime.now()
-        return GPUExecutionStats(
-            cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
-            gpuSeconds: gpuDuration(commandBuffer)
-        )
     }
 
     public func clearReusableBuffers() {
@@ -727,6 +802,61 @@ public final class CircleCodewordPlan: @unchecked Sendable {
               !end.overflow,
               buffer.length >= end.partialValue else {
             throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    private func validateResidentFFTBuffers(
+        circleCoefficientBuffer: MTLBuffer,
+        circleCoefficientOffset: Int,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int,
+        leafHashBuffer: MTLBuffer?,
+        leafHashOffset: Int
+    ) throws {
+        try Self.validateBufferRange(
+            buffer: circleCoefficientBuffer,
+            offset: circleCoefficientOffset,
+            byteCount: coefficientByteCount
+        )
+        try Self.validateBufferRange(
+            buffer: outputBuffer,
+            offset: outputOffset,
+            byteCount: outputByteCount
+        )
+        guard !Self.rangesOverlap(
+            lhsBuffer: outputBuffer,
+            lhsOffset: outputOffset,
+            lhsByteCount: outputByteCount,
+            rhsBuffer: circleCoefficientBuffer,
+            rhsOffset: circleCoefficientOffset,
+            rhsByteCount: coefficientByteCount
+        ) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        if let leafHashBuffer {
+            try Self.validateBufferRange(
+                buffer: leafHashBuffer,
+                offset: leafHashOffset,
+                byteCount: leafHashByteCount
+            )
+            guard !Self.rangesOverlap(
+                lhsBuffer: leafHashBuffer,
+                lhsOffset: leafHashOffset,
+                lhsByteCount: leafHashByteCount,
+                rhsBuffer: circleCoefficientBuffer,
+                rhsOffset: circleCoefficientOffset,
+                rhsByteCount: coefficientByteCount
+            ),
+            !Self.rangesOverlap(
+                lhsBuffer: leafHashBuffer,
+                lhsOffset: leafHashOffset,
+                lhsByteCount: leafHashByteCount,
+                rhsBuffer: outputBuffer,
+                rhsOffset: outputOffset,
+                rhsByteCount: outputByteCount
+            ) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
         }
     }
 
@@ -797,7 +927,8 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
     private let context: MetalContext
     private let codewordPlan: CircleCodewordPlan
     private let proofProver: CirclePCSFRIResidentProverV1
-    private let codewordBuffer: MTLBuffer
+    private let firstLayerLeafHashBuffer: MTLBuffer
+    private let firstLayerPrehashedCommitPlan: SHA3PrehashedLeavesMerkleCommitPlan
     private var witnessBasisPlan: CircleWitnessToFFTBasisPlanV1?
     private var circleCoefficientBuffer: MTLBuffer?
     private let executionLock = NSLock()
@@ -826,8 +957,8 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
             coefficientInputs: CircleCodewordPCSFRICoefficientInputV1.allCases,
             phases: CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPhases,
             publicReadbacks: CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPublicReadbacks,
-            codewordCommitmentSchedule: .materializedCodewordThenCommit,
-            usesFusedTiledCodewordCommitment: false,
+            codewordCommitmentSchedule: .finalFFTStageLeafHashThenCommit,
+            usesFusedTiledCodewordCommitment: true,
             forbidsFullCodewordReadback: true,
             forbidsIntermediateFRILayerReadback: true,
             codewordElementCount: domain.size,
@@ -838,10 +969,14 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         self.context = context
         self.codewordPlan = codewordPlan
         self.proofProver = proofProver
-        self.codewordBuffer = try MetalBufferFactory.makePrivateBuffer(
+        self.firstLayerLeafHashBuffer = try MetalBufferFactory.makePrivateBuffer(
             device: context.device,
-            length: try checkedBufferLength(domain.size, CircleCodewordPlan.elementByteCount),
-            label: "AppleZKProver.CircleCodewordPCSFRIProver.Codeword"
+            length: try checkedBufferLength(domain.size, SHA3PrehashedLeavesMerkleCommitPlan.leafHashByteCount),
+            label: "AppleZKProver.CircleCodewordPCSFRIProver.FirstLayerLeafHashes"
+        )
+        self.firstLayerPrehashedCommitPlan = try SHA3PrehashedLeavesMerkleCommitPlan(
+            context: context,
+            leafCount: domain.size
         )
     }
 
@@ -851,20 +986,21 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        let start = DispatchTime.now()
-        let codewordStats = try codewordPlan.executeResident(
-            polynomial: polynomial,
-            outputBuffer: codewordBuffer
-        )
-        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
-        let end = DispatchTime.now()
-        return CircleCodewordPCSFRIProverV1Result(
-            proofResult: proofResult,
-            codewordStats: codewordStats,
-            stats: GPUExecutionStats(
-                cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
-                gpuSeconds: Self.sumGPUSeconds(codewordStats.gpuSeconds, proofResult.stats.gpuSeconds)
+        let coefficientBytes = QM31CanonicalEncoding.pack(
+            try CircleCodewordOracle.circleFFTCoefficients(
+                polynomial: polynomial,
+                domain: domain
             )
+        )
+        let coefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            bytes: coefficientBytes,
+            declaredLength: coefficientBytes.count,
+            label: "AppleZKProver.CircleCodewordPCSFRIProver.FFTCoefficients"
+        )
+        return try proveCircleFFTCoefficientsResidentLocked(
+            circleCoefficientBuffer: coefficientBuffer,
+            circleCoefficientOffset: 0
         )
     }
 
@@ -892,25 +1028,33 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        let start = DispatchTime.now()
-        let codewordStats = try codewordPlan.executeResident(
-            xCoefficientBuffer: xCoefficientBuffer,
-            xCoefficientOffset: xCoefficientOffset,
-            xCoefficientCount: xCoefficientCount,
-            yCoefficientBuffer: yCoefficientBuffer,
-            yCoefficientOffset: yCoefficientOffset,
-            yCoefficientCount: yCoefficientCount,
-            outputBuffer: codewordBuffer
-        )
-        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
-        let end = DispatchTime.now()
-        return CircleCodewordPCSFRIProverV1Result(
-            proofResult: proofResult,
-            codewordStats: codewordStats,
-            stats: GPUExecutionStats(
-                cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
-                gpuSeconds: Self.sumGPUSeconds(codewordStats.gpuSeconds, proofResult.stats.gpuSeconds)
+        let polynomial = try CircleCodewordPolynomial(
+            xCoefficients: Self.readQM31Buffer(
+                xCoefficientBuffer,
+                offset: xCoefficientOffset,
+                count: xCoefficientCount
+            ),
+            yCoefficients: Self.readQM31Buffer(
+                yCoefficientBuffer,
+                offset: yCoefficientOffset,
+                count: yCoefficientCount
             )
+        )
+        let coefficientBytes = QM31CanonicalEncoding.pack(
+            try CircleCodewordOracle.circleFFTCoefficients(
+                polynomial: polynomial,
+                domain: domain
+            )
+        )
+        let coefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: context.device,
+            bytes: coefficientBytes,
+            declaredLength: coefficientBytes.count,
+            label: "AppleZKProver.CircleCodewordPCSFRIProver.ResidentMonomialFFTCoefficients"
+        )
+        return try proveCircleFFTCoefficientsResidentLocked(
+            circleCoefficientBuffer: coefficientBuffer,
+            circleCoefficientOffset: 0
         )
     }
 
@@ -1076,7 +1220,8 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
 
         codewordPlan.clearReusableBuffers()
         try proofProver.clearReusableBuffers()
-        var buffersToClear = [codewordBuffer]
+        try firstLayerPrehashedCommitPlan.clearReusableBuffers()
+        var buffersToClear = [firstLayerLeafHashBuffer]
         if let circleCoefficientBuffer {
             buffersToClear.append(circleCoefficientBuffer)
         }
@@ -1107,22 +1252,27 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
             yWitnessCoefficientCount: yWitnessCoefficientCount,
             outputCircleCoefficientBuffer: circleCoefficientBuffer
         )
-        let codewordStats = try codewordPlan.executeResident(
-            circleCoefficientBuffer: circleCoefficientBuffer,
-            outputBuffer: codewordBuffer
-        )
-        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        let prepared = try proofProver.provePreparedFirstLayer { firstLayerBuffer, firstLayerOffset, firstCommitmentBuffer, firstCommitmentOffset in
+            try prepareFirstLayerAndCommit(
+                circleCoefficientBuffer: circleCoefficientBuffer,
+                circleCoefficientOffset: 0,
+                firstLayerBuffer: firstLayerBuffer,
+                firstLayerOffset: firstLayerOffset,
+                firstCommitmentBuffer: firstCommitmentBuffer,
+                firstCommitmentOffset: firstCommitmentOffset
+            )
+        }
         let end = DispatchTime.now()
         return CircleCodewordPCSFRIProverV1Result(
-            proofResult: proofResult,
+            proofResult: prepared.result,
             witnessBasisStats: witnessBasisStats,
-            codewordStats: codewordStats,
+            codewordStats: prepared.preparationStats,
             stats: GPUExecutionStats(
                 cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
                 gpuSeconds: Self.sumGPUSeconds(
                     witnessBasisStats.gpuSeconds,
-                    codewordStats.gpuSeconds,
-                    proofResult.stats.gpuSeconds
+                    prepared.preparationStats.gpuSeconds,
+                    prepared.result.stats.gpuSeconds
                 )
             )
         )
@@ -1150,25 +1300,99 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
         return buffer
     }
 
+    private func prepareFirstLayerAndCommit(
+        circleCoefficientBuffer: MTLBuffer,
+        circleCoefficientOffset: Int,
+        firstLayerBuffer: MTLBuffer,
+        firstLayerOffset: Int,
+        firstCommitmentBuffer: MTLBuffer,
+        firstCommitmentOffset: Int
+    ) throws -> GPUExecutionStats {
+        let start = DispatchTime.now()
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        commandBuffer.label = "Circle.Codeword.FusedFirstLayerCommitment"
+
+        try codewordPlan.encodeResidentWithFinalStageLeafHashes(
+            circleCoefficientBuffer: circleCoefficientBuffer,
+            circleCoefficientOffset: circleCoefficientOffset,
+            outputBuffer: firstLayerBuffer,
+            outputOffset: firstLayerOffset,
+            leafHashBuffer: firstLayerLeafHashBuffer,
+            leafHashOffset: 0,
+            on: commandBuffer
+        )
+        try firstLayerPrehashedCommitPlan.encodeCommitmentRoot(
+            leafHashBuffer: firstLayerLeafHashBuffer,
+            leafHashOffset: 0,
+            rootBuffer: firstCommitmentBuffer,
+            rootOffset: firstCommitmentOffset,
+            on: commandBuffer
+        )
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+
+        let end = DispatchTime.now()
+        return GPUExecutionStats(
+            cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
+            gpuSeconds: gpuDuration(commandBuffer)
+        )
+    }
+
     private func proveCircleFFTCoefficientsResidentLocked(
         circleCoefficientBuffer: MTLBuffer,
         circleCoefficientOffset: Int
     ) throws -> CircleCodewordPCSFRIProverV1Result {
         let start = DispatchTime.now()
-        let codewordStats = try codewordPlan.executeResident(
-            circleCoefficientBuffer: circleCoefficientBuffer,
-            circleCoefficientOffset: circleCoefficientOffset,
-            outputBuffer: codewordBuffer
-        )
-        let proofResult = try proofProver.prove(evaluationsBuffer: codewordBuffer)
+        let prepared = try proofProver.provePreparedFirstLayer { firstLayerBuffer, firstLayerOffset, firstCommitmentBuffer, firstCommitmentOffset in
+            try prepareFirstLayerAndCommit(
+                circleCoefficientBuffer: circleCoefficientBuffer,
+                circleCoefficientOffset: circleCoefficientOffset,
+                firstLayerBuffer: firstLayerBuffer,
+                firstLayerOffset: firstLayerOffset,
+                firstCommitmentBuffer: firstCommitmentBuffer,
+                firstCommitmentOffset: firstCommitmentOffset
+            )
+        }
         let end = DispatchTime.now()
         return CircleCodewordPCSFRIProverV1Result(
-            proofResult: proofResult,
-            codewordStats: codewordStats,
+            proofResult: prepared.result,
+            codewordStats: prepared.preparationStats,
             stats: GPUExecutionStats(
                 cpuWallSeconds: Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000,
-                gpuSeconds: Self.sumGPUSeconds(codewordStats.gpuSeconds, proofResult.stats.gpuSeconds)
+                gpuSeconds: Self.sumGPUSeconds(prepared.preparationStats.gpuSeconds, prepared.result.stats.gpuSeconds)
             )
+        )
+    }
+
+    private static func readQM31Buffer(
+        _ buffer: MTLBuffer,
+        offset: Int,
+        count: Int
+    ) throws -> [QM31Element] {
+        guard count >= 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let byteCount = try checkedBufferLength(count, CircleCodewordPlan.elementByteCount)
+        let end = offset.addingReportingOverflow(max(1, byteCount))
+        guard offset >= 0,
+              !end.overflow,
+              buffer.length >= end.partialValue,
+              byteCount == 0 || buffer.storageMode != .private else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        guard count > 0 else {
+            return []
+        }
+        return try QM31CanonicalEncoding.unpackMany(
+            Data(bytes: buffer.contents().advanced(by: offset), count: byteCount),
+            count: count
         )
     }
 
@@ -1177,6 +1401,13 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
             return nil
         }
         return lhs + rhs
+    }
+
+    private func gpuDuration(_ commandBuffer: MTLCommandBuffer) -> Double? {
+        guard commandBuffer.gpuEndTime > commandBuffer.gpuStartTime else {
+            return nil
+        }
+        return commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
     }
 
     private static func sumGPUSeconds(_ first: Double?, _ second: Double?, _ third: Double?) -> Double? {

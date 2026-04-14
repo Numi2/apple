@@ -166,6 +166,43 @@ public struct ApplicationPublicTheoremTracePCSArtifactManifestV1: Equatable, Cod
     }
 }
 
+public struct ApplicationPublicTheoremIntegratedArtifactManifestV1: Equatable, Codable, Sendable {
+    public static let currentVersion: UInt32 = 1
+    public static let artifactName = "ApplicationPublicTheoremIntegratedArtifactV1"
+    public static let current = ApplicationPublicTheoremIntegratedArtifactManifestV1()
+
+    public let version: UInt32
+    public let artifact: String
+    public let includesPublicTheoremArtifact: Bool
+    public let includesAIRConstraintMultilinearSumcheck: Bool
+    public let includesSharedDomainQuotientIdentityPCS: Bool
+    public let verifiesPublicAIRGKRTheorem: Bool
+    public let verifiesAIRConstraintSumcheck: Bool
+    public let verifiesSharedDomainQuotientIdentity: Bool
+    public let verifiesGKRClaimSemantics: Bool
+    public let isSuccinctAIRGKRProof: Bool
+    public let isZeroKnowledge: Bool
+    public let openBoundaries: [ApplicationPublicTheoremArtifactOpenBoundaryV1]
+
+    public init() {
+        self.version = Self.currentVersion
+        self.artifact = Self.artifactName
+        self.includesPublicTheoremArtifact = true
+        self.includesAIRConstraintMultilinearSumcheck = true
+        self.includesSharedDomainQuotientIdentityPCS = true
+        self.verifiesPublicAIRGKRTheorem = true
+        self.verifiesAIRConstraintSumcheck = true
+        self.verifiesSharedDomainQuotientIdentity = true
+        self.verifiesGKRClaimSemantics = true
+        self.isSuccinctAIRGKRProof = false
+        self.isZeroKnowledge = false
+        self.openBoundaries = [
+            .succinctAIRGKRProof,
+            .zeroKnowledge,
+        ]
+    }
+}
+
 public enum AIRTraceReferenceKindV1: UInt32, Codable, Sendable {
     case current = 0
     case next = 1
@@ -2268,6 +2305,154 @@ public enum AIRToSumcheckReductionV1 {
     }
 }
 
+public struct AIRConstraintMultilinearSumcheckProofV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let airDefinitionDigest: Data
+    public let traceRowCount: Int
+    public let traceColumnCount: Int
+    public let airEvaluationDigest: Data
+    public let sumcheckProof: M31MultilinearSumcheckProofV1
+
+    public init(
+        version: UInt32 = Self.currentVersion,
+        airDefinitionDigest: Data,
+        traceRowCount: Int,
+        traceColumnCount: Int,
+        airEvaluationDigest: Data,
+        sumcheckProof: M31MultilinearSumcheckProofV1
+    ) throws {
+        guard version == Self.currentVersion,
+              airDefinitionDigest.count == 32,
+              traceRowCount > 0,
+              traceColumnCount > 0,
+              airEvaluationDigest.count == 32,
+              sumcheckProof.statement.claimedHypercubeSum == 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.version = version
+        self.airDefinitionDigest = airDefinitionDigest
+        self.traceRowCount = traceRowCount
+        self.traceColumnCount = traceColumnCount
+        self.airEvaluationDigest = airEvaluationDigest
+        self.sumcheckProof = sumcheckProof
+    }
+}
+
+public enum AIRConstraintMultilinearSumcheckProofBuilderV1 {
+    public static func prove(
+        definition: AIRDefinitionV1,
+        trace: AIRExecutionTraceV1
+    ) throws -> AIRConstraintMultilinearSumcheckProofV1 {
+        let evaluations = try AIRToSumcheckReductionV1.paddedEvaluationVector(
+            definition: definition,
+            trace: trace
+        )
+        let sumcheckProof = try M31MultilinearSumcheckProofBuilderV1.prove(
+            evaluations: evaluations,
+            claimedHypercubeSum: 0
+        )
+        return try assemble(
+            definition: definition,
+            trace: trace,
+            airEvaluationDigest: M31SumcheckEncodingV1.digestWords(evaluations),
+            sumcheckProof: sumcheckProof
+        )
+    }
+
+    public static func assemble(
+        definition: AIRDefinitionV1,
+        trace: AIRExecutionTraceV1,
+        airEvaluationDigest: Data,
+        sumcheckProof: M31MultilinearSumcheckProofV1
+    ) throws -> AIRConstraintMultilinearSumcheckProofV1 {
+        let proof = try AIRConstraintMultilinearSumcheckProofV1(
+            airDefinitionDigest: AIRDefinitionDigestV1.digest(definition),
+            traceRowCount: trace.rowCount,
+            traceColumnCount: trace.columnCount,
+            airEvaluationDigest: airEvaluationDigest,
+            sumcheckProof: sumcheckProof
+        )
+        guard try AIRConstraintMultilinearSumcheckVerifierV1.verify(
+            proof,
+            definition: definition,
+            trace: trace
+        ) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "AIR constraint multilinear sumcheck proof does not verify."
+            )
+        }
+        return proof
+    }
+}
+
+public struct AIRConstraintMultilinearSumcheckVerificationReportV1: Equatable, Sendable {
+    public let sumcheckReport: M31MultilinearSumcheckVerificationReportV1
+    public let airDefinitionDigestMatches: Bool
+    public let traceShapeMatches: Bool
+    public let airEvaluationDigestMatches: Bool
+    public let sumcheckInitialDigestMatchesAIRReduction: Bool
+    public let zeroSumClaimVerified: Bool
+    public let airSemanticsVerified: Bool
+    public let isZeroKnowledge: Bool
+
+    public var provesAIRConstraintSumcheck: Bool {
+        sumcheckReport.fullMultilinearSumcheckVerified &&
+            airDefinitionDigestMatches &&
+            traceShapeMatches &&
+            airEvaluationDigestMatches &&
+            sumcheckInitialDigestMatchesAIRReduction &&
+            zeroSumClaimVerified
+    }
+
+    public var provesPublicAIRSemantics: Bool {
+        provesAIRConstraintSumcheck && airSemanticsVerified
+    }
+}
+
+public enum AIRConstraintMultilinearSumcheckVerifierV1 {
+    public static func verificationReport(
+        _ proof: AIRConstraintMultilinearSumcheckProofV1,
+        definition: AIRDefinitionV1,
+        trace: AIRExecutionTraceV1
+    ) throws -> AIRConstraintMultilinearSumcheckVerificationReportV1 {
+        let evaluations = try AIRToSumcheckReductionV1.paddedEvaluationVector(
+            definition: definition,
+            trace: trace
+        )
+        let evaluationDigest = try M31SumcheckEncodingV1.digestWords(evaluations)
+        let sumcheckReport = try M31MultilinearSumcheckVerifierV1.verificationReport(
+            proof: proof.sumcheckProof,
+            statement: proof.sumcheckProof.statement
+        )
+        return try AIRConstraintMultilinearSumcheckVerificationReportV1(
+            sumcheckReport: sumcheckReport,
+            airDefinitionDigestMatches: proof.airDefinitionDigest == AIRDefinitionDigestV1.digest(definition),
+            traceShapeMatches: proof.traceRowCount == trace.rowCount &&
+                proof.traceColumnCount == trace.columnCount &&
+                definition.columnCount == trace.columnCount,
+            airEvaluationDigestMatches: proof.airEvaluationDigest == evaluationDigest,
+            sumcheckInitialDigestMatchesAIRReduction: proof.sumcheckProof.statement.initialEvaluationDigest == evaluationDigest,
+            zeroSumClaimVerified: proof.sumcheckProof.statement.claimedHypercubeSum == 0,
+            airSemanticsVerified: AIRSemanticVerifierV1.verify(definition: definition, trace: trace),
+            isZeroKnowledge: false
+        )
+    }
+
+    public static func verify(
+        _ proof: AIRConstraintMultilinearSumcheckProofV1,
+        definition: AIRDefinitionV1,
+        trace: AIRExecutionTraceV1
+    ) throws -> Bool {
+        try verificationReport(
+            proof,
+            definition: definition,
+            trace: trace
+        ).provesAIRConstraintSumcheck
+    }
+}
+
 public struct AIRCompositionEvaluationV1: Equatable, Sendable {
     public static let currentVersion: UInt32 = 1
 
@@ -3606,6 +3791,1446 @@ public enum AIRQuotientCirclePCSProofBundleDigestV1 {
     }
 }
 
+public enum AIRRowDomainTracePCSVariantV1: UInt32, Sendable {
+    case current = 0
+    case nextShifted = 1
+}
+
+public struct AIRRowDomainTracePCSChunkV1: Equatable, Sendable {
+    public let chunkIndex: Int
+    public let sourceColumnIndices: [Int]
+    public let polynomial: CircleCodewordPolynomial
+    public let polynomialClaim: CirclePCSFRIPolynomialClaimV1
+
+    public init(
+        chunkIndex: Int,
+        sourceColumnIndices: [Int],
+        polynomial: CircleCodewordPolynomial,
+        polynomialClaim: CirclePCSFRIPolynomialClaimV1
+    ) throws {
+        guard chunkIndex >= 0,
+              !sourceColumnIndices.isEmpty,
+              sourceColumnIndices.count <= AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial,
+              sourceColumnIndices.allSatisfy({ $0 >= 0 }),
+              polynomial.yCoefficients.isEmpty,
+              polynomialClaim.polynomial == polynomial else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        for pair in zip(sourceColumnIndices, sourceColumnIndices.dropFirst()) {
+            guard pair.0 < pair.1 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+        }
+        for coefficient in polynomial.xCoefficients {
+            let limbs = [
+                coefficient.constant.real,
+                coefficient.constant.imaginary,
+                coefficient.uCoefficient.real,
+                coefficient.uCoefficient.imaginary,
+            ]
+            for offset in sourceColumnIndices.count..<AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial {
+                guard limbs[offset] == 0 else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+            }
+        }
+        self.chunkIndex = chunkIndex
+        self.sourceColumnIndices = sourceColumnIndices
+        self.polynomial = polynomial
+        self.polynomialClaim = polynomialClaim
+    }
+}
+
+public struct AIRRowDomainTracePCSWitnessV1: Equatable, Sendable {
+    public let domain: CircleDomainDescriptor
+    public let variant: AIRRowDomainTracePCSVariantV1
+    public let traceRowCount: Int
+    public let traceColumnCount: Int
+    public let sourceTracePolynomialDigest: Data
+    public let claimedStorageIndices: [Int]
+    public let chunks: [AIRRowDomainTracePCSChunkV1]
+
+    public init(
+        domain: CircleDomainDescriptor,
+        variant: AIRRowDomainTracePCSVariantV1,
+        traceRowCount: Int,
+        traceColumnCount: Int,
+        sourceTracePolynomialDigest: Data,
+        claimedStorageIndices: [Int],
+        chunks: [AIRRowDomainTracePCSChunkV1]
+    ) throws {
+        guard domain.isCanonical,
+              domain.storageOrder == .circleDomainBitReversed,
+              traceRowCount > 0,
+              traceColumnCount > 0,
+              sourceTracePolynomialDigest.count == 32,
+              !claimedStorageIndices.isEmpty,
+              !chunks.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var previousClaimedStorageIndex: Int?
+        for storageIndex in claimedStorageIndices {
+            guard storageIndex >= 0,
+                  storageIndex < domain.size,
+                  previousClaimedStorageIndex.map({ $0 < storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previousClaimedStorageIndex = storageIndex
+        }
+        var expectedColumnIndex = 0
+        for (index, chunk) in chunks.enumerated() {
+            let nextExpectedColumnIndex = expectedColumnIndex.addingReportingOverflow(
+                chunk.sourceColumnIndices.count
+            )
+            guard !nextExpectedColumnIndex.overflow,
+                  nextExpectedColumnIndex.partialValue <= traceColumnCount else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            let expectedSourceIndices = Array(
+                expectedColumnIndex..<nextExpectedColumnIndex.partialValue
+            )
+            guard chunk.chunkIndex == index,
+                  chunk.sourceColumnIndices == expectedSourceIndices,
+                  chunk.polynomialClaim.domain == domain else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            let chunkClaimIndices = try chunk.polynomialClaim.evaluationClaims.map { claim -> Int in
+                guard claim.storageIndex <= UInt64(Int.max) else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                return Int(claim.storageIndex)
+            }
+            guard chunkClaimIndices == claimedStorageIndices else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            expectedColumnIndex = nextExpectedColumnIndex.partialValue
+        }
+        guard expectedColumnIndex == traceColumnCount else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.domain = domain
+        self.variant = variant
+        self.traceRowCount = traceRowCount
+        self.traceColumnCount = traceColumnCount
+        self.sourceTracePolynomialDigest = sourceTracePolynomialDigest
+        self.claimedStorageIndices = claimedStorageIndices
+        self.chunks = chunks
+    }
+}
+
+public enum AIRRowDomainTraceToCirclePCSWitnessV1 {
+    public static func make(
+        trace: AIRExecutionTraceV1,
+        variant: AIRRowDomainTracePCSVariantV1,
+        domain: CircleDomainDescriptor,
+        claimStorageIndices: [Int]? = nil
+    ) throws -> AIRRowDomainTracePCSWitnessV1 {
+        guard domain.isCanonical,
+              domain.storageOrder == .circleDomainBitReversed else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let claimedStorageIndices = try normalizedStorageIndices(
+            claimStorageIndices ?? [0],
+            domain: domain
+        )
+        let tracePolynomials = try AIRPublicQuotientOracleV1.traceColumnPolynomials(trace)
+        let committedPolynomials: [[UInt32]]
+        switch variant {
+        case .current:
+            committedPolynomials = tracePolynomials
+        case .nextShifted:
+            committedPolynomials = try tracePolynomials.map {
+                try M31PolynomialV1.shiftByOne($0)
+            }
+        }
+        let tracePolynomialDigest = try AIRTracePolynomialDigestV1.digest(tracePolynomials)
+        var chunks: [AIRRowDomainTracePCSChunkV1] = []
+        chunks.reserveCapacity(
+            (trace.columnCount + AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial - 1) /
+                AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial
+        )
+        var firstColumn = 0
+        while firstColumn < trace.columnCount {
+            let sourceColumnIndices = Array(
+                firstColumn..<min(
+                    firstColumn + AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial,
+                    trace.columnCount
+                )
+            )
+            let xCoefficients = try packM31Polynomials(
+                sourceColumnIndices.map { committedPolynomials[$0] }
+            )
+            let polynomial = try CircleCodewordPolynomial(xCoefficients: xCoefficients)
+            let polynomialClaim = try CirclePCSFRIPolynomialClaimV1.make(
+                domain: domain,
+                polynomial: polynomial,
+                storageIndices: claimedStorageIndices
+            )
+            chunks.append(try AIRRowDomainTracePCSChunkV1(
+                chunkIndex: chunks.count,
+                sourceColumnIndices: sourceColumnIndices,
+                polynomial: polynomial,
+                polynomialClaim: polynomialClaim
+            ))
+            firstColumn += AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial
+        }
+        return try AIRRowDomainTracePCSWitnessV1(
+            domain: domain,
+            variant: variant,
+            traceRowCount: trace.rowCount,
+            traceColumnCount: trace.columnCount,
+            sourceTracePolynomialDigest: tracePolynomialDigest,
+            claimedStorageIndices: claimedStorageIndices,
+            chunks: chunks
+        )
+    }
+
+    fileprivate static func m31Polynomials(from witness: AIRRowDomainTracePCSWitnessV1) throws -> [[UInt32]] {
+        var polynomials = Array(
+            repeating: [UInt32](),
+            count: witness.traceColumnCount
+        )
+        for chunk in witness.chunks {
+            for (offset, column) in chunk.sourceColumnIndices.enumerated() {
+                guard column >= 0,
+                      column < polynomials.count else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                polynomials[column] = M31PolynomialV1.normalize(
+                    chunk.polynomial.xCoefficients.map {
+                        limbs(from: $0)[offset]
+                    }
+                )
+            }
+            guard chunk.polynomial.yCoefficients.isEmpty else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+        }
+        guard polynomials.allSatisfy({ !$0.isEmpty }) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return polynomials
+    }
+
+    private static func normalizedStorageIndices(
+        _ storageIndices: [Int],
+        domain: CircleDomainDescriptor
+    ) throws -> [Int] {
+        guard !storageIndices.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let sorted = storageIndices.sorted()
+        var previous: Int?
+        for storageIndex in sorted {
+            guard storageIndex >= 0,
+                  storageIndex < domain.size,
+                  previous.map({ $0 < storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previous = storageIndex
+        }
+        return sorted
+    }
+
+    private static func packM31Polynomials(_ polynomials: [[UInt32]]) throws -> [QM31Element] {
+        guard !polynomials.isEmpty,
+              polynomials.count <= AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let normalized = polynomials.map { M31PolynomialV1.normalize($0) }
+        for polynomial in normalized {
+            try M31Field.validateCanonical(polynomial)
+        }
+        let maxCoefficientCount = normalized.map(\.count).max() ?? 0
+        guard maxCoefficientCount > 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var coefficients: [QM31Element] = []
+        coefficients.reserveCapacity(maxCoefficientCount)
+        for coefficientIndex in 0..<maxCoefficientCount {
+            var limbs = Array(
+                repeating: UInt32(0),
+                count: AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial
+            )
+            for polynomialIndex in normalized.indices {
+                if coefficientIndex < normalized[polynomialIndex].count {
+                    limbs[polynomialIndex] = normalized[polynomialIndex][coefficientIndex]
+                }
+            }
+            coefficients.append(QM31Element(
+                a: limbs[0],
+                b: limbs[1],
+                c: limbs[2],
+                d: limbs[3]
+            ))
+        }
+        return coefficients
+    }
+
+    private static func limbs(from value: QM31Element) -> [UInt32] {
+        [
+            value.constant.real,
+            value.constant.imaginary,
+            value.uCoefficient.real,
+            value.uCoefficient.imaginary,
+        ]
+    }
+}
+
+public struct AIRRowDomainTracePCSProofChunkV1: Equatable, Sendable {
+    public let chunkIndex: Int
+    public let sourceColumnIndices: [Int]
+    public let statement: CirclePCSFRIStatementV1
+    public let proof: CirclePCSFRIProofV1
+
+    public init(
+        chunkIndex: Int,
+        sourceColumnIndices: [Int],
+        statement: CirclePCSFRIStatementV1,
+        proof: CirclePCSFRIProofV1
+    ) throws {
+        guard chunkIndex >= 0,
+              !sourceColumnIndices.isEmpty,
+              statement.polynomialClaim.domain == proof.domain,
+              statement.parameterSet.securityParameters == proof.securityParameters,
+              try statement.publicInputs().publicInputDigest == proof.publicInputDigest else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        for pair in zip(sourceColumnIndices, sourceColumnIndices.dropFirst()) {
+            guard pair.0 < pair.1 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+        }
+        self.chunkIndex = chunkIndex
+        self.sourceColumnIndices = sourceColumnIndices
+        self.statement = statement
+        self.proof = proof
+    }
+}
+
+public struct AIRRowDomainTracePCSProofBundleV1: Equatable, Sendable {
+    public let witness: AIRRowDomainTracePCSWitnessV1
+    public let parameterSet: CirclePCSFRIParameterSetV1
+    public let chunks: [AIRRowDomainTracePCSProofChunkV1]
+
+    public init(
+        witness: AIRRowDomainTracePCSWitnessV1,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        chunks: [AIRRowDomainTracePCSProofChunkV1]
+    ) throws {
+        try parameterSet.validateDomain(witness.domain)
+        guard !chunks.isEmpty,
+              chunks.count == witness.chunks.count else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        for index in chunks.indices {
+            let proofChunk = chunks[index]
+            let witnessChunk = witness.chunks[index]
+            guard proofChunk.chunkIndex == index,
+                  proofChunk.sourceColumnIndices == witnessChunk.sourceColumnIndices,
+                  proofChunk.statement.parameterSet == parameterSet,
+                  proofChunk.statement.polynomialClaim == witnessChunk.polynomialClaim,
+                  proofChunk.proof.domain == witness.domain else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+        }
+        self.witness = witness
+        self.parameterSet = parameterSet
+        self.chunks = chunks
+    }
+}
+
+public enum AIRRowDomainTracePCSProofBundleBuilderV1 {
+    public static func prove(
+        trace: AIRExecutionTraceV1,
+        variant: AIRRowDomainTracePCSVariantV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        claimStorageIndices: [Int]? = nil
+    ) throws -> AIRRowDomainTracePCSProofBundleV1 {
+        let witness = try AIRRowDomainTraceToCirclePCSWitnessV1.make(
+            trace: trace,
+            variant: variant,
+            domain: domain,
+            claimStorageIndices: claimStorageIndices
+        )
+        return try prove(witness: witness, parameterSet: parameterSet)
+    }
+
+    public static func prove(
+        witness: AIRRowDomainTracePCSWitnessV1,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128
+    ) throws -> AIRRowDomainTracePCSProofBundleV1 {
+        try parameterSet.validateDomain(witness.domain)
+        var proofChunks: [AIRRowDomainTracePCSProofChunkV1] = []
+        proofChunks.reserveCapacity(witness.chunks.count)
+        for witnessChunk in witness.chunks {
+            let statement = try CirclePCSFRIStatementV1(
+                parameterSet: parameterSet,
+                polynomialClaim: witnessChunk.polynomialClaim
+            )
+            let proof = try CirclePCSFRIContractProverV1.prove(statement: statement)
+            proofChunks.append(try AIRRowDomainTracePCSProofChunkV1(
+                chunkIndex: witnessChunk.chunkIndex,
+                sourceColumnIndices: witnessChunk.sourceColumnIndices,
+                statement: statement,
+                proof: proof
+            ))
+        }
+        let bundle = try AIRRowDomainTracePCSProofBundleV1(
+            witness: witness,
+            parameterSet: parameterSet,
+            chunks: proofChunks
+        )
+        guard try AIRRowDomainTracePCSProofBundleVerifierV1.verify(bundle) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "AIR row-domain trace Circle PCS proof bundle does not verify."
+            )
+        }
+        return bundle
+    }
+}
+
+public enum AIRRowDomainTracePCSProofBundleVerifierV1 {
+    public static func verify(_ bundle: AIRRowDomainTracePCSProofBundleV1) throws -> Bool {
+        for chunk in bundle.chunks {
+            guard chunk.statement.parameterSet == bundle.parameterSet,
+                  try CirclePCSFRIContractVerifierV1.verify(
+                    proof: chunk.proof,
+                    statement: chunk.statement
+                  ) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    public static func verifyCurrentTraceDigest(
+        _ bundle: AIRRowDomainTracePCSProofBundleV1,
+        against quotientProof: AIRPublicQuotientProofV1
+    ) throws -> Bool {
+        guard bundle.witness.variant == .current,
+              bundle.witness.traceRowCount == quotientProof.traceRowCount,
+              bundle.witness.traceColumnCount == quotientProof.traceColumnCount,
+              bundle.witness.sourceTracePolynomialDigest == quotientProof.tracePolynomialDigest else {
+            return false
+        }
+        let polynomials = try AIRRowDomainTraceToCirclePCSWitnessV1.m31Polynomials(
+            from: bundle.witness
+        )
+        return try AIRTracePolynomialDigestV1.digest(polynomials) == quotientProof.tracePolynomialDigest
+    }
+
+    public static func verifyNextShiftedTrace(
+        _ nextBundle: AIRRowDomainTracePCSProofBundleV1,
+        againstCurrent currentBundle: AIRRowDomainTracePCSProofBundleV1
+    ) throws -> Bool {
+        guard currentBundle.witness.variant == .current,
+              nextBundle.witness.variant == .nextShifted,
+              currentBundle.witness.domain == nextBundle.witness.domain,
+              currentBundle.witness.traceRowCount == nextBundle.witness.traceRowCount,
+              currentBundle.witness.traceColumnCount == nextBundle.witness.traceColumnCount,
+              currentBundle.witness.sourceTracePolynomialDigest == nextBundle.witness.sourceTracePolynomialDigest,
+              currentBundle.parameterSet == nextBundle.parameterSet else {
+            return false
+        }
+        let currentPolynomials = try AIRRowDomainTraceToCirclePCSWitnessV1.m31Polynomials(
+            from: currentBundle.witness
+        )
+        let nextPolynomials = try AIRRowDomainTraceToCirclePCSWitnessV1.m31Polynomials(
+            from: nextBundle.witness
+        )
+        let expectedNext = try currentPolynomials.map {
+            try M31PolynomialV1.shiftByOne($0)
+        }
+        return nextPolynomials == expectedNext
+    }
+}
+
+public struct AIRQuotientIdentityOpeningQueryPlanV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let traceRowCount: Int
+    public let traceColumnCount: Int
+    public let quotientPolynomialCount: Int
+    public let queryCount: Int
+    public let airDefinitionDigest: Data
+    public let quotientProofDigest: Data
+    public let commitmentDigest: Data
+    public let claimedStorageIndices: [Int]
+
+    public init(
+        version: UInt32 = Self.currentVersion,
+        traceRowCount: Int,
+        traceColumnCount: Int,
+        quotientPolynomialCount: Int,
+        queryCount: Int,
+        airDefinitionDigest: Data,
+        quotientProofDigest: Data,
+        commitmentDigest: Data,
+        claimedStorageIndices: [Int]
+    ) throws {
+        guard version == Self.currentVersion,
+              traceRowCount > 0,
+              traceColumnCount > 0,
+              quotientPolynomialCount > 0,
+              queryCount > 0,
+              queryCount == claimedStorageIndices.count,
+              airDefinitionDigest.count == 32,
+              quotientProofDigest.count == 32,
+              commitmentDigest.count == 32,
+              !claimedStorageIndices.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var previous: Int?
+        for storageIndex in claimedStorageIndices {
+            guard storageIndex >= 0,
+                  previous.map({ $0 < storageIndex }) ?? true else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            previous = storageIndex
+        }
+        self.version = version
+        self.traceRowCount = traceRowCount
+        self.traceColumnCount = traceColumnCount
+        self.quotientPolynomialCount = quotientPolynomialCount
+        self.queryCount = queryCount
+        self.airDefinitionDigest = airDefinitionDigest
+        self.quotientProofDigest = quotientProofDigest
+        self.commitmentDigest = commitmentDigest
+        self.claimedStorageIndices = claimedStorageIndices
+    }
+}
+
+public enum AIRQuotientIdentityOpeningQueryPlannerV1 {
+    private static let transcriptDomain = Data("AppleZKProver.AIRQuotientIdentityOpeningQueryPlan.V1".utf8)
+    private static let commitmentDigestDomain = Data("AppleZKProver.AIRQuotientIdentityCommitments.V1".utf8)
+
+    public static func make(
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1,
+        currentTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        nextTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        quotientWitness: AIRQuotientCirclePCSWitnessV1,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        queryCount: Int
+    ) throws -> AIRQuotientIdentityOpeningQueryPlanV1 {
+        let currentRoots = try initialCommitmentRoots(witness: currentTraceWitness)
+        let nextRoots = try initialCommitmentRoots(witness: nextTraceWitness)
+        let quotientRoots = try initialCommitmentRoots(witness: quotientWitness)
+        return try make(
+            definition: definition,
+            quotientProof: quotientProof,
+            currentTraceWitness: currentTraceWitness,
+            nextTraceWitness: nextTraceWitness,
+            quotientWitness: quotientWitness,
+            parameterSet: parameterSet,
+            currentTraceRoots: currentRoots,
+            nextTraceRoots: nextRoots,
+            quotientRoots: quotientRoots,
+            queryCount: queryCount
+        )
+    }
+
+    public static func make(
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1,
+        currentTraceBundle: AIRRowDomainTracePCSProofBundleV1,
+        nextTraceBundle: AIRRowDomainTracePCSProofBundleV1,
+        quotientBundle: AIRQuotientCirclePCSProofBundleV1,
+        queryCount: Int
+    ) throws -> AIRQuotientIdentityOpeningQueryPlanV1 {
+        try make(
+            definition: definition,
+            quotientProof: quotientProof,
+            currentTraceWitness: currentTraceBundle.witness,
+            nextTraceWitness: nextTraceBundle.witness,
+            quotientWitness: quotientBundle.witness,
+            parameterSet: currentTraceBundle.parameterSet,
+            currentTraceRoots: initialCommitmentRoots(bundle: currentTraceBundle),
+            nextTraceRoots: initialCommitmentRoots(bundle: nextTraceBundle),
+            quotientRoots: initialCommitmentRoots(bundle: quotientBundle),
+            queryCount: queryCount
+        )
+    }
+
+    private static func make(
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1,
+        currentTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        nextTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        quotientWitness: AIRQuotientCirclePCSWitnessV1,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        currentTraceRoots: [Data],
+        nextTraceRoots: [Data],
+        quotientRoots: [Data],
+        queryCount: Int
+    ) throws -> AIRQuotientIdentityOpeningQueryPlanV1 {
+        guard queryCount > 0,
+              currentTraceWitness.variant == .current,
+              nextTraceWitness.variant == .nextShifted,
+              currentTraceWitness.domain == nextTraceWitness.domain,
+              currentTraceWitness.domain == quotientWitness.domain,
+              currentTraceWitness.traceRowCount == quotientProof.traceRowCount,
+              currentTraceWitness.traceColumnCount == quotientProof.traceColumnCount,
+              nextTraceWitness.traceRowCount == quotientProof.traceRowCount,
+              nextTraceWitness.traceColumnCount == quotientProof.traceColumnCount,
+              quotientWitness.quotientPolynomialCount == quotientProof.quotientPolynomials.count,
+              currentTraceWitness.sourceTracePolynomialDigest == quotientProof.tracePolynomialDigest,
+              nextTraceWitness.sourceTracePolynomialDigest == quotientProof.tracePolynomialDigest,
+              quotientWitness.quotientProofDigest == (try AIRPublicQuotientProofDigestV1.digest(quotientProof)),
+              definition.columnCount == quotientProof.traceColumnCount,
+              currentTraceRoots.count == currentTraceWitness.chunks.count,
+              nextTraceRoots.count == nextTraceWitness.chunks.count,
+              quotientRoots.count == quotientWitness.chunks.count else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try parameterSet.validateDomain(currentTraceWitness.domain)
+        let commitmentDigest = try commitmentDigest(
+            domain: currentTraceWitness.domain,
+            parameterSet: parameterSet,
+            currentTraceWitness: currentTraceWitness,
+            nextTraceWitness: nextTraceWitness,
+            quotientWitness: quotientWitness,
+            currentTraceRoots: currentTraceRoots,
+            nextTraceRoots: nextTraceRoots,
+            quotientRoots: quotientRoots
+        )
+        let storageIndices = try drawUniqueStorageIndices(
+            definition: definition,
+            quotientProof: quotientProof,
+            domain: currentTraceWitness.domain,
+            parameterSet: parameterSet,
+            commitmentDigest: commitmentDigest,
+            queryCount: queryCount
+        )
+        return try AIRQuotientIdentityOpeningQueryPlanV1(
+            traceRowCount: quotientProof.traceRowCount,
+            traceColumnCount: quotientProof.traceColumnCount,
+            quotientPolynomialCount: quotientProof.quotientPolynomials.count,
+            queryCount: queryCount,
+            airDefinitionDigest: AIRDefinitionDigestV1.digest(definition),
+            quotientProofDigest: AIRPublicQuotientProofDigestV1.digest(quotientProof),
+            commitmentDigest: commitmentDigest,
+            claimedStorageIndices: storageIndices
+        )
+    }
+
+    private static func drawUniqueStorageIndices(
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        commitmentDigest: Data,
+        queryCount: Int
+    ) throws -> [Int] {
+        guard domain.size <= Int(UInt32.max),
+              queryCount > 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let eligible = try eligibleStorageIndices(
+            domain: domain,
+            traceRowCount: quotientProof.traceRowCount
+        )
+        guard queryCount <= eligible.count else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let eligibleSet = Set(eligible)
+        var transcript = SHA3Oracle.TranscriptState()
+        var header = Data()
+        CanonicalBinary.appendUInt32(UInt32(transcriptDomain.count), to: &header)
+        header.append(transcriptDomain)
+        CanonicalBinary.appendUInt32(AIRQuotientIdentityOpeningQueryPlanV1.currentVersion, to: &header)
+        CanonicalBinary.appendUInt64(UInt64(quotientProof.traceRowCount), to: &header)
+        CanonicalBinary.appendUInt64(UInt64(quotientProof.traceColumnCount), to: &header)
+        CanonicalBinary.appendUInt64(UInt64(quotientProof.quotientPolynomials.count), to: &header)
+        CanonicalBinary.appendUInt64(UInt64(queryCount), to: &header)
+        try CanonicalBinary.appendLengthPrefixed(
+            try CircleDomainDescriptorCodecV1.encode(domain),
+            to: &header
+        )
+        appendParameterSet(parameterSet, to: &header)
+        try transcript.absorb(header)
+        try transcript.absorb(AIRDefinitionDigestV1.digest(definition))
+        try transcript.absorb(AIRPublicQuotientProofDigestV1.digest(quotientProof))
+        try transcript.absorb(commitmentDigest)
+
+        var selected = Set<Int>()
+        var attempt: UInt32 = 0
+        while selected.count < queryCount {
+            var attemptTranscript = transcript
+            var frame = Data()
+            CanonicalBinary.appendUInt32(attempt, to: &frame)
+            CanonicalBinary.appendUInt64(UInt64(queryCount - selected.count), to: &frame)
+            try attemptTranscript.absorb(frame)
+            let words = try attemptTranscript.squeezeUInt32(
+                count: max(4, (queryCount - selected.count) * 2),
+                modulus: UInt32(domain.size)
+            )
+            for word in words {
+                let storageIndex = Int(word)
+                if eligibleSet.contains(storageIndex) {
+                    selected.insert(storageIndex)
+                }
+                if selected.count == queryCount {
+                    break
+                }
+            }
+            attempt = attempt.addingReportingOverflow(1).partialValue
+        }
+        return selected.sorted()
+    }
+
+    private static func eligibleStorageIndices(
+        domain: CircleDomainDescriptor,
+        traceRowCount: Int
+    ) throws -> [Int] {
+        guard UInt64(traceRowCount) < UInt64(M31Field.modulus) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let firstForbidden = UInt32(traceRowCount)
+        var indices: [Int] = []
+        indices.reserveCapacity(domain.size)
+        for storageIndex in 0..<domain.size {
+            let naturalIndex = try CircleDomainOracle.naturalDomainIndex(
+                forStorageIndex: storageIndex,
+                descriptor: domain
+            )
+            let point = try CircleDomainOracle.point(
+                in: domain,
+                naturalDomainIndex: naturalIndex
+            )
+            if point.x >= firstForbidden {
+                indices.append(storageIndex)
+            }
+        }
+        return indices
+    }
+
+    private static func commitmentDigest(
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1,
+        currentTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        nextTraceWitness: AIRRowDomainTracePCSWitnessV1,
+        quotientWitness: AIRQuotientCirclePCSWitnessV1,
+        currentTraceRoots: [Data],
+        nextTraceRoots: [Data],
+        quotientRoots: [Data]
+    ) throws -> Data {
+        guard (currentTraceRoots + nextTraceRoots + quotientRoots).allSatisfy({ $0.count == 32 }) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(commitmentDigestDomain.count), to: &data)
+        data.append(commitmentDigestDomain)
+        CanonicalBinary.appendUInt32(AIRQuotientIdentityOpeningQueryPlanV1.currentVersion, to: &data)
+        try CanonicalBinary.appendLengthPrefixed(
+            try CircleDomainDescriptorCodecV1.encode(domain),
+            to: &data
+        )
+        appendParameterSet(parameterSet, to: &data)
+        CanonicalBinary.appendUInt64(UInt64(currentTraceWitness.traceRowCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(currentTraceWitness.traceColumnCount), to: &data)
+        data.append(currentTraceWitness.sourceTracePolynomialDigest)
+        appendTraceRoots(
+            currentTraceRoots,
+            witness: currentTraceWitness,
+            to: &data
+        )
+        appendTraceRoots(
+            nextTraceRoots,
+            witness: nextTraceWitness,
+            to: &data
+        )
+        CanonicalBinary.appendUInt64(UInt64(quotientWitness.quotientPolynomialCount), to: &data)
+        data.append(quotientWitness.quotientProofDigest)
+        appendQuotientRoots(
+            quotientRoots,
+            witness: quotientWitness,
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
+    }
+
+    private static func appendTraceRoots(
+        _ roots: [Data],
+        witness: AIRRowDomainTracePCSWitnessV1,
+        to data: inout Data
+    ) {
+        CanonicalBinary.appendUInt32(witness.variant.rawValue, to: &data)
+        CanonicalBinary.appendUInt64(UInt64(witness.chunks.count), to: &data)
+        for (index, chunk) in witness.chunks.enumerated() {
+            CanonicalBinary.appendUInt64(UInt64(chunk.chunkIndex), to: &data)
+            CanonicalBinary.appendUInt64(UInt64(chunk.sourceColumnIndices.count), to: &data)
+            for column in chunk.sourceColumnIndices {
+                CanonicalBinary.appendUInt64(UInt64(column), to: &data)
+            }
+            data.append(roots[index])
+        }
+    }
+
+    private static func appendQuotientRoots(
+        _ roots: [Data],
+        witness: AIRQuotientCirclePCSWitnessV1,
+        to data: inout Data
+    ) {
+        CanonicalBinary.appendUInt64(UInt64(witness.chunks.count), to: &data)
+        for (index, chunk) in witness.chunks.enumerated() {
+            CanonicalBinary.appendUInt64(UInt64(chunk.chunkIndex), to: &data)
+            CanonicalBinary.appendUInt64(UInt64(chunk.sourceQuotientIndices.count), to: &data)
+            for quotientIndex in chunk.sourceQuotientIndices {
+                CanonicalBinary.appendUInt64(UInt64(quotientIndex), to: &data)
+            }
+            data.append(roots[index])
+        }
+    }
+
+    private static func initialCommitmentRoots(
+        witness: AIRRowDomainTracePCSWitnessV1
+    ) throws -> [Data] {
+        try witness.chunks.map { chunk in
+            try initialCommitmentRoot(
+                polynomial: chunk.polynomial,
+                domain: witness.domain
+            )
+        }
+    }
+
+    private static func initialCommitmentRoots(
+        witness: AIRQuotientCirclePCSWitnessV1
+    ) throws -> [Data] {
+        try witness.chunks.map { chunk in
+            try initialCommitmentRoot(
+                polynomial: chunk.polynomial,
+                domain: witness.domain
+            )
+        }
+    }
+
+    private static func initialCommitmentRoots(
+        bundle: AIRRowDomainTracePCSProofBundleV1
+    ) throws -> [Data] {
+        try bundle.chunks.map { chunk in
+            guard let root = chunk.proof.commitments.first,
+                  root.count == 32 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            return root
+        }
+    }
+
+    private static func initialCommitmentRoots(
+        bundle: AIRQuotientCirclePCSProofBundleV1
+    ) throws -> [Data] {
+        try bundle.chunks.map { chunk in
+            guard let root = chunk.proof.commitments.first,
+                  root.count == 32 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            return root
+        }
+    }
+
+    private static func initialCommitmentRoot(
+        polynomial: CircleCodewordPolynomial,
+        domain: CircleDomainDescriptor
+    ) throws -> Data {
+        let evaluations = try CircleCodewordOracle.evaluate(
+            polynomial: polynomial,
+            domain: domain
+        )
+        return try MerkleOracle.rootSHA3_256(
+            rawLeaves: QM31CanonicalEncoding.pack(evaluations),
+            leafCount: evaluations.count,
+            leafStride: QM31CanonicalEncoding.elementByteCount,
+            leafLength: QM31CanonicalEncoding.elementByteCount
+        )
+    }
+
+    private static func appendParameterSet(
+        _ parameterSet: CirclePCSFRIParameterSetV1,
+        to data: inout Data
+    ) {
+        CanonicalBinary.appendUInt32(UInt32(parameterSet.profileID.rawValue.utf8.count), to: &data)
+        data.append(Data(parameterSet.profileID.rawValue.utf8))
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.logBlowupFactor, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.queryCount, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.foldingStep, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.grindingBits, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.targetSoundnessBits, to: &data)
+    }
+}
+
+public struct AIRSharedDomainQuotientIdentityPCSProofBundleV1: Equatable, Sendable {
+    public let queryPlan: AIRQuotientIdentityOpeningQueryPlanV1
+    public let currentTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1
+    public let nextTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1
+    public let quotientPCSProofBundle: AIRQuotientCirclePCSProofBundleV1
+
+    public init(
+        queryPlan: AIRQuotientIdentityOpeningQueryPlanV1,
+        currentTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1,
+        nextTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1,
+        quotientPCSProofBundle: AIRQuotientCirclePCSProofBundleV1
+    ) throws {
+        guard currentTracePCSProofBundle.witness.domain == nextTracePCSProofBundle.witness.domain,
+              currentTracePCSProofBundle.witness.domain == quotientPCSProofBundle.witness.domain,
+              currentTracePCSProofBundle.parameterSet == nextTracePCSProofBundle.parameterSet,
+              currentTracePCSProofBundle.parameterSet == quotientPCSProofBundle.parameterSet,
+              currentTracePCSProofBundle.witness.claimedStorageIndices == queryPlan.claimedStorageIndices,
+              nextTracePCSProofBundle.witness.claimedStorageIndices == queryPlan.claimedStorageIndices,
+              quotientPCSProofBundle.witness.claimedStorageIndices == queryPlan.claimedStorageIndices else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.queryPlan = queryPlan
+        self.currentTracePCSProofBundle = currentTracePCSProofBundle
+        self.nextTracePCSProofBundle = nextTracePCSProofBundle
+        self.quotientPCSProofBundle = quotientPCSProofBundle
+    }
+}
+
+public enum AIRSharedDomainQuotientIdentityPCSProofBundleBuilderV1 {
+    public static func prove(
+        trace: AIRExecutionTraceV1,
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        queryCount: Int
+    ) throws -> AIRSharedDomainQuotientIdentityPCSProofBundleV1 {
+        let currentSeedWitness = try AIRRowDomainTraceToCirclePCSWitnessV1.make(
+            trace: trace,
+            variant: .current,
+            domain: domain
+        )
+        let nextSeedWitness = try AIRRowDomainTraceToCirclePCSWitnessV1.make(
+            trace: trace,
+            variant: .nextShifted,
+            domain: domain
+        )
+        let quotientSeedWitness = try AIRPublicQuotientToCirclePCSWitnessV1.make(
+            quotientProof: quotientProof,
+            domain: domain
+        )
+        let queryPlan = try AIRQuotientIdentityOpeningQueryPlannerV1.make(
+            definition: definition,
+            quotientProof: quotientProof,
+            currentTraceWitness: currentSeedWitness,
+            nextTraceWitness: nextSeedWitness,
+            quotientWitness: quotientSeedWitness,
+            parameterSet: parameterSet,
+            queryCount: queryCount
+        )
+        let currentTraceBundle = try AIRRowDomainTracePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            variant: .current,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: queryPlan.claimedStorageIndices
+        )
+        let nextTraceBundle = try AIRRowDomainTracePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            variant: .nextShifted,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: queryPlan.claimedStorageIndices
+        )
+        let quotientBundle = try AIRQuotientCirclePCSProofBundleBuilderV1.prove(
+            quotientProof: quotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimStorageIndices: queryPlan.claimedStorageIndices
+        )
+        return try assemble(
+            queryPlan: queryPlan,
+            currentTracePCSProofBundle: currentTraceBundle,
+            nextTracePCSProofBundle: nextTraceBundle,
+            quotientPCSProofBundle: quotientBundle,
+            definition: definition,
+            quotientProof: quotientProof
+        )
+    }
+
+    public static func prove(
+        proof: AIRProofV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        queryCount: Int
+    ) throws -> AIRSharedDomainQuotientIdentityPCSProofBundleV1 {
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: proof.witness,
+            for: proof.airDefinition
+        )
+        return try prove(
+            trace: trace,
+            definition: proof.airDefinition,
+            quotientProof: proof.publicQuotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            queryCount: queryCount
+        )
+    }
+
+    public static func assemble(
+        queryPlan: AIRQuotientIdentityOpeningQueryPlanV1,
+        currentTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1,
+        nextTracePCSProofBundle: AIRRowDomainTracePCSProofBundleV1,
+        quotientPCSProofBundle: AIRQuotientCirclePCSProofBundleV1,
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1
+    ) throws -> AIRSharedDomainQuotientIdentityPCSProofBundleV1 {
+        let bundle = try AIRSharedDomainQuotientIdentityPCSProofBundleV1(
+            queryPlan: queryPlan,
+            currentTracePCSProofBundle: currentTracePCSProofBundle,
+            nextTracePCSProofBundle: nextTracePCSProofBundle,
+            quotientPCSProofBundle: quotientPCSProofBundle
+        )
+        guard try AIRSharedDomainQuotientIdentityPCSProofBundleVerifierV1
+            .verificationReport(
+                bundle,
+                definition: definition,
+                quotientProof: quotientProof
+            )
+            .provesAIRQuotientIdentity else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Shared-domain AIR quotient identity PCS proof bundle does not verify."
+            )
+        }
+        return bundle
+    }
+}
+
+public struct AIRSharedDomainQuotientIdentityVerificationReportV1: Equatable, Sendable {
+    public let currentTracePCSBundleProofsVerify: Bool
+    public let nextTracePCSBundleProofsVerify: Bool
+    public let quotientPCSBundleProofsVerify: Bool
+    public let currentTraceBundleMatchesQuotientTraceDigest: Bool
+    public let nextTraceBundleMatchesShiftedTrace: Bool
+    public let quotientPCSBundleMatchesQuotientProof: Bool
+    public let queryPlanMatchesCommitments: Bool
+    public let bundlesOpenExactlyQueryPoints: Bool
+    public let domainsMatch: Bool
+    public let parameterSetsMatch: Bool
+    public let coordinateDomainsAlignedForAIRQuotientIdentity: Bool
+    public let quotientIdentityChecked: Bool
+    public let isZeroKnowledge: Bool
+
+    public var verifiesPCSOpeningInputs: Bool {
+        currentTracePCSBundleProofsVerify &&
+            nextTracePCSBundleProofsVerify &&
+            quotientPCSBundleProofsVerify &&
+            currentTraceBundleMatchesQuotientTraceDigest &&
+            nextTraceBundleMatchesShiftedTrace &&
+            quotientPCSBundleMatchesQuotientProof &&
+            queryPlanMatchesCommitments &&
+            bundlesOpenExactlyQueryPoints &&
+            domainsMatch &&
+            parameterSetsMatch
+    }
+
+    public var provesAIRQuotientIdentity: Bool {
+        verifiesPCSOpeningInputs &&
+            coordinateDomainsAlignedForAIRQuotientIdentity &&
+            quotientIdentityChecked
+    }
+}
+
+public enum AIRSharedDomainQuotientIdentityPCSProofBundleVerifierV1 {
+    public static func verificationReport(
+        _ bundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1,
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1
+    ) throws -> AIRSharedDomainQuotientIdentityVerificationReportV1 {
+        let currentTraceProofsVerify = try AIRRowDomainTracePCSProofBundleVerifierV1.verify(
+            bundle.currentTracePCSProofBundle
+        )
+        let nextTraceProofsVerify = try AIRRowDomainTracePCSProofBundleVerifierV1.verify(
+            bundle.nextTracePCSProofBundle
+        )
+        let quotientProofsVerify = try AIRQuotientCirclePCSProofBundleVerifierV1.verify(
+            bundle.quotientPCSProofBundle
+        )
+        let currentTraceMatches = try AIRRowDomainTracePCSProofBundleVerifierV1
+            .verifyCurrentTraceDigest(
+                bundle.currentTracePCSProofBundle,
+                against: quotientProof
+            )
+        let nextTraceMatches = try AIRRowDomainTracePCSProofBundleVerifierV1
+            .verifyNextShiftedTrace(
+                bundle.nextTracePCSProofBundle,
+                againstCurrent: bundle.currentTracePCSProofBundle
+            )
+        let quotientBundleMatches = try AIRQuotientCirclePCSProofBundleVerifierV1.verify(
+            bundle.quotientPCSProofBundle,
+            against: quotientProof
+        )
+        let expectedPlan = try AIRQuotientIdentityOpeningQueryPlannerV1.make(
+            definition: definition,
+            quotientProof: quotientProof,
+            currentTraceBundle: bundle.currentTracePCSProofBundle,
+            nextTraceBundle: bundle.nextTracePCSProofBundle,
+            quotientBundle: bundle.quotientPCSProofBundle,
+            queryCount: bundle.queryPlan.queryCount
+        )
+        let queryPlanMatches = expectedPlan == bundle.queryPlan
+        let domainsMatch = bundle.currentTracePCSProofBundle.witness.domain ==
+            bundle.nextTracePCSProofBundle.witness.domain &&
+            bundle.currentTracePCSProofBundle.witness.domain ==
+            bundle.quotientPCSProofBundle.witness.domain
+        let parameterSetsMatch = bundle.currentTracePCSProofBundle.parameterSet ==
+            bundle.nextTracePCSProofBundle.parameterSet &&
+            bundle.currentTracePCSProofBundle.parameterSet ==
+            bundle.quotientPCSProofBundle.parameterSet
+        let bundlesOpenExactlyQueryPoints =
+            bundle.currentTracePCSProofBundle.witness.claimedStorageIndices == bundle.queryPlan.claimedStorageIndices &&
+            bundle.nextTracePCSProofBundle.witness.claimedStorageIndices == bundle.queryPlan.claimedStorageIndices &&
+            bundle.quotientPCSProofBundle.witness.claimedStorageIndices == bundle.queryPlan.claimedStorageIndices
+        let coordinateDomainsAligned = domainsMatch &&
+            bundle.currentTracePCSProofBundle.witness.variant == .current &&
+            bundle.nextTracePCSProofBundle.witness.variant == .nextShifted
+        let identityChecked = coordinateDomainsAligned && bundlesOpenExactlyQueryPoints
+            ? try quotientIdentityHolds(
+                bundle: bundle,
+                definition: definition,
+                quotientProof: quotientProof
+            )
+            : false
+        return AIRSharedDomainQuotientIdentityVerificationReportV1(
+            currentTracePCSBundleProofsVerify: currentTraceProofsVerify,
+            nextTracePCSBundleProofsVerify: nextTraceProofsVerify,
+            quotientPCSBundleProofsVerify: quotientProofsVerify,
+            currentTraceBundleMatchesQuotientTraceDigest: currentTraceMatches,
+            nextTraceBundleMatchesShiftedTrace: nextTraceMatches,
+            quotientPCSBundleMatchesQuotientProof: quotientBundleMatches,
+            queryPlanMatchesCommitments: queryPlanMatches,
+            bundlesOpenExactlyQueryPoints: bundlesOpenExactlyQueryPoints,
+            domainsMatch: domainsMatch,
+            parameterSetsMatch: parameterSetsMatch,
+            coordinateDomainsAlignedForAIRQuotientIdentity: coordinateDomainsAligned,
+            quotientIdentityChecked: identityChecked,
+            isZeroKnowledge: false
+        )
+    }
+
+    public static func verify(
+        _ bundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1,
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1
+    ) throws -> Bool {
+        try verificationReport(
+            bundle,
+            definition: definition,
+            quotientProof: quotientProof
+        ).provesAIRQuotientIdentity
+    }
+
+    private static func quotientIdentityHolds(
+        bundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1,
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1
+    ) throws -> Bool {
+        guard quotientProof.traceRowCount == bundle.currentTracePCSProofBundle.witness.traceRowCount,
+              quotientProof.traceColumnCount == bundle.currentTracePCSProofBundle.witness.traceColumnCount,
+              definition.columnCount == quotientProof.traceColumnCount,
+              quotientProof.quotientPolynomials.count ==
+                definition.transitionConstraints.count + definition.boundaryConstraints.count else {
+            return false
+        }
+        let currentOpenings = try openedTraceValues(
+            from: bundle.currentTracePCSProofBundle
+        )
+        let nextOpenings = try openedTraceValues(
+            from: bundle.nextTracePCSProofBundle
+        )
+        let quotientOpenings = try openedQuotientValues(
+            from: bundle.quotientPCSProofBundle
+        )
+        let expectedRecords = try expectedQuotientRecordLayout(
+            definition: definition,
+            quotientProof: quotientProof
+        )
+        guard expectedRecords else {
+            return false
+        }
+
+        for storageIndex in bundle.queryPlan.claimedStorageIndices {
+            guard let currentValues = currentOpenings[storageIndex],
+                  let nextValues = nextOpenings[storageIndex],
+                  let quotientValues = quotientOpenings[storageIndex] else {
+                return false
+            }
+            let z = try rowDomainChallenge(
+                storageIndex: storageIndex,
+                domain: bundle.currentTracePCSProofBundle.witness.domain
+            )
+            let transitionVanishing = try transitionVanishingValue(
+                z,
+                traceRowCount: quotientProof.traceRowCount
+            )
+            var quotientIndex = 0
+            for constraint in definition.transitionConstraints {
+                let numerator = try evaluate(
+                    constraint,
+                    currentRow: currentValues,
+                    nextRow: nextValues
+                )
+                let expected = M31Field.multiply(
+                    transitionVanishing,
+                    quotientValues[quotientIndex]
+                )
+                guard numerator == expected else {
+                    return false
+                }
+                quotientIndex += 1
+            }
+            for boundaryIndex in definition.boundaryConstraints.indices {
+                let constraint = definition.boundaryConstraints[boundaryIndex]
+                let rowCoordinate = try rowCoordinate(constraint.rowIndex)
+                let boundaryVanishing = M31Field.subtract(z, rowCoordinate)
+                let numerator = try evaluate(
+                    constraint.polynomial,
+                    currentRow: currentValues,
+                    nextRow: nil
+                )
+                let expected = M31Field.multiply(
+                    boundaryVanishing,
+                    quotientValues[quotientIndex]
+                )
+                guard numerator == expected else {
+                    return false
+                }
+                quotientIndex += 1
+            }
+        }
+        return true
+    }
+
+    private static func expectedQuotientRecordLayout(
+        definition: AIRDefinitionV1,
+        quotientProof: AIRPublicQuotientProofV1
+    ) throws -> Bool {
+        var quotientIndex = 0
+        for constraintIndex in definition.transitionConstraints.indices {
+            guard quotientIndex < quotientProof.quotientPolynomials.count else {
+                return false
+            }
+            let record = quotientProof.quotientPolynomials[quotientIndex]
+            guard record.kind == .transition,
+                  record.constraintIndex == constraintIndex,
+                  record.vanishingDegree == max(1, quotientProof.traceRowCount - 1) else {
+                return false
+            }
+            quotientIndex += 1
+        }
+        for boundaryIndex in definition.boundaryConstraints.indices {
+            guard quotientIndex < quotientProof.quotientPolynomials.count else {
+                return false
+            }
+            let record = quotientProof.quotientPolynomials[quotientIndex]
+            guard record.kind == .boundary,
+                  record.constraintIndex == boundaryIndex,
+                  record.vanishingDegree == 1 else {
+                return false
+            }
+            quotientIndex += 1
+        }
+        return quotientIndex == quotientProof.quotientPolynomials.count
+    }
+
+    private static func openedTraceValues(
+        from bundle: AIRRowDomainTracePCSProofBundleV1
+    ) throws -> [Int: [UInt32]] {
+        let witness = bundle.witness
+        var rows = Dictionary(
+            uniqueKeysWithValues: witness.claimedStorageIndices.map {
+                ($0, Array<UInt32?>(repeating: nil, count: witness.traceColumnCount))
+            }
+        )
+        for chunk in bundle.chunks {
+            let claimStorageIndices = try chunk.statement.polynomialClaim.evaluationClaims.map { claim -> Int in
+                guard claim.storageIndex <= UInt64(Int.max) else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                return Int(claim.storageIndex)
+            }
+            guard claimStorageIndices == witness.claimedStorageIndices else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            for claim in chunk.statement.polynomialClaim.evaluationClaims {
+                guard claim.storageIndex <= UInt64(Int.max) else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                let storageIndex = Int(claim.storageIndex)
+                var values = rows[storageIndex] ?? Array<UInt32?>(
+                    repeating: nil,
+                    count: witness.traceColumnCount
+                )
+                let limbs = limbs(from: claim.value)
+                for offset in chunk.sourceColumnIndices.count..<AIRTraceToCirclePCSWitnessV1.m31ColumnsPerQM31Polynomial {
+                    guard limbs[offset] == 0 else {
+                        throw AppleZKProverError.invalidInputLayout
+                    }
+                }
+                for (offset, column) in chunk.sourceColumnIndices.enumerated() {
+                    guard column >= 0,
+                          column < values.count,
+                          values[column] == nil else {
+                        throw AppleZKProverError.invalidInputLayout
+                    }
+                    values[column] = limbs[offset]
+                }
+                rows[storageIndex] = values
+            }
+        }
+        var opened: [Int: [UInt32]] = [:]
+        for storageIndex in witness.claimedStorageIndices {
+            guard let values = rows[storageIndex],
+                  values.allSatisfy({ $0 != nil }) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            opened[storageIndex] = values.map { $0! }
+        }
+        return opened
+    }
+
+    private static func openedQuotientValues(
+        from bundle: AIRQuotientCirclePCSProofBundleV1
+    ) throws -> [Int: [UInt32]] {
+        let witness = bundle.witness
+        var rows = Dictionary(
+            uniqueKeysWithValues: witness.claimedStorageIndices.map {
+                ($0, Array<UInt32?>(repeating: nil, count: witness.quotientPolynomialCount))
+            }
+        )
+        for chunk in bundle.chunks {
+            let claimStorageIndices = try chunk.statement.polynomialClaim.evaluationClaims.map { claim -> Int in
+                guard claim.storageIndex <= UInt64(Int.max) else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                return Int(claim.storageIndex)
+            }
+            guard claimStorageIndices == witness.claimedStorageIndices else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            for claim in chunk.statement.polynomialClaim.evaluationClaims {
+                guard claim.storageIndex <= UInt64(Int.max) else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                let storageIndex = Int(claim.storageIndex)
+                var values = rows[storageIndex] ?? Array<UInt32?>(
+                    repeating: nil,
+                    count: witness.quotientPolynomialCount
+                )
+                let limbs = limbs(from: claim.value)
+                for offset in chunk.sourceQuotientIndices.count..<AIRPublicQuotientToCirclePCSWitnessV1.m31QuotientsPerQM31Polynomial {
+                    guard limbs[offset] == 0 else {
+                        throw AppleZKProverError.invalidInputLayout
+                    }
+                }
+                for (offset, quotientIndex) in chunk.sourceQuotientIndices.enumerated() {
+                    guard quotientIndex >= 0,
+                          quotientIndex < values.count,
+                          values[quotientIndex] == nil else {
+                        throw AppleZKProverError.invalidInputLayout
+                    }
+                    values[quotientIndex] = limbs[offset]
+                }
+                rows[storageIndex] = values
+            }
+        }
+        var opened: [Int: [UInt32]] = [:]
+        for storageIndex in witness.claimedStorageIndices {
+            guard let values = rows[storageIndex],
+                  values.allSatisfy({ $0 != nil }) else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            opened[storageIndex] = values.map { $0! }
+        }
+        return opened
+    }
+
+    private static func rowDomainChallenge(
+        storageIndex: Int,
+        domain: CircleDomainDescriptor
+    ) throws -> UInt32 {
+        let naturalIndex = try CircleDomainOracle.naturalDomainIndex(
+            forStorageIndex: storageIndex,
+            descriptor: domain
+        )
+        let point = try CircleDomainOracle.point(
+            in: domain,
+            naturalDomainIndex: naturalIndex
+        )
+        try CircleDomainOracle.validatePoint(point)
+        return point.x
+    }
+
+    private static func transitionVanishingValue(
+        _ z: UInt32,
+        traceRowCount: Int
+    ) throws -> UInt32 {
+        guard traceRowCount > 1 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var accumulator: UInt32 = 1
+        for row in 0..<(traceRowCount - 1) {
+            accumulator = M31Field.multiply(
+                accumulator,
+                M31Field.subtract(z, try rowCoordinate(row))
+            )
+        }
+        return accumulator
+    }
+
+    private static func evaluate(
+        _ polynomial: AIRConstraintPolynomialV1,
+        currentRow: [UInt32],
+        nextRow: [UInt32]?
+    ) throws -> UInt32 {
+        var accumulator: UInt32 = 0
+        for term in polynomial.terms {
+            var product = term.coefficient
+            for factor in term.factors {
+                let rowValues: [UInt32]
+                switch factor.kind {
+                case .current:
+                    rowValues = currentRow
+                case .next:
+                    guard let nextRow else {
+                        throw AppleZKProverError.invalidInputLayout
+                    }
+                    rowValues = nextRow
+                }
+                guard factor.column >= 0,
+                      factor.column < rowValues.count else {
+                    throw AppleZKProverError.invalidInputLayout
+                }
+                product = M31Field.multiply(product, rowValues[factor.column])
+            }
+            accumulator = M31Field.add(accumulator, product)
+        }
+        return accumulator
+    }
+
+    private static func rowCoordinate(_ row: Int) throws -> UInt32 {
+        guard row >= 0,
+              UInt64(row) < UInt64(M31Field.modulus) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return UInt32(row)
+    }
+
+    private static func limbs(from value: QM31Element) -> [UInt32] {
+        [
+            value.constant.real,
+            value.constant.imaginary,
+            value.uCoefficient.real,
+            value.uCoefficient.imaginary,
+        ]
+    }
+}
+
 public struct AIRProofQuotientPCSArtifactV1: Equatable, Sendable {
     public static let currentVersion: UInt32 = 1
 
@@ -4190,6 +5815,222 @@ public enum ApplicationPublicTheoremTracePCSArtifactVerifierV1 {
 
     public static func verify(encodedArtifact: Data) throws -> Bool {
         try verificationReport(encodedArtifact: encodedArtifact).verified
+    }
+}
+
+public struct ApplicationPublicTheoremIntegratedArtifactV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let publicTheoremArtifact: ApplicationPublicTheoremArtifactV1
+    public let airConstraintSumcheckProof: AIRConstraintMultilinearSumcheckProofV1
+    public let quotientIdentityPCSProofBundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1
+
+    public init(
+        version: UInt32 = currentVersion,
+        publicTheoremArtifact: ApplicationPublicTheoremArtifactV1,
+        airConstraintSumcheckProof: AIRConstraintMultilinearSumcheckProofV1,
+        quotientIdentityPCSProofBundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1
+    ) throws {
+        guard version == Self.currentVersion else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.version = version
+        self.publicTheoremArtifact = publicTheoremArtifact
+        self.airConstraintSumcheckProof = airConstraintSumcheckProof
+        self.quotientIdentityPCSProofBundle = quotientIdentityPCSProofBundle
+    }
+}
+
+public enum ApplicationPublicTheoremIntegratedArtifactBuilderV1 {
+    public static func prove(
+        applicationIdentifier: String,
+        witness: ApplicationWitnessTraceV1,
+        airDefinition: AIRDefinitionV1,
+        gkrClaim: GKRClaimV1,
+        pcsStatement: CirclePCSFRIStatementV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        quotientIdentityQueryCount: Int,
+        sumcheckRounds: Int? = nil
+    ) throws -> ApplicationPublicTheoremIntegratedArtifactV1 {
+        let publicTheoremArtifact = try ApplicationPublicTheoremBuilderV1.prove(
+            applicationIdentifier: applicationIdentifier,
+            witness: witness,
+            airDefinition: airDefinition,
+            gkrClaim: gkrClaim,
+            pcsStatement: pcsStatement,
+            sumcheckRounds: sumcheckRounds
+        )
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: witness,
+            for: airDefinition
+        )
+        let airConstraintSumcheckProof = try AIRConstraintMultilinearSumcheckProofBuilderV1.prove(
+            definition: airDefinition,
+            trace: trace
+        )
+        let quotientProof = try AIRPublicQuotientOracleV1.prove(
+            definition: airDefinition,
+            trace: trace
+        )
+        let quotientIdentityBundle = try AIRSharedDomainQuotientIdentityPCSProofBundleBuilderV1.prove(
+            trace: trace,
+            definition: airDefinition,
+            quotientProof: quotientProof,
+            domain: domain,
+            parameterSet: parameterSet,
+            queryCount: quotientIdentityQueryCount
+        )
+        return try assemble(
+            publicTheoremArtifact: publicTheoremArtifact,
+            airConstraintSumcheckProof: airConstraintSumcheckProof,
+            quotientIdentityPCSProofBundle: quotientIdentityBundle
+        )
+    }
+
+    public static func assemble(
+        publicTheoremArtifact: ApplicationPublicTheoremArtifactV1,
+        airConstraintSumcheckProof: AIRConstraintMultilinearSumcheckProofV1,
+        quotientIdentityPCSProofBundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1
+    ) throws -> ApplicationPublicTheoremIntegratedArtifactV1 {
+        let artifact = try ApplicationPublicTheoremIntegratedArtifactV1(
+            publicTheoremArtifact: publicTheoremArtifact,
+            airConstraintSumcheckProof: airConstraintSumcheckProof,
+            quotientIdentityPCSProofBundle: quotientIdentityPCSProofBundle
+        )
+        guard try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(artifact) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Application integrated public theorem artifact does not verify."
+            )
+        }
+        return artifact
+    }
+}
+
+public struct ApplicationPublicTheoremIntegratedVerificationReportV1: Equatable, Sendable {
+    public let publicTheoremReport: ApplicationTheoremVerificationReportV1
+    public let airConstraintSumcheckReport: AIRConstraintMultilinearSumcheckVerificationReportV1
+    public let quotientIdentityReport: AIRSharedDomainQuotientIdentityVerificationReportV1
+    public let quotientProofDerivedFromPublicTrace: Bool
+    public let airConstraintSumcheckMatchesPublicTheoremTrace: Bool
+    public let quotientIdentityMatchesPublicTheoremTrace: Bool
+    public let isSuccinctAIRGKRProof: Bool
+    public let isZeroKnowledge: Bool
+
+    public var verifiesIntegratedPublicTheorem: Bool {
+        publicTheoremReport.publicSidecarTheoremVerified &&
+            airConstraintSumcheckReport.provesPublicAIRSemantics &&
+            quotientIdentityReport.provesAIRQuotientIdentity &&
+            quotientProofDerivedFromPublicTrace &&
+            airConstraintSumcheckMatchesPublicTheoremTrace &&
+            quotientIdentityMatchesPublicTheoremTrace
+    }
+}
+
+public enum ApplicationPublicTheoremIntegratedArtifactVerifierV1 {
+    public static func verificationReport(
+        _ artifact: ApplicationPublicTheoremIntegratedArtifactV1
+    ) throws -> ApplicationPublicTheoremIntegratedVerificationReportV1 {
+        let publicTheorem = artifact.publicTheoremArtifact
+        let publicTheoremReport = try ApplicationTheoremVerifierV1.verificationReport(
+            artifact: publicTheorem
+        )
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: publicTheorem.witness,
+            for: publicTheorem.airDefinition
+        )
+        let airSumcheckReport = try AIRConstraintMultilinearSumcheckVerifierV1
+            .verificationReport(
+                artifact.airConstraintSumcheckProof,
+                definition: publicTheorem.airDefinition,
+                trace: trace
+            )
+        let quotientProofResult = try derivedQuotientProof(
+            definition: publicTheorem.airDefinition,
+            trace: trace
+        )
+        let quotientIdentityReport: AIRSharedDomainQuotientIdentityVerificationReportV1
+        if let quotientProof = quotientProofResult.proof {
+            quotientIdentityReport = try AIRSharedDomainQuotientIdentityPCSProofBundleVerifierV1
+                .verificationReport(
+                    artifact.quotientIdentityPCSProofBundle,
+                    definition: publicTheorem.airDefinition,
+                    quotientProof: quotientProof
+                )
+        } else {
+            quotientIdentityReport = AIRSharedDomainQuotientIdentityVerificationReportV1(
+                currentTracePCSBundleProofsVerify: false,
+                nextTracePCSBundleProofsVerify: false,
+                quotientPCSBundleProofsVerify: false,
+                currentTraceBundleMatchesQuotientTraceDigest: false,
+                nextTraceBundleMatchesShiftedTrace: false,
+                quotientPCSBundleMatchesQuotientProof: false,
+                queryPlanMatchesCommitments: false,
+                bundlesOpenExactlyQueryPoints: false,
+                domainsMatch: false,
+                parameterSetsMatch: false,
+                coordinateDomainsAlignedForAIRQuotientIdentity: false,
+                quotientIdentityChecked: false,
+                isZeroKnowledge: false
+            )
+        }
+        let airDefinitionDigest = try AIRDefinitionDigestV1.digest(publicTheorem.airDefinition)
+        let airMatchesPublicTrace =
+            artifact.airConstraintSumcheckProof.traceRowCount == trace.rowCount &&
+            artifact.airConstraintSumcheckProof.traceColumnCount == trace.columnCount &&
+            artifact.airConstraintSumcheckProof.airDefinitionDigest == airDefinitionDigest
+        let quotientMatchesPublicTrace =
+            artifact.quotientIdentityPCSProofBundle.queryPlan.traceRowCount == trace.rowCount &&
+            artifact.quotientIdentityPCSProofBundle.queryPlan.traceColumnCount == trace.columnCount &&
+            artifact.quotientIdentityPCSProofBundle.queryPlan.airDefinitionDigest == airDefinitionDigest
+        return ApplicationPublicTheoremIntegratedVerificationReportV1(
+            publicTheoremReport: publicTheoremReport,
+            airConstraintSumcheckReport: airSumcheckReport,
+            quotientIdentityReport: quotientIdentityReport,
+            quotientProofDerivedFromPublicTrace: quotientProofResult.derived,
+            airConstraintSumcheckMatchesPublicTheoremTrace: airMatchesPublicTrace,
+            quotientIdentityMatchesPublicTheoremTrace: quotientMatchesPublicTrace,
+            isSuccinctAIRGKRProof: false,
+            isZeroKnowledge: false
+        )
+    }
+
+    public static func verify(
+        _ artifact: ApplicationPublicTheoremIntegratedArtifactV1
+    ) throws -> Bool {
+        try verificationReport(artifact).verifiesIntegratedPublicTheorem
+    }
+
+    public static func verificationReport(
+        encodedArtifact: Data
+    ) throws -> ApplicationPublicTheoremIntegratedVerificationReportV1 {
+        try verificationReport(
+            ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(encodedArtifact)
+        )
+    }
+
+    public static func verify(encodedArtifact: Data) throws -> Bool {
+        try verificationReport(encodedArtifact: encodedArtifact).verifiesIntegratedPublicTheorem
+    }
+
+    private static func derivedQuotientProof(
+        definition: AIRDefinitionV1,
+        trace: AIRExecutionTraceV1
+    ) throws -> (derived: Bool, proof: AIRPublicQuotientProofV1?) {
+        do {
+            return (
+                true,
+                try AIRPublicQuotientOracleV1.prove(
+                    definition: definition,
+                    trace: trace
+                )
+            )
+        } catch AppleZKProverError.correctnessValidationFailed {
+            return (false, nil)
+        } catch AppleZKProverError.invalidInputLayout {
+            return (false, nil)
+        }
     }
 }
 
@@ -5103,6 +6944,375 @@ public enum ApplicationProofStatementCodecV1 {
     }
 }
 
+public enum AIRConstraintMultilinearSumcheckProofCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x41, 0x43, 0x4d, 0x31, 0x00])
+
+    public static func encode(_ proof: AIRConstraintMultilinearSumcheckProofV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        CanonicalBinary.appendUInt32(proof.version, to: &data)
+        data.append(proof.airDefinitionDigest)
+        CanonicalBinary.appendUInt64(UInt64(proof.traceRowCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(proof.traceColumnCount), to: &data)
+        data.append(proof.airEvaluationDigest)
+        try CanonicalBinary.appendLengthPrefixed(
+            try M31MultilinearSumcheckProofCodecV1.encode(proof.sumcheckProof),
+            to: &data
+        )
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> AIRConstraintMultilinearSumcheckProofV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let version = try reader.readUInt32()
+        let airDefinitionDigest = try reader.readBytes(count: 32)
+        let traceRowCount = try readCount64(from: &reader)
+        let traceColumnCount = try readCount64(from: &reader)
+        let airEvaluationDigest = try reader.readBytes(count: 32)
+        let sumcheckProof = try M31MultilinearSumcheckProofCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        try reader.finish()
+        return try AIRConstraintMultilinearSumcheckProofV1(
+            version: version,
+            airDefinitionDigest: airDefinitionDigest,
+            traceRowCount: traceRowCount,
+            traceColumnCount: traceColumnCount,
+            airEvaluationDigest: airEvaluationDigest,
+            sumcheckProof: sumcheckProof
+        )
+    }
+}
+
+public enum AIRConstraintMultilinearSumcheckProofDigestV1 {
+    private static let domain = Data("AppleZKProver.AIRConstraintMultilinearSumcheckProof.V1".utf8)
+
+    public static func digest(_ proof: AIRConstraintMultilinearSumcheckProofV1) throws -> Data {
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &data)
+        data.append(domain)
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRConstraintMultilinearSumcheckProofCodecV1.encode(proof),
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
+    }
+}
+
+public enum AIRRowDomainTracePCSProofBundleCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x52, 0x54, 0x50, 0x31, 0x00])
+
+    public static func encode(_ bundle: AIRRowDomainTracePCSProofBundleV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        try CanonicalBinary.appendLengthPrefixed(
+            try CircleDomainDescriptorCodecV1.encode(bundle.witness.domain),
+            to: &data
+        )
+        CanonicalBinary.appendUInt32(bundle.witness.variant.rawValue, to: &data)
+        CanonicalBinary.appendUInt64(UInt64(bundle.witness.traceRowCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(bundle.witness.traceColumnCount), to: &data)
+        data.append(bundle.witness.sourceTracePolynomialDigest)
+        try appendIntList(bundle.witness.claimedStorageIndices, to: &data)
+        try CanonicalBinary.appendLengthPrefixed(
+            try parameterSetBytes(bundle.parameterSet),
+            to: &data
+        )
+        CanonicalBinary.appendUInt64(UInt64(bundle.chunks.count), to: &data)
+        for chunk in bundle.chunks {
+            CanonicalBinary.appendUInt64(UInt64(chunk.chunkIndex), to: &data)
+            try appendIntList(chunk.sourceColumnIndices, to: &data)
+            try CanonicalBinary.appendLengthPrefixed(
+                try ApplicationProofStatementCodecV1.encodePCSStatement(chunk.statement),
+                to: &data
+            )
+            try CanonicalBinary.appendLengthPrefixed(
+                try CirclePCSFRIProofCodecV1.encode(chunk.proof),
+                to: &data
+            )
+        }
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> AIRRowDomainTracePCSProofBundleV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let domain = try CircleDomainDescriptorCodecV1.decode(try reader.readLengthPrefixed())
+        guard let variant = AIRRowDomainTracePCSVariantV1(rawValue: try reader.readUInt32()) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let traceRowCount = try readCount64(from: &reader)
+        let traceColumnCount = try readCount64(from: &reader)
+        let sourceTracePolynomialDigest = try reader.readBytes(count: 32)
+        let claimedStorageIndices = try readIntList(from: &reader)
+        let parameterSet = try readParameterSet(
+            from: CanonicalByteReader(try reader.readLengthPrefixed())
+        )
+        let chunkCount = try readCount64(from: &reader)
+        var witnessChunks: [AIRRowDomainTracePCSChunkV1] = []
+        witnessChunks.reserveCapacity(chunkCount)
+        var proofChunks: [AIRRowDomainTracePCSProofChunkV1] = []
+        proofChunks.reserveCapacity(chunkCount)
+
+        for _ in 0..<chunkCount {
+            let chunkIndex = try readCount64(from: &reader)
+            let sourceColumnIndices = try readIntList(from: &reader)
+            let statement = try ApplicationProofStatementCodecV1.decodePCSStatement(
+                try reader.readLengthPrefixed()
+            )
+            let proof = try CirclePCSFRIProofCodecV1.decode(
+                try reader.readLengthPrefixed()
+            )
+            witnessChunks.append(try AIRRowDomainTracePCSChunkV1(
+                chunkIndex: chunkIndex,
+                sourceColumnIndices: sourceColumnIndices,
+                polynomial: statement.polynomialClaim.polynomial,
+                polynomialClaim: statement.polynomialClaim
+            ))
+            proofChunks.append(try AIRRowDomainTracePCSProofChunkV1(
+                chunkIndex: chunkIndex,
+                sourceColumnIndices: sourceColumnIndices,
+                statement: statement,
+                proof: proof
+            ))
+        }
+        try reader.finish()
+
+        let witness = try AIRRowDomainTracePCSWitnessV1(
+            domain: domain,
+            variant: variant,
+            traceRowCount: traceRowCount,
+            traceColumnCount: traceColumnCount,
+            sourceTracePolynomialDigest: sourceTracePolynomialDigest,
+            claimedStorageIndices: claimedStorageIndices,
+            chunks: witnessChunks
+        )
+        return try AIRRowDomainTracePCSProofBundleV1(
+            witness: witness,
+            parameterSet: parameterSet,
+            chunks: proofChunks
+        )
+    }
+
+    private static func appendIntList(_ values: [Int], to data: inout Data) throws {
+        CanonicalBinary.appendUInt64(UInt64(values.count), to: &data)
+        for value in values {
+            guard value >= 0 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            CanonicalBinary.appendUInt64(UInt64(value), to: &data)
+        }
+    }
+
+    private static func readIntList(from reader: inout CanonicalByteReader) throws -> [Int] {
+        let count = try readCount64(from: &reader)
+        var values: [Int] = []
+        values.reserveCapacity(count)
+        for _ in 0..<count {
+            values.append(try readCount64(from: &reader))
+        }
+        return values
+    }
+
+    private static func parameterSetBytes(_ parameterSet: CirclePCSFRIParameterSetV1) throws -> Data {
+        var data = Data()
+        try CanonicalBinary.appendLengthPrefixed(
+            Data(parameterSet.profileID.rawValue.utf8),
+            to: &data
+        )
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.logBlowupFactor, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.queryCount, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.foldingStep, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.securityParameters.grindingBits, to: &data)
+        CanonicalBinary.appendUInt32(parameterSet.targetSoundnessBits, to: &data)
+        return data
+    }
+
+    private static func readParameterSet(
+        from byteReader: CanonicalByteReader
+    ) throws -> CirclePCSFRIParameterSetV1 {
+        var reader = byteReader
+        guard let profileString = String(
+            data: try reader.readLengthPrefixed(),
+            encoding: .utf8
+        ),
+              let profileID = CirclePCSFRIParameterSetV1.ProfileID(rawValue: profileString) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let logBlowupFactor = try reader.readUInt32()
+        let queryCount = try reader.readUInt32()
+        let foldingStep = try reader.readUInt32()
+        let grindingBits = try reader.readUInt32()
+        let targetSoundnessBits = try reader.readUInt32()
+        try reader.finish()
+        let parameterSet = try CirclePCSFRIParameterSetV1(
+            profileID: profileID,
+            logBlowupFactor: logBlowupFactor,
+            queryCount: queryCount,
+            grindingBits: grindingBits,
+            targetSoundnessBits: targetSoundnessBits
+        )
+        guard parameterSet.securityParameters.foldingStep == foldingStep else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        return parameterSet
+    }
+}
+
+public enum AIRRowDomainTracePCSProofBundleDigestV1 {
+    private static let domain = Data("AppleZKProver.AIRRowDomainTracePCSProofBundle.V1".utf8)
+
+    public static func digest(_ bundle: AIRRowDomainTracePCSProofBundleV1) throws -> Data {
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &data)
+        data.append(domain)
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRRowDomainTracePCSProofBundleCodecV1.encode(bundle),
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
+    }
+}
+
+public enum AIRQuotientIdentityOpeningQueryPlanCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x51, 0x49, 0x50, 0x31, 0x00])
+
+    public static func encode(_ plan: AIRQuotientIdentityOpeningQueryPlanV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        CanonicalBinary.appendUInt32(plan.version, to: &data)
+        CanonicalBinary.appendUInt64(UInt64(plan.traceRowCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(plan.traceColumnCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(plan.quotientPolynomialCount), to: &data)
+        CanonicalBinary.appendUInt64(UInt64(plan.queryCount), to: &data)
+        data.append(plan.airDefinitionDigest)
+        data.append(plan.quotientProofDigest)
+        data.append(plan.commitmentDigest)
+        try appendIntList(plan.claimedStorageIndices, to: &data)
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> AIRQuotientIdentityOpeningQueryPlanV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let version = try reader.readUInt32()
+        let traceRowCount = try readCount64(from: &reader)
+        let traceColumnCount = try readCount64(from: &reader)
+        let quotientPolynomialCount = try readCount64(from: &reader)
+        let queryCount = try readCount64(from: &reader)
+        let airDefinitionDigest = try reader.readBytes(count: 32)
+        let quotientProofDigest = try reader.readBytes(count: 32)
+        let commitmentDigest = try reader.readBytes(count: 32)
+        let claimedStorageIndices = try readIntList(from: &reader)
+        try reader.finish()
+        return try AIRQuotientIdentityOpeningQueryPlanV1(
+            version: version,
+            traceRowCount: traceRowCount,
+            traceColumnCount: traceColumnCount,
+            quotientPolynomialCount: quotientPolynomialCount,
+            queryCount: queryCount,
+            airDefinitionDigest: airDefinitionDigest,
+            quotientProofDigest: quotientProofDigest,
+            commitmentDigest: commitmentDigest,
+            claimedStorageIndices: claimedStorageIndices
+        )
+    }
+
+    private static func appendIntList(_ values: [Int], to data: inout Data) throws {
+        CanonicalBinary.appendUInt64(UInt64(values.count), to: &data)
+        for value in values {
+            guard value >= 0 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            CanonicalBinary.appendUInt64(UInt64(value), to: &data)
+        }
+    }
+
+    private static func readIntList(from reader: inout CanonicalByteReader) throws -> [Int] {
+        let count = try readCount64(from: &reader)
+        var values: [Int] = []
+        values.reserveCapacity(count)
+        for _ in 0..<count {
+            values.append(try readCount64(from: &reader))
+        }
+        return values
+    }
+}
+
+public enum AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x53, 0x51, 0x49, 0x31, 0x00])
+
+    public static func encode(_ bundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRQuotientIdentityOpeningQueryPlanCodecV1.encode(bundle.queryPlan),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRRowDomainTracePCSProofBundleCodecV1.encode(bundle.currentTracePCSProofBundle),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRRowDomainTracePCSProofBundleCodecV1.encode(bundle.nextTracePCSProofBundle),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRQuotientCirclePCSProofBundleCodecV1.encode(bundle.quotientPCSProofBundle),
+            to: &data
+        )
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> AIRSharedDomainQuotientIdentityPCSProofBundleV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let queryPlan = try AIRQuotientIdentityOpeningQueryPlanCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let currentTracePCSProofBundle = try AIRRowDomainTracePCSProofBundleCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let nextTracePCSProofBundle = try AIRRowDomainTracePCSProofBundleCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let quotientPCSProofBundle = try AIRQuotientCirclePCSProofBundleCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        try reader.finish()
+        return try AIRSharedDomainQuotientIdentityPCSProofBundleV1(
+            queryPlan: queryPlan,
+            currentTracePCSProofBundle: currentTracePCSProofBundle,
+            nextTracePCSProofBundle: nextTracePCSProofBundle,
+            quotientPCSProofBundle: quotientPCSProofBundle
+        )
+    }
+}
+
+public enum AIRSharedDomainQuotientIdentityPCSProofBundleDigestV1 {
+    private static let domain = Data("AppleZKProver.AIRSharedDomainQuotientIdentityPCSProofBundle.V1".utf8)
+
+    public static func digest(_ bundle: AIRSharedDomainQuotientIdentityPCSProofBundleV1) throws -> Data {
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &data)
+        data.append(domain)
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1.encode(bundle),
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
+    }
+}
+
 public enum ApplicationPublicTheoremArtifactCodecV1 {
     private static let magic = Data([0x41, 0x5a, 0x4b, 0x50, 0x54, 0x56, 0x31, 0x00])
 
@@ -5153,6 +7363,69 @@ public enum ApplicationPublicTheoremArtifactCodecV1 {
             airDefinition: airDefinition,
             gkrClaim: gkrClaim
         )
+    }
+}
+
+public enum ApplicationPublicTheoremIntegratedArtifactCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x50, 0x54, 0x49, 0x31, 0x00])
+
+    public static func encode(_ artifact: ApplicationPublicTheoremIntegratedArtifactV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        CanonicalBinary.appendUInt32(artifact.version, to: &data)
+        try CanonicalBinary.appendLengthPrefixed(
+            try ApplicationPublicTheoremArtifactCodecV1.encode(artifact.publicTheoremArtifact),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRConstraintMultilinearSumcheckProofCodecV1.encode(artifact.airConstraintSumcheckProof),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1.encode(
+                artifact.quotientIdentityPCSProofBundle
+            ),
+            to: &data
+        )
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> ApplicationPublicTheoremIntegratedArtifactV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let version = try reader.readUInt32()
+        let publicTheoremArtifact = try ApplicationPublicTheoremArtifactCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let airConstraintSumcheckProof = try AIRConstraintMultilinearSumcheckProofCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let quotientIdentityPCSProofBundle = try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1
+            .decode(try reader.readLengthPrefixed())
+        try reader.finish()
+        return try ApplicationPublicTheoremIntegratedArtifactV1(
+            version: version,
+            publicTheoremArtifact: publicTheoremArtifact,
+            airConstraintSumcheckProof: airConstraintSumcheckProof,
+            quotientIdentityPCSProofBundle: quotientIdentityPCSProofBundle
+        )
+    }
+}
+
+public enum ApplicationPublicTheoremIntegratedArtifactDigestV1 {
+    private static let domain = Data("AppleZKProver.ApplicationPublicTheoremIntegratedArtifact.V1".utf8)
+
+    public static func digest(_ artifact: ApplicationPublicTheoremIntegratedArtifactV1) throws -> Data {
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &data)
+        data.append(domain)
+        try CanonicalBinary.appendLengthPrefixed(
+            try ApplicationPublicTheoremIntegratedArtifactCodecV1.encode(artifact),
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
     }
 }
 

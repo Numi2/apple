@@ -479,6 +479,36 @@ public final class CircleFRIMerkleTranscriptFoldChainPlan: @unchecked Sendable {
         )
     }
 
+    public func executeMaterializedResidentWithPrecomputedFirstCommitment(
+        evaluationsBuffer: MTLBuffer,
+        evaluationsOffset: Int = 0,
+        committedLayerBuffer: MTLBuffer,
+        committedLayerOffset: Int = 0,
+        commitmentOutputBuffer: MTLBuffer,
+        commitmentOutputOffset: Int = 0,
+        commitmentOutputStride: Int = CircleFRIMerkleTranscriptFoldChainPlan.commitmentByteCount,
+        precomputedFirstCommitmentBuffer: MTLBuffer,
+        precomputedFirstCommitmentOffset: Int,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int = 0
+    ) throws -> GPUExecutionStats {
+        try foldChainPlan.executeMerkleTranscriptDerivedResidentWithPrecomputedFirstCommitment(
+            evaluationsBuffer: evaluationsBuffer,
+            evaluationsOffset: evaluationsOffset,
+            inverseDomainBuffer: domainMaterialization.requireInverseDomainBuffer(),
+            inverseDomainOffset: 0,
+            commitmentOutputBuffer: commitmentOutputBuffer,
+            commitmentOutputOffset: commitmentOutputOffset,
+            commitmentOutputStride: commitmentOutputStride,
+            materializedLayerBuffer: committedLayerBuffer,
+            materializedLayerOffset: committedLayerOffset,
+            precomputedFirstCommitmentBuffer: precomputedFirstCommitmentBuffer,
+            precomputedFirstCommitmentOffset: precomputedFirstCommitmentOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset
+        )
+    }
+
     public func clearReusableBuffers() throws {
         try foldChainPlan.clearReusableBuffers()
     }
@@ -815,6 +845,84 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
                 gpuSeconds: Self.sumGPUSeconds(foldStats.gpuSeconds, extracted.stats.gpuSeconds)
             )
         )
+    }
+
+    func provePreparedFirstLayer(
+        prepareFirstLayer: (_ firstLayerBuffer: MTLBuffer, _ firstLayerOffset: Int, _ firstCommitmentBuffer: MTLBuffer, _ firstCommitmentOffset: Int) throws -> GPUExecutionStats
+    ) throws -> (result: CirclePCSFRIResidentProverV1Result, preparationStats: GPUExecutionStats) {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        let preparationStats = try prepareFirstLayer(
+            committedLayerBuffer,
+            0,
+            commitmentOutputBuffer,
+            0
+        )
+
+        let start = DispatchTime.now()
+        let foldStats = try foldPlan.executeMaterializedResidentWithPrecomputedFirstCommitment(
+            evaluationsBuffer: committedLayerBuffer,
+            evaluationsOffset: 0,
+            committedLayerBuffer: committedLayerBuffer,
+            committedLayerOffset: 0,
+            commitmentOutputBuffer: commitmentOutputBuffer,
+            precomputedFirstCommitmentBuffer: commitmentOutputBuffer,
+            precomputedFirstCommitmentOffset: 0,
+            outputBuffer: finalLayerBuffer
+        )
+
+        let commitments = try Self.readCommitments(
+            commitmentOutputBuffer,
+            count: roundCount
+        )
+        let finalLayer = try Self.readQM31Buffer(
+            finalLayerBuffer,
+            count: outputCount
+        )
+        let grindingNonce = try CircleFRITranscriptV1.findGrindingNonce(
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer
+        )
+        let transcript = try CircleFRITranscriptV1.derive(
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            grindingNonce: grindingNonce
+        )
+        let extracted = try queryExtractor.extractQueries(
+            committedLayerBuffer: committedLayerBuffer,
+            commitments: commitments,
+            queryPairIndices: transcript.queryPairIndices
+        )
+        let proof = try CirclePCSFRIProofV1(
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            queries: extracted.queries,
+            grindingNonce: grindingNonce
+        )
+        let encodedProof = try CirclePCSFRIProofCodecV1.encode(proof)
+        let end = DispatchTime.now()
+        let wall = Double(end.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
+        let result = CirclePCSFRIResidentProverV1Result(
+            proof: proof,
+            encodedProof: encodedProof,
+            foldStats: foldStats,
+            queryExtractionStats: extracted.stats,
+            stats: GPUExecutionStats(
+                cpuWallSeconds: wall,
+                gpuSeconds: Self.sumGPUSeconds(foldStats.gpuSeconds, extracted.stats.gpuSeconds)
+            )
+        )
+        return (result, preparationStats)
     }
 
     public func proveVerified(

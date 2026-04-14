@@ -91,6 +91,13 @@ struct QM31CanonicalityCheckParams {
     uint fieldModulus;
 };
 
+struct AIRTraceSynthesisParams {
+    uint elementCount;
+    uint rowCount;
+    uint columnCount;
+    uint fieldModulus;
+};
+
 struct QM31FRIFoldParams {
     uint pairCount;
     uint fieldModulus;
@@ -720,6 +727,15 @@ inline void sha3_256_absorb_oneblock_leaf_specialized(
     state[padLane] ^= ulong(0x06u) << padShift;
     state[16] ^= ulong(0x80u) << 56;
 
+    keccak_f1600(state);
+}
+
+inline void sha3_256_absorb_qm31_leaf(uint4 value, thread ulong state[25]) {
+    clear_state(state);
+    state[0] ^= ulong(value.x) | (ulong(value.y) << 32);
+    state[1] ^= ulong(value.z) | (ulong(value.w) << 32);
+    state[2] ^= ulong(0x06u);
+    state[16] ^= ulong(0x80u) << 56;
     keccak_f1600(state);
 }
 
@@ -1672,6 +1688,35 @@ kernel void qm31_check_canonical(
     }
 }
 
+kernel void air_trace_synthesize_row_major_m31(
+    const device uint *columnMajorWitness [[buffer(0)]],
+    device uint *rowMajorTrace [[buffer(1)]],
+    device atomic_uint *failureFlag [[buffer(2)]],
+    constant AIRTraceSynthesisParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.rowCount == 0u ||
+        params.columnCount == 0u) {
+        if (gid == 0u) {
+            atomic_store_explicit(failureFlag, 1u, memory_order_relaxed);
+        }
+        return;
+    }
+    if (gid >= params.elementCount) {
+        return;
+    }
+
+    const uint value = columnMajorWitness[gid];
+    if (value >= M31_MODULUS_U32) {
+        atomic_store_explicit(failureFlag, 1u, memory_order_relaxed);
+    }
+
+    const uint column = gid / params.rowCount;
+    const uint row = gid - column * params.rowCount;
+    rowMajorTrace[row * params.columnCount + column] = value;
+}
+
 inline uint circle_bit_reverse_index(uint index, uint logSize) {
     uint value = index;
     uint reversed = 0u;
@@ -1860,6 +1905,41 @@ kernel void circle_codeword_fft_stage(
     const uint4 scaledRight = qm31_mul_m31_mod(values[rightIndex], twiddle);
     values[leftIndex] = qm31_add_mod(left, scaledRight);
     values[rightIndex] = qm31_sub_mod(left, scaledRight);
+}
+
+kernel void circle_codeword_fft_stage_leaf_hash(
+    device uint4 *values [[buffer(0)]],
+    const device uint *twiddles [[buffer(1)]],
+    device uchar *leafHashes [[buffer(2)]],
+    constant CircleCodewordFFTStageParams &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (params.fieldModulus != M31_MODULUS_U32 ||
+        params.elementCount < 2u ||
+        params.stage != 0u) {
+        return;
+    }
+
+    const uint butterflyCount = params.elementCount >> 1u;
+    if (gid >= butterflyCount) {
+        return;
+    }
+
+    const uint leftIndex = gid << 1u;
+    const uint rightIndex = leftIndex + 1u;
+    const uint twiddle = twiddles[params.twiddleOffset + gid];
+    const uint4 left = values[leftIndex];
+    const uint4 scaledRight = qm31_mul_m31_mod(values[rightIndex], twiddle);
+    const uint4 finalizedLeft = qm31_add_mod(left, scaledRight);
+    const uint4 finalizedRight = qm31_sub_mod(left, scaledRight);
+    values[leftIndex] = finalizedLeft;
+    values[rightIndex] = finalizedRight;
+
+    thread ulong state[25];
+    sha3_256_absorb_qm31_leaf(finalizedLeft, state);
+    store_sha3_256_digest(state, leafHashes + leftIndex * 32u);
+    sha3_256_absorb_qm31_leaf(finalizedRight, state);
+    store_sha3_256_digest(state, leafHashes + rightIndex * 32u);
 }
 
 kernel void circle_witness_to_fft_basis(

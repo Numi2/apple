@@ -2,6 +2,138 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: Resident Private AIR Trace Synthesis
+
+Finding:
+
+- The public theorem path could derive `AIRExecutionTraceV1` values from public
+  witness columns, but there was no resident-private equivalent for the actual
+  AIR trace layout consumed by the AIR semantic verifier.
+
+Work completed:
+
+- Added `AIRTraceResidentSynthesisPlanV1`, which accepts private column-major
+  M31 witness columns, checks every limb against the M31 modulus on GPU, and
+  writes row-major AIR trace values into a caller-owned resident buffer.
+- Added `AIRTraceResidentSynthesisOracleV1` as the CPU mirror for column-major
+  witness packing and trace synthesis, reusing the existing
+  `WitnessToAIRTraceProducerV1` object model.
+- Added fixture coverage that uploads the Fibonacci witness into private Metal
+  memory, synthesizes the resident row-major trace, verifies readback equality
+  with the CPU AIR trace oracle, and feeds that exact trace into the CPU AIR
+  composition verifier. Noncanonical private witness limbs are rejected by the
+  GPU failure flag.
+- Updated the Circle PCS artifact manifest to record resident private AIR trace
+  synthesis as an implemented substrate capability while still excluding AIR,
+  sumcheck, and GKR data from the PCS proof bytes themselves.
+
+Residual risk:
+
+- This is trace layout synthesis, not an AIR proof. AIR semantic verification,
+  resident AIR semantic verification, zero-knowledge masking, and succinct
+  AIR/GKR integration remain separate slices.
+
+## 2026-04-14: Shared-Domain AIR Quotient Identity PCS Openings
+
+Finding:
+
+- Public trace PCS openings and public quotient PCS openings could be aligned by
+  storage index, but that did not prove the AIR quotient identity. The trace PCS
+  bridge interpolated opened AIR rows over Circle first-half x-coordinates while
+  the quotient oracle used row-coordinate polynomials.
+
+Work completed:
+
+- Added `AIRRowDomainTracePCSWitnessV1` and
+  `AIRRowDomainTracePCSProofBundleV1` for current trace polynomials and
+  shifted-next trace polynomials committed over the same row-coordinate x-domain
+  used by `AIRPublicQuotientProofV1`.
+- Added `AIRQuotientIdentityOpeningQueryPlannerV1`, which derives non-root
+  challenge storage indices from the row-domain trace, shifted trace, and
+  quotient commitment roots. Sampled x-coordinates exclude the public trace row
+  roots so the quotient vanishing factors are nonzero at the checked points.
+- Added `AIRSharedDomainQuotientIdentityPCSProofBundleV1` and verifier report
+  plumbing. The verifier checks all PCS proofs, binds current trace chunks to
+  the quotient proof trace-polynomial digest, checks that shifted trace chunks
+  equal `T(X + 1)`, checks quotient chunks against the quotient proof, and then
+  verifies `N(z) = Z(z) * Q(z)` from the PCS openings.
+- Added regression coverage for a valid Fibonacci AIR quotient identity bundle
+  and a tampered quotient-coefficient proof that still builds PCS chunks but is
+  rejected by the shared-domain identity equation.
+
+Residual risk:
+
+- This is still a public sidecar construction. It is not zero-knowledge, not a
+  batched PCS protocol, and not the final succinct AIR/GKR theorem path.
+
+## 2026-04-14: Public Multilinear AIR Constraint Sumcheck
+
+Finding:
+
+- `M31SumcheckProofV1` verifies the existing coefficient-fold chunk transcript,
+  but that fold shape is not the full multilinear sumcheck protocol over an
+  evaluation table and should not be relabeled as such.
+
+Work completed:
+
+- Added `M31MultilinearSumcheckProofV1`, statement, round, builder, and verifier
+  types for a public full multilinear evaluation-table sumcheck. The verifier
+  checks each round polynomial `(g_i(0), g_i(1))`, transcript-derived
+  challenges, `(1-r) * f(0) + r * f(1)` folding, and final evaluation
+  consistency.
+- Added `AIRConstraintMultilinearSumcheckProofV1`, which binds the full
+  multilinear proof to `AIRToSumcheckReductionV1.paddedEvaluationVector`,
+  requires a zero hypercube-sum claim, and reports whether the public AIR
+  semantics also hold for the supplied trace.
+- Added regression coverage for valid multilinear sumcheck proofs, tampered
+  round polynomials, mismatched claimed sums, valid AIR reduction binding, and
+  rejection when a proof is checked against a different AIR reduction vector.
+
+Residual risk:
+
+- This is public and revealed-vector. A zero sum of the current AIR reduction
+  vector is not by itself a private succinct AIR proof, and it is not
+  zero-knowledge. The older `ApplicationProofV1` byte format still embeds the
+  narrow M31 chunk proof for corpus stability; the public multilinear AIR
+  sumcheck is exposed as a separate sidecar surface.
+
+## 2026-04-14: Integrated Public AIR/GKR Theorem Artifact
+
+Finding:
+
+- The public theorem path had independently verifiable pieces: public theorem
+  artifact, AIR constraint multilinear sumcheck, and shared-domain quotient
+  identity PCS openings. Callers still had to compose those reports correctly.
+
+Work completed:
+
+- Added `ApplicationPublicTheoremIntegratedArtifactV1`, which packages the
+  public theorem artifact, `AIRConstraintMultilinearSumcheckProofV1`, and
+  `AIRSharedDomainQuotientIdentityPCSProofBundleV1`.
+- Added `ApplicationPublicTheoremIntegratedArtifactVerifierV1` and report
+  fields that require all three surfaces to refer to the same public theorem
+  trace. The verifier derives the public quotient proof from that trace, checks
+  the quotient identity bundle against it, checks the AIR sumcheck against the
+  canonical AIR reduction vector, and inherits GKR semantic verification from
+  the public theorem report.
+- Added manifest and regression coverage for the valid integrated artifact and
+  a tampered AIR-reduction digest that leaves the public theorem and quotient
+  identity valid but fails integrated theorem verification.
+- Added strict codecs and domain-separated digests for
+  `M31MultilinearSumcheckProofV1`,
+  `AIRConstraintMultilinearSumcheckProofV1`, row-domain trace PCS bundles,
+  shared-domain quotient-identity bundles, and
+  `ApplicationPublicTheoremIntegratedArtifactV1`.
+- Checked in `ApplicationPublicTheoremIntegratedArtifactCorpusV1.json`, which
+  pins canonical integrated artifact bytes and raw/domain-separated digests, and
+  rejects AIR-reduction digest mismatch, quotient-identity query-plan commitment
+  mismatch, and trailing bytes.
+
+Residual risk:
+
+- This is an integrated public sidecar artifact. It still reveals public trace
+  material, is not zero-knowledge, and is not a succinct private AIR/GKR proof.
+
 ## 2026-04-14: Public AIR Trace Circle FFT-Basis Witness
 
 Finding:
@@ -60,7 +192,9 @@ Residual risk:
 - This is public opening alignment only. It does not prove the AIR quotient
   identity at a shared evaluation point, because the current trace PCS bridge
   interpolates public trace rows over Circle first-half x-coordinates while the
-  CPU public quotient oracle is built over row-coordinate polynomials.
+  CPU public quotient oracle is built over row-coordinate polynomials. The
+  separate shared-domain quotient identity bundle now handles that equation with
+  row-domain trace, shifted-trace, and quotient PCS openings.
 - The report intentionally exposes `quotientIdentityChecked == false`,
   `coordinateDomainsAlignedForAIRQuotientIdentity == false`, and
   `isZeroKnowledge == false`.
@@ -89,7 +223,8 @@ Residual risk:
 - This is a public query-opening scaffold. It does not hide opened witness
   values and does not implement the full STARK/AIR quotient identity protocol.
   The separate trace/quotient PCS alignment verifier now checks shared public
-  opening coverage, but still does not prove the quotient identity.
+  opening coverage, and the shared-domain quotient identity bundle checks the
+  row-coordinate quotient equation as a separate public sidecar.
 - Query sampling is tied to initial trace PCS commitment roots to avoid the
   circularity of deriving rows from the completed bundle digest, but the current
   V1 PCS statement still exposes polynomial material and is not a commitment-only
@@ -345,7 +480,11 @@ Work completed:
   `M31SumcheckVerificationReportV1`. The current accepted scope is only
   `revealedEvaluationVectorFoldingTrace`; full multilinear sum-check,
   AIR-constraint sum-check, and zero-knowledge AIR sum-check scopes are
-  explicitly rejected by the report.
+  explicitly rejected by that legacy chunk report. The separate
+  `M31MultilinearSumcheckProofV1` and
+  `AIRConstraintMultilinearSumcheckProofV1` surfaces now cover public
+  evaluation-table and AIR-reduction sumcheck checks without changing
+  `ApplicationProofV1` bytes.
 - Added `ApplicationProofV1`, `ApplicationProofBuilderV1`,
   `ApplicationProofVerifierV1`, and `ApplicationProofCodecV1`. The verifier
   rejects statement digest mismatches, invalid M31 sum-check chunks, and invalid
@@ -446,8 +585,8 @@ Work completed:
   Circle PCS/FRI slice and explicitly does not include witness/AIR, sumcheck, or GKR
   output, and records the remaining unsupported boundaries.
 - Extended `CircleCodewordPCSFRIResidentCommandPlanV1` with an explicit
-  materialized-codeword-then-commit schedule and a `usesFusedTiledCodewordCommitment`
-  flag fixed to `false`.
+  codeword-to-commitment schedule and a `usesFusedTiledCodewordCommitment`
+  flag. The current schedule is `final-fft-stage-leaf-hash-then-commit`.
 - Added V1 grinding nonce support: nonzero `grindingBits` require an encoded 8-byte nonce,
   the transcript absorbs that nonce after the final layer and before query sampling, and
   the verifier checks the leading-zero SHA3 target before accepting the proof.
@@ -460,7 +599,7 @@ Work completed:
 Residual risk:
 
 - This deliberately does not implement AIR semantic verification, GKR
-  verification, or fused/tiled scheduling. A later resident coefficient-witness
+  verification. A later resident coefficient-witness
   bridge covers only monomial coefficient columns to Circle FFT-basis buffers.
   `ApplicationProofV1` is the separate final envelope for the implemented PCS
   and M31 sum-check components. The production-facing `conservative128` profile
@@ -493,7 +632,7 @@ Residual risk:
 - The concrete profile has not received external cryptographic review or a mechanized theorem for exact 128-bit soundness.
 - The production-facing profile still claims no grinding credit, even though lower-level
   V1 artifacts can now carry verifier-checked grinding nonces.
-- The resident path still writes a full private codeword before commitment; fused/tiled codeword-to-commitment scheduling remains performance work.
+- The resident path now avoids the extra first-layer leaf-hash pass in the composed codeword prover, but the first committed layer remains materialized for query openings.
 
 ## 2026-04-14: End-To-End Resident Circle Coefficient-To-Proof Boundary
 
@@ -514,7 +653,7 @@ Residual risk:
 - This closes the resident coefficient-to-proof boundary for the current Circle FFT-basis input model. The resident witness-coefficient bridge covers monomial coefficient columns, but still does not generate AIR witness polynomials from a larger proving system.
 - `prove(polynomial:)` and the legacy resident monomial-buffer convenience path still perform the monomial-to-Circle-FFT-basis conversion on the host. Callers that require a no-host-read resident path can now provide either Circle FFT-basis coefficients directly or private monomial coefficient witness columns through `proveResidentWitnessCoefficients`.
 - Legacy artifact/prover APIs still allow caller-selected developer parameters for development and lower-level tests. Public production-facing verification should use `CirclePCSFRIContractVerifierV1` with the fixed conservative profile; external cryptographic review of that concrete profile is still required.
-- The path writes a full private codeword before committing it. Fused/tiled codeword-to-commitment scheduling remains performance work and must be benchmarked before any stronger throughput claim.
+- The path now writes the first layer into the committed-layer arena and hashes leaves in the final FFT stage. Deeper tile-local Merkle treelet construction remains performance work and must be benchmarked before any stronger throughput claim.
 
 ## 2026-04-14: Circle FFT Codeword Engine
 
@@ -533,7 +672,25 @@ Work completed:
 Residual risk:
 
 - The current public polynomial API is still monomial `P(x) + yQ(x)`, so verified convenience paths convert those coefficients on the host before the resident FFT command plan. A future witness pipeline should emit Circle FFT-basis coefficients directly into resident buffers to remove that host conversion.
-- The FFT stages are real resident command-plan work, but they are not yet tiled/fused with Merkle commitment. The next performance step is a fused codeword-to-commitment plan that avoids writing and rereading the full codeword where the PCS flow does not need it.
+- The first committed layer still remains materialized because the V1 query extractor needs those leaf values for transcript-sampled openings. The fused commitment path removes the separate first-layer leaf-hash read but does not yet implement a deeper tile-local Merkle treelet schedule for the first root.
+
+## 2026-04-14: Fused Circle FFT Final-Stage Leaf Hashing
+
+Finding:
+
+- The resident Circle codeword prover wrote the generated codeword into a private buffer, then the resident PCS prover copied that full first layer into its committed-layer arena and reread it for the first Merkle leaf-hash pass. The values must remain materialized for later query openings, but the extra first-layer copy and leaf-hash reread were avoidable.
+
+Work completed:
+
+- Added `circle_codeword_fft_stage_leaf_hash`, a final-stage Circle FFT butterfly kernel that writes finalized QM31 values and SHA3-hashes both finalized 16-byte leaves in the same dispatch.
+- Added `SHA3PrehashedLeavesMerkleCommitPlan`, a resident Merkle reducer for already-hashed 32-byte leaves. It can encode parent reduction into an existing command buffer and write the root into caller-owned proof material.
+- Added a precomputed-first-commitment path through the QM31/Circle FRI fold chain. The resident codeword prover now writes the first committed layer directly into the PCS committed-layer buffer, writes the first root through the prehashed reducer, then skips the old first-layer materialization copy and root recomputation while preserving the same transcript, FRI folds, query extraction, proof bytes, and CPU verifier acceptance.
+- Updated the Circle PCS artifact manifest and resident command plan to record `final-fft-stage-leaf-hash-then-commit` with fused commitment scheduling enabled.
+- Bumped `zkmetal-bench --circle-codeword-prover` to schema v4 so reports expose the codeword commitment schedule and fused commitment flag.
+
+Residual risk:
+
+- This closes the avoidable full-codeword leaf-hash pass for the first committed layer. Further optimization could still add tile-local first-layer parent/treelet construction, but that is a performance extension rather than an open proof-system boundary.
 
 ## 2026-04-14: Metal-Resident Circle Domain And Twiddle Materialization
 

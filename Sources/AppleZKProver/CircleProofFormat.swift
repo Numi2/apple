@@ -159,6 +159,7 @@ public struct CircleFRISecurityParametersV1: Equatable, Sendable {
 
 public enum CirclePCSFRICodewordCommitmentScheduleV1: String, Codable, CaseIterable, Sendable {
     case materializedCodewordThenCommit = "materialized-codeword-then-commit"
+    case finalFFTStageLeafHashThenCommit = "final-fft-stage-leaf-hash-then-commit"
 }
 
 public enum CirclePCSFRIOpenBoundaryV1: String, Codable, CaseIterable, Sendable {
@@ -182,6 +183,7 @@ public struct CirclePCSFRIArtifactManifestV1: Equatable, Codable, Sendable {
     public let includesGKR: Bool
     public let supportsNonzeroGrinding: Bool
     public let residentWitnessToCircleFFTBasis: Bool
+    public let residentPrivateAIRTraceSynthesis: Bool
     public let codewordCommitmentSchedule: CirclePCSFRICodewordCommitmentScheduleV1
     public let openBoundaries: [CirclePCSFRIOpenBoundaryV1]
 
@@ -194,11 +196,10 @@ public struct CirclePCSFRIArtifactManifestV1: Equatable, Codable, Sendable {
         self.includesGKR = false
         self.supportsNonzeroGrinding = true
         self.residentWitnessToCircleFFTBasis = true
-        self.codewordCommitmentSchedule = .materializedCodewordThenCommit
+        self.residentPrivateAIRTraceSynthesis = true
+        self.codewordCommitmentSchedule = .finalFFTStageLeafHashThenCommit
         self.openBoundaries = [
-            .airTraceSynthesis,
             .sumcheckGKRArtifactIntegration,
-            .fusedTiledCodewordCommitmentScheduling,
         ]
     }
 }

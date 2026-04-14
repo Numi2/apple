@@ -59,6 +59,7 @@ struct BenchConfig {
     var circleFRIFoldChainMerkleTranscript = false
     var circleCodewordProver = false
     var applicationPublicTheorem = false
+    var applicationIntegratedTheorem = false
     var qm31FRIFoldChain = false
     var qm31FRIFoldChainTranscript = false
     var qm31FRIFoldChainMerkleTranscript = false
@@ -104,7 +105,7 @@ struct BenchConfig {
                 case let .failure(error): return error
                 }
             case "--elements":
-                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !applicationPublicTheorem && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript && !qm31FRIProof {
+                if !m31VectorInverse && !cm31VectorMultiply && !qm31VectorMultiply && !qm31VectorInverse && !qm31FRIFold && !circleFRIFold && !circleFRIFoldChain && !circleFRIFoldChainMerkleTranscript && !circleCodewordProver && !applicationPublicTheorem && !applicationIntegratedTheorem && !qm31FRIFoldChain && !qm31FRIFoldChainTranscript && !qm31FRIFoldChainMerkleTranscript && !qm31FRIProof {
                     m31DotProduct = true
                 }
                 switch Self.parsePositiveInt(flag: arg, value: iterator.next()) {
@@ -197,6 +198,9 @@ struct BenchConfig {
                 m31DotProduct = false
             case "--application-public-theorem", "--public-theorem-artifact":
                 applicationPublicTheorem = true
+                m31DotProduct = false
+            case "--application-integrated-theorem", "--integrated-public-theorem":
+                applicationIntegratedTheorem = true
                 m31DotProduct = false
             case "--qm31-fri-fold-chain":
                 qm31FRIFoldChain = true
@@ -324,6 +328,8 @@ struct BenchConfig {
           --circle-codeword-prover    Generate a Circle codeword on GPU, keep it resident, and emit a Circle PCS/FRI proof
           --application-public-theorem
                                       Build, serialize, deserialize, and verify the deterministic public AIR/GKR theorem artifact
+          --application-integrated-theorem
+                                      Build, serialize, deserialize, and verify the integrated public AIR/GKR theorem artifact
           --qm31-fri-fold-chain      Run chained QM31 radix-2 FRI folds instead of hash/Merkle
           --qm31-fri-fold-chain-transcript
                                       Run chained QM31 FRI folds with GPU transcript-derived challenges
@@ -331,7 +337,7 @@ struct BenchConfig {
                                       Commit each current QM31 FRI layer on GPU before deriving the next challenge
           --qm31-fri-proof           Build, serialize, deserialize, and verify a linear QM31 FRI proof
           --fri-fold-rounds N        Fold rounds for FRI chain modes. Default: 3
-          --fri-query-count N        Query count for --qm31-fri-proof. Default: 4
+          --fri-query-count N        Query count for --qm31-fri-proof and --application-integrated-theorem. Default: 4
           --elements N               Element count for field-vector benchmarks. Alias for --leaves in those modes
           --merkle-opening           Run Merkle opening extraction benchmark instead of hash/Merkle
           --opening-leaf-index N     Leaf index for --merkle-opening. Default: 0
@@ -370,13 +376,14 @@ struct BenchConfig {
             circleFRIFoldChainMerkleTranscript,
             circleCodewordProver,
             applicationPublicTheorem,
+            applicationIntegratedTheorem,
             qm31FRIFoldChain,
             qm31FRIFoldChainTranscript,
             qm31FRIFoldChainMerkleTranscript,
             qm31FRIProof,
         ].filter { $0 }.count
         guard exclusiveModes <= 1 else {
-            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --application-public-theorem, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, --qm31-fri-fold-chain-merkle, and --qm31-fri-proof are mutually exclusive.")
+            return BenchError.invalidArgument("--keccakf-permutation, --merkle-opening, --m31-dot-product, --m31-inverse, --cm31-multiply, --qm31-multiply, --qm31-inverse, --qm31-fri-fold, --circle-fri-fold, --circle-fri-fold-chain, --circle-fri-fold-chain-merkle, --circle-codeword-prover, --application-public-theorem, --application-integrated-theorem, --qm31-fri-fold-chain, --qm31-fri-fold-chain-transcript, --qm31-fri-fold-chain-merkle, and --qm31-fri-proof are mutually exclusive.")
         }
         if keccakF1600Permutation {
             guard !suite else {
@@ -493,6 +500,21 @@ struct BenchConfig {
         if applicationPublicTheorem {
             guard !suite else {
                 return BenchError.invalidArgument("--suite is not supported with --application-public-theorem.")
+            }
+            guard iterations > 0 else {
+                return BenchError.invalidArgument("--iterations must be greater than zero.")
+            }
+            guard warmupIterations >= 0 else {
+                return BenchError.invalidArgument("--warmups must be non-negative.")
+            }
+            return nil
+        }
+        if applicationIntegratedTheorem {
+            guard !suite else {
+                return BenchError.invalidArgument("--suite is not supported with --application-integrated-theorem.")
+            }
+            guard friQueryCount > 0 else {
+                return BenchError.invalidArgument("--fri-query-count must be greater than zero.")
             }
             guard iterations > 0 else {
                 return BenchError.invalidArgument("--iterations must be greater than zero.")
@@ -1046,6 +1068,8 @@ struct CircleFRIFoldChainBenchmarkReport: Codable {
 struct CircleCodewordProverBenchmarkConfigReport: Codable {
     let codewordEngine: String
     let coefficientInput: String
+    let codewordCommitmentSchedule: String
+    let usesFusedTiledCodewordCommitment: Bool
     let domainLogSize: Int
     let codewordElementCount: Int
     let finalLayerElementCount: Int
@@ -1192,6 +1216,51 @@ struct ApplicationPublicTheoremBenchmarkReport: Codable {
     let proofSizeBytes: Int
     let artifactSizeBytes: Int
     let verification: ApplicationPublicTheoremVerificationReport
+}
+
+struct ApplicationIntegratedTheoremBenchmarkConfigReport: Codable {
+    let artifact: String
+    let airProgram: String
+    let claimScope: String
+    let quotientIdentityDomainLogSize: Int
+    let quotientIdentityQueryCount: Int
+    let warmupIterations: Int
+    let iterations: Int
+    let verifyWithCPU: Bool
+}
+
+struct ApplicationIntegratedTheoremVerificationReport: Codable {
+    let enabled: Bool
+    let verifierAccepted: Bool?
+    let publicTheoremAccepted: Bool?
+    let airConstraintSumcheckAccepted: Bool?
+    let quotientIdentityAccepted: Bool?
+    let artifactDigestHex: String
+    let artifactDomainDigestHex: String
+    let publicTheoremArtifactDigestHex: String
+    let airSumcheckDigestHex: String
+    let airSumcheckDomainDigestHex: String
+    let quotientIdentityBundleDigestHex: String
+    let quotientIdentityBundleDomainDigestHex: String
+    let quotientIdentityQueryPlanCommitmentDigestHex: String
+}
+
+struct ApplicationIntegratedTheoremBenchmarkReport: Codable {
+    let schemaVersion: Int
+    let generatedAt: String
+    let target: String
+    let configuration: ApplicationIntegratedTheoremBenchmarkConfigReport
+    let device: DeviceReport?
+    let pipelineArchive: PipelineArchiveReport
+    let artifactBuild: FieldMeasurementReport?
+    let serialization: FieldMeasurementReport?
+    let deserialization: FieldMeasurementReport?
+    let proofVerification: FieldMeasurementReport?
+    let integratedArtifactSizeBytes: Int
+    let publicTheoremArtifactSizeBytes: Int
+    let airSumcheckProofSizeBytes: Int
+    let quotientIdentityBundleSizeBytes: Int
+    let verification: ApplicationIntegratedTheoremVerificationReport
 }
 
 struct MerkleOpeningBenchmarkConfigReport: Codable {
@@ -1849,6 +1918,14 @@ func emitJSON(_ report: ApplicationPublicTheoremBenchmarkReport) throws {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+func emitJSON(_ report: ApplicationIntegratedTheoremBenchmarkReport) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(report)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 func emitJSON(_ report: MerkleOpeningBenchmarkReport) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -2271,6 +2348,8 @@ func emitText(_ report: CircleCodewordProverBenchmarkReport) {
     print("zkmetal-bench circle-codeword-prover")
     print("  engine       : \(report.configuration.codewordEngine)")
     print("  coeff input  : \(report.configuration.coefficientInput)")
+    print("  commit sched : \(report.configuration.codewordCommitmentSchedule)")
+    print("  fused commit : \(report.configuration.usesFusedTiledCodewordCommitment)")
     print("  domain log   : \(report.configuration.domainLogSize)")
     print("  codeword elems: \(report.configuration.codewordElementCount)")
     print("  final elems  : \(report.configuration.finalLayerElementCount)")
@@ -2480,6 +2559,53 @@ func emitText(_ report: ApplicationPublicTheoremBenchmarkReport) {
     if let scope = report.verification.m31SumcheckScope {
         print("  m31 scope    : \(scope)")
     }
+    if let accepted = report.verification.verifierAccepted {
+        print("  verifier     : \(accepted)")
+    }
+}
+
+func emitText(_ report: ApplicationIntegratedTheoremBenchmarkReport) {
+    print("zkmetal-bench application-integrated-theorem")
+    print("  artifact     : \(report.configuration.artifact)")
+    print("  air program  : \(report.configuration.airProgram)")
+    print("  claim scope  : \(report.configuration.claimScope)")
+    print("  quotient log : \(report.configuration.quotientIdentityDomainLogSize)")
+    print("  queries      : \(report.configuration.quotientIdentityQueryCount)")
+    print("  warmups      : \(report.configuration.warmupIterations)")
+    print("  iterations   : \(report.configuration.iterations)")
+    print("  verify (CPU) : \(report.configuration.verifyWithCPU)")
+    print("  archive      : \(report.pipelineArchive.mode)")
+
+    if let artifactBuild = report.artifactBuild {
+        printSeconds("build wall", artifactBuild.wallSeconds)
+        print("  builds/sec   : \(String(format: "%.2f", artifactBuild.elementsPerSecond))")
+    }
+    if let serialization = report.serialization {
+        printSeconds("ser wall  ", serialization.wallSeconds)
+        print("  serial/sec   : \(String(format: "%.2f", serialization.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", serialization.inputBytesPerSecond))")
+    }
+    if let deserialization = report.deserialization {
+        printSeconds("de wall   ", deserialization.wallSeconds)
+        print("  deser/sec    : \(String(format: "%.2f", deserialization.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", deserialization.inputBytesPerSecond))")
+    }
+    if let proofVerification = report.proofVerification {
+        printSeconds("verify wall", proofVerification.wallSeconds)
+        print("  verify/sec   : \(String(format: "%.2f", proofVerification.elementsPerSecond))")
+        print("  artifact B/s : \(String(format: "%.2f", proofVerification.inputBytesPerSecond))")
+    }
+
+    print("  artifact bytes: \(report.integratedArtifactSizeBytes)")
+    print("  public bytes : \(report.publicTheoremArtifactSizeBytes)")
+    print("  airsc bytes  : \(report.airSumcheckProofSizeBytes)")
+    print("  quotient bytes: \(report.quotientIdentityBundleSizeBytes)")
+    print("  artifact dig : \(report.verification.artifactDigestHex)")
+    print("  artifact dd  : \(report.verification.artifactDomainDigestHex)")
+    print("  public dig   : \(report.verification.publicTheoremArtifactDigestHex)")
+    print("  airsc dig    : \(report.verification.airSumcheckDigestHex)")
+    print("  quotient dig : \(report.verification.quotientIdentityBundleDigestHex)")
+    print("  query commit : \(report.verification.quotientIdentityQueryPlanCommitmentDigestHex)")
     if let accepted = report.verification.verifierAccepted {
         print("  verifier     : \(accepted)")
     }
@@ -2783,6 +2909,18 @@ func verificationFailureMessages(in report: ApplicationPublicTheoremBenchmarkRep
     return []
 }
 
+func verificationFailureMessages(in report: ApplicationIntegratedTheoremBenchmarkReport) -> [String] {
+    guard report.verification.enabled else {
+        return []
+    }
+    guard report.verification.verifierAccepted == true else {
+        return [
+            "application-integrated-theorem artifact-digest=\(report.verification.artifactDigestHex) artifact-domain-digest=\(report.verification.artifactDomainDigestHex) public-theorem=\(String(describing: report.verification.publicTheoremAccepted)) air-sumcheck=\(String(describing: report.verification.airConstraintSumcheckAccepted)) quotient-identity=\(String(describing: report.verification.quotientIdentityAccepted)) verifier=\(String(describing: report.verification.verifierAccepted))",
+        ]
+    }
+    return []
+}
+
 func makeBenchmarkConfigReport(
     config: BenchConfig,
     effectiveSIMDGroupsPerThreadgroup: Int?
@@ -2941,6 +3079,8 @@ func makeCircleCodewordProverConfigReport(
     CircleCodewordProverBenchmarkConfigReport(
         codewordEngine: "circle-fft-butterfly-v1",
         coefficientInput: "resident-circle-fft-basis-buffer",
+        codewordCommitmentSchedule: CirclePCSFRICodewordCommitmentScheduleV1.finalFFTStageLeafHashThenCommit.rawValue,
+        usesFusedTiledCodewordCommitment: true,
         domainLogSize: config.leafCount.trailingZeroBitCount,
         codewordElementCount: config.leafCount,
         finalLayerElementCount: finalLayerElementCount,
@@ -3012,6 +3152,19 @@ func makeApplicationPublicTheoremConfigReport(config: BenchConfig) -> Applicatio
         artifact: ApplicationPublicTheoremArtifactManifestV1.artifactName,
         airProgram: "fibonacci-m31-v1",
         claimScope: "public-air-gkr-sidecar-theorem",
+        warmupIterations: config.warmupIterations,
+        iterations: config.iterations,
+        verifyWithCPU: config.verifyWithCPU
+    )
+}
+
+func makeApplicationIntegratedTheoremConfigReport(config: BenchConfig) -> ApplicationIntegratedTheoremBenchmarkConfigReport {
+    ApplicationIntegratedTheoremBenchmarkConfigReport(
+        artifact: ApplicationPublicTheoremIntegratedArtifactManifestV1.artifactName,
+        airProgram: "fibonacci-m31-v1",
+        claimScope: "integrated-public-air-gkr-sidecar-theorem",
+        quotientIdentityDomainLogSize: 6,
+        quotientIdentityQueryCount: config.friQueryCount,
         warmupIterations: config.warmupIterations,
         iterations: config.iterations,
         verifyWithCPU: config.verifyWithCPU
@@ -4091,7 +4244,7 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
             ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
             : nil
         return CircleCodewordProverBenchmarkReport(
-            schemaVersion: 3,
+            schemaVersion: 4,
             generatedAt: iso8601Now(),
             target: "cpu",
             configuration: configReport,
@@ -4242,7 +4395,7 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
     let proofInputBytes = Double(measuredProof.proofByteCount)
 
     return CircleCodewordProverBenchmarkReport(
-        schemaVersion: 3,
+        schemaVersion: 4,
         generatedAt: iso8601Now(),
         target: "metal",
         configuration: configReport,
@@ -4314,7 +4467,7 @@ func runCircleCodewordProverBenchmark(_ config: BenchConfig) throws -> CircleCod
         ? try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs)
         : nil
     return CircleCodewordProverBenchmarkReport(
-        schemaVersion: 3,
+        schemaVersion: 4,
         generatedAt: iso8601Now(),
         target: "cpu",
         configuration: configReport,
@@ -4883,6 +5036,32 @@ func makeBenchmarkApplicationPublicTheoremArtifact() throws -> ApplicationPublic
     )
 }
 
+func makeBenchmarkApplicationIntegratedTheoremParameterSet() throws -> CirclePCSFRIParameterSetV1 {
+    try CirclePCSFRIParameterSetV1(
+        profileID: .conservative128,
+        logBlowupFactor: 2,
+        queryCount: 2,
+        grindingBits: 0,
+        targetSoundnessBits: 4
+    )
+}
+
+func makeBenchmarkApplicationIntegratedTheoremArtifact(
+    quotientIdentityQueryCount: Int
+) throws -> ApplicationPublicTheoremIntegratedArtifactV1 {
+    try ApplicationPublicTheoremIntegratedArtifactBuilderV1.prove(
+        applicationIdentifier: "apple-zk-prover.bench.integrated-public-theorem.fibonacci-m31-v1",
+        witness: makeBenchmarkFibonacciWitness(),
+        airDefinition: makeBenchmarkFibonacciAIRDefinition(),
+        gkrClaim: makeBenchmarkGKRClaim(),
+        pcsStatement: makeBenchmarkApplicationPCSStatement(),
+        domain: CircleDomainDescriptor.canonical(logSize: 6),
+        parameterSet: makeBenchmarkApplicationIntegratedTheoremParameterSet(),
+        quotientIdentityQueryCount: quotientIdentityQueryCount,
+        sumcheckRounds: 4
+    )
+}
+
 @inline(never)
 func runApplicationPublicTheoremBenchmark(
     _ config: BenchConfig
@@ -5002,6 +5181,164 @@ func runApplicationPublicTheoremBenchmark(
             artifactDigestHex: artifactDigest,
             proofDigestHex: proofDigest,
             statementDigestHex: statementDigest
+        )
+    )
+}
+
+@inline(never)
+func runApplicationIntegratedTheoremBenchmark(
+    _ config: BenchConfig
+) throws -> ApplicationIntegratedTheoremBenchmarkReport {
+    let configReport = makeApplicationIntegratedTheoremConfigReport(config: config)
+
+    if config.warmupIterations > 0 {
+        for _ in 0..<config.warmupIterations {
+            let artifact = try makeBenchmarkApplicationIntegratedTheoremArtifact(
+                quotientIdentityQueryCount: config.friQueryCount
+            )
+            let encoded = try ApplicationPublicTheoremIntegratedArtifactCodecV1.encode(artifact)
+            let decoded = try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(encoded)
+            _ = try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verify(decoded)
+        }
+    }
+
+    var buildWallSeconds: [Double] = []
+    var artifact: ApplicationPublicTheoremIntegratedArtifactV1?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try makeBenchmarkApplicationIntegratedTheoremArtifact(
+                quotientIdentityQueryCount: config.friQueryCount
+            )
+        }
+        artifact = measured.value
+        buildWallSeconds.append(measured.seconds)
+    }
+    guard let artifact else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var serializationWallSeconds: [Double] = []
+    var encodedArtifact: Data?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try ApplicationPublicTheoremIntegratedArtifactCodecV1.encode(artifact)
+        }
+        encodedArtifact = measured.value
+        serializationWallSeconds.append(measured.seconds)
+    }
+    guard let encodedArtifact else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var deserializationWallSeconds: [Double] = []
+    var decodedArtifact: ApplicationPublicTheoremIntegratedArtifactV1?
+    for _ in 0..<config.iterations {
+        let measured = try measureWallSeconds {
+            try ApplicationPublicTheoremIntegratedArtifactCodecV1.decode(encodedArtifact)
+        }
+        decodedArtifact = measured.value
+        deserializationWallSeconds.append(measured.seconds)
+    }
+    guard decodedArtifact != nil else {
+        throw BenchError.invalidArgument("--iterations must be greater than zero.")
+    }
+
+    var verificationWallSeconds: [Double] = []
+    var verifierAccepted: Bool?
+    var integratedReport: ApplicationPublicTheoremIntegratedVerificationReportV1?
+    if config.verifyWithCPU {
+        for _ in 0..<config.iterations {
+            let measured = try measureWallSeconds {
+                try ApplicationPublicTheoremIntegratedArtifactVerifierV1.verificationReport(
+                    encodedArtifact: encodedArtifact
+                )
+            }
+            integratedReport = measured.value
+            verifierAccepted = measured.value.verifiesIntegratedPublicTheorem
+            verificationWallSeconds.append(measured.seconds)
+        }
+    }
+
+    let publicTheoremBytes = try ApplicationPublicTheoremArtifactCodecV1.encode(
+        artifact.publicTheoremArtifact
+    )
+    let airSumcheckBytes = try AIRConstraintMultilinearSumcheckProofCodecV1.encode(
+        artifact.airConstraintSumcheckProof
+    )
+    let quotientIdentityBytes = try AIRSharedDomainQuotientIdentityPCSProofBundleCodecV1.encode(
+        artifact.quotientIdentityPCSProofBundle
+    )
+    let artifactDigest = SHA3Oracle.sha3_256(encodedArtifact).hexString
+    let artifactDomainDigest = try ApplicationPublicTheoremIntegratedArtifactDigestV1
+        .digest(artifact)
+        .hexString
+    let publicTheoremDigest = SHA3Oracle.sha3_256(publicTheoremBytes).hexString
+    let airSumcheckDigest = SHA3Oracle.sha3_256(airSumcheckBytes).hexString
+    let airSumcheckDomainDigest = try AIRConstraintMultilinearSumcheckProofDigestV1
+        .digest(artifact.airConstraintSumcheckProof)
+        .hexString
+    let quotientIdentityDigest = SHA3Oracle.sha3_256(quotientIdentityBytes).hexString
+    let quotientIdentityDomainDigest = try AIRSharedDomainQuotientIdentityPCSProofBundleDigestV1
+        .digest(artifact.quotientIdentityPCSProofBundle)
+        .hexString
+    let emptyGPUSamples = Array<Double?>(repeating: nil, count: config.iterations)
+    let verificationMeasurement = config.verifyWithCPU
+        ? makeFieldMeasurement(
+            wallSeconds: verificationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        )
+        : nil
+
+    return ApplicationIntegratedTheoremBenchmarkReport(
+        schemaVersion: 1,
+        generatedAt: iso8601Now(),
+        target: "cpu",
+        configuration: configReport,
+        device: nil,
+        pipelineArchive: PipelineArchiveReport(enabled: false, mode: "unavailable", path: nil),
+        artifactBuild: makeFieldMeasurement(
+            wallSeconds: buildWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        serialization: makeFieldMeasurement(
+            wallSeconds: serializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        deserialization: makeFieldMeasurement(
+            wallSeconds: deserializationWallSeconds,
+            gpuSeconds: emptyGPUSamples,
+            elements: 1,
+            inputBytes: Double(encodedArtifact.count)
+        ),
+        proofVerification: verificationMeasurement,
+        integratedArtifactSizeBytes: encodedArtifact.count,
+        publicTheoremArtifactSizeBytes: publicTheoremBytes.count,
+        airSumcheckProofSizeBytes: airSumcheckBytes.count,
+        quotientIdentityBundleSizeBytes: quotientIdentityBytes.count,
+        verification: ApplicationIntegratedTheoremVerificationReport(
+            enabled: config.verifyWithCPU,
+            verifierAccepted: verifierAccepted,
+            publicTheoremAccepted: integratedReport?.publicTheoremReport.publicSidecarTheoremVerified,
+            airConstraintSumcheckAccepted: integratedReport?.airConstraintSumcheckReport.provesPublicAIRSemantics,
+            quotientIdentityAccepted: integratedReport?.quotientIdentityReport.provesAIRQuotientIdentity,
+            artifactDigestHex: artifactDigest,
+            artifactDomainDigestHex: artifactDomainDigest,
+            publicTheoremArtifactDigestHex: publicTheoremDigest,
+            airSumcheckDigestHex: airSumcheckDigest,
+            airSumcheckDomainDigestHex: airSumcheckDomainDigest,
+            quotientIdentityBundleDigestHex: quotientIdentityDigest,
+            quotientIdentityBundleDomainDigestHex: quotientIdentityDomainDigest,
+            quotientIdentityQueryPlanCommitmentDigestHex: artifact
+                .quotientIdentityPCSProofBundle
+                .queryPlan
+                .commitmentDigest
+                .hexString
         )
     )
 }
@@ -5745,6 +6082,20 @@ func runCLI() -> Int32 {
             }
         } else if config.applicationPublicTheorem {
             let report = try runApplicationPublicTheoremBenchmark(config)
+            if config.format == .json {
+                try emitJSON(report)
+            } else {
+                emitText(report)
+            }
+            let failures = verificationFailureMessages(in: report)
+            if !failures.isEmpty {
+                for message in failures {
+                    fputs("verification failure: \(message)\n", stderr)
+                }
+                return verificationFailureExitCode
+            }
+        } else if config.applicationIntegratedTheorem {
+            let report = try runApplicationIntegratedTheoremBenchmark(config)
             if config.format == .json {
                 try emitJSON(report)
             } else {

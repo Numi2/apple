@@ -131,8 +131,10 @@ The checked-in corpus includes this rejection vector.
 boundary. It records that the artifact includes only the Circle PCS/FRI slice,
 does not include witness/AIR, sumcheck, or GKR output inside the PCS proof
 itself, supports the narrow resident monomial coefficient witness-column to
-Circle FFT-basis producer, does not use fused/tiled codeword-to-commitment scheduling, and
-supports verifier-checked nonzero grinding.
+Circle FFT-basis producer, supports resident private M31 witness-column to
+row-major AIR trace synthesis outside the PCS proof bytes, uses
+final-FFT-stage first-layer leaf hashing for the resident codeword-to-commitment
+path, and supports verifier-checked nonzero grinding.
 
 ## Fiat-Shamir Binding
 
@@ -229,6 +231,6 @@ The following remain outside the V1 soundness claim:
 - a reviewed production profile that assigns nonzero grinding credit,
 - GPU-resident canonicality checks for resident coefficient/proof inputs outside
   the narrow monomial witness-to-FFT-basis producer,
-- fused/tiled codeword-to-commitment performance claims,
+- deeper tile-local codeword-to-Merkle-treelet performance claims,
 - side-channel resistance on shared hardware,
 - external cryptography audit.

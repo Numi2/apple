@@ -185,11 +185,10 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertFalse(manifest.includesGKR)
         XCTAssertTrue(manifest.supportsNonzeroGrinding)
         XCTAssertTrue(manifest.residentWitnessToCircleFFTBasis)
-        XCTAssertEqual(manifest.codewordCommitmentSchedule, .materializedCodewordThenCommit)
+        XCTAssertTrue(manifest.residentPrivateAIRTraceSynthesis)
+        XCTAssertEqual(manifest.codewordCommitmentSchedule, .finalFFTStageLeafHashThenCommit)
         XCTAssertEqual(manifest.openBoundaries, [
-            .airTraceSynthesis,
             .sumcheckGKRArtifactIntegration,
-            .fusedTiledCodewordCommitmentScheduling,
         ])
         XCTAssertFalse(manifest.openBoundaries.contains(.nonzeroGrinding))
     }
@@ -263,6 +262,71 @@ final class CircleDomainTests: XCTestCase {
         XCTAssertTrue(tamperedReport.foldRelationVerified)
         XCTAssertFalse(tamperedReport.verifies(.revealedEvaluationVectorFoldingTrace))
         XCTAssertNil(tamperedReport.acceptedClaimScope)
+    }
+
+    func testM31MultilinearSumcheckVerifiesEvaluationTableProtocol() throws {
+        let evaluations: [UInt32] = [3, 5, 7, 11, 13, 17, 19, 23]
+        let proof = try M31MultilinearSumcheckProofBuilderV1.prove(
+            evaluations: evaluations
+        )
+        let expectedSum = evaluations.reduce(UInt32(0)) { M31Field.add($0, $1) }
+
+        XCTAssertEqual(proof.statement.laneCount, evaluations.count)
+        XCTAssertEqual(proof.statement.rounds, 3)
+        XCTAssertEqual(proof.statement.claimedHypercubeSum, expectedSum)
+        XCTAssertEqual(proof.initialEvaluations, evaluations)
+        XCTAssertEqual(proof.roundPolynomials.count, 3)
+        XCTAssertEqual(proof.challenges.count, 3)
+
+        let report = try M31MultilinearSumcheckVerifierV1.verificationReport(
+            proof: proof,
+            statement: proof.statement
+        )
+        XCTAssertTrue(report.proofStatementMatchesExpectedStatement)
+        XCTAssertTrue(report.initialEvaluationDigestMatchesRevealedVector)
+        XCTAssertTrue(report.transcriptChallengesVerified)
+        XCTAssertTrue(report.roundSumRelationsVerified)
+        XCTAssertTrue(report.finalEvaluationVerified)
+        XCTAssertTrue(report.fullMultilinearSumcheckVerified)
+        XCTAssertEqual(report.acceptedClaimScope, .fullMultilinearSumcheck)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(report.revealsInitialEvaluationVector)
+        XCTAssertTrue(try M31MultilinearSumcheckVerifierV1.verify(
+            proof: proof,
+            statement: proof.statement
+        ))
+
+        let encodedProof = try M31MultilinearSumcheckProofCodecV1.encode(proof)
+        XCTAssertEqual(try M31MultilinearSumcheckProofCodecV1.decode(encodedProof), proof)
+        XCTAssertEqual(try M31MultilinearSumcheckProofDigestV1.digest(proof).count, 32)
+        var trailingProof = encodedProof
+        trailingProof.append(0)
+        XCTAssertThrowsError(try M31MultilinearSumcheckProofCodecV1.decode(trailingProof))
+
+        var tamperedRounds = proof.roundPolynomials
+        tamperedRounds[0] = try M31MultilinearSumcheckRoundV1(
+            evaluationAtZero: M31Field.add(tamperedRounds[0].evaluationAtZero, 1),
+            evaluationAtOne: tamperedRounds[0].evaluationAtOne
+        )
+        let tamperedProof = try M31MultilinearSumcheckProofV1(
+            statement: proof.statement,
+            initialEvaluations: proof.initialEvaluations,
+            roundPolynomials: tamperedRounds,
+            challenges: proof.challenges,
+            finalEvaluation: proof.finalEvaluation
+        )
+        let tamperedReport = try M31MultilinearSumcheckVerifierV1.verificationReport(
+            proof: tamperedProof,
+            statement: proof.statement
+        )
+        XCTAssertFalse(tamperedReport.roundSumRelationsVerified)
+        XCTAssertFalse(tamperedReport.fullMultilinearSumcheckVerified)
+        XCTAssertNil(tamperedReport.acceptedClaimScope)
+
+        XCTAssertThrowsError(try M31MultilinearSumcheckProofBuilderV1.prove(
+            evaluations: evaluations,
+            claimedHypercubeSum: M31Field.add(expectedSum, 1)
+        ))
     }
 
     func testApplicationProofV1BindsPCSAndSumcheckWithOpaqueAIRGKRDigests() throws {
@@ -1802,9 +1866,69 @@ final class CircleDomainTests: XCTestCase {
             try Self.readQM31Buffer(residentCoefficientOutput, count: domain.size),
             expectedCodeword
         )
+        let expectedFirstCommitment = try MerkleOracle.rootSHA3_256(
+            rawLeaves: QM31CanonicalEncoding.pack(expectedCodeword),
+            leafCount: domain.size,
+            leafStride: QM31CanonicalEncoding.elementByteCount,
+            leafLength: QM31CanonicalEncoding.elementByteCount
+        )
         let expectedCircleCoefficients = try CircleCodewordOracle.circleFFTCoefficients(
             polynomial: polynomial,
             domain: domain
+        )
+        let circleCoefficientBytes = QM31CanonicalEncoding.pack(expectedCircleCoefficients)
+        let fusedCircleCoefficientBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            bytes: circleCoefficientBytes,
+            declaredLength: circleCoefficientBytes.count,
+            label: "CircleDomainTests.CircleCodewordFusedCircleCoefficients"
+        )
+        let fusedCodewordBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * CircleCodewordPlan.elementByteCount,
+            label: "CircleDomainTests.CircleCodewordFusedCodeword"
+        )
+        let fusedLeafHashBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: domain.size * SHA3PrehashedLeavesMerkleCommitPlan.leafHashByteCount,
+            label: "CircleDomainTests.CircleCodewordFusedLeafHashes"
+        )
+        let fusedRootBuffer = try MetalBufferFactory.makeSharedBuffer(
+            device: device,
+            length: SHA3PrehashedLeavesMerkleCommitPlan.leafHashByteCount,
+            label: "CircleDomainTests.CircleCodewordFusedRoot"
+        )
+        let prehashedPlan = try SHA3PrehashedLeavesMerkleCommitPlan(
+            context: context,
+            leafCount: domain.size
+        )
+        guard let fusedCommandBuffer = context.commandQueue.makeCommandBuffer() else {
+            throw AppleZKProverError.failedToCreateCommandBuffer
+        }
+        try codewordPlan.encodeResidentWithFinalStageLeafHashes(
+            circleCoefficientBuffer: fusedCircleCoefficientBuffer,
+            outputBuffer: fusedCodewordBuffer,
+            leafHashBuffer: fusedLeafHashBuffer,
+            on: fusedCommandBuffer
+        )
+        try prehashedPlan.encodeCommitmentRoot(
+            leafHashBuffer: fusedLeafHashBuffer,
+            rootBuffer: fusedRootBuffer,
+            rootOffset: 0,
+            on: fusedCommandBuffer
+        )
+        fusedCommandBuffer.commit()
+        fusedCommandBuffer.waitUntilCompleted()
+        if let error = fusedCommandBuffer.error {
+            throw AppleZKProverError.commandExecutionFailed(error.localizedDescription)
+        }
+        XCTAssertEqual(
+            try Self.readQM31Buffer(fusedCodewordBuffer, count: domain.size),
+            expectedCodeword
+        )
+        XCTAssertEqual(
+            Data(bytes: fusedRootBuffer.contents(), count: SHA3PrehashedLeavesMerkleCommitPlan.leafHashByteCount),
+            expectedFirstCommitment
         )
         let privateXWitnessBuffer = try Self.makePrivateBuffer(
             context: context,
@@ -1912,8 +2036,8 @@ final class CircleDomainTests: XCTestCase {
         )
         XCTAssertTrue(codewordProver.commandPlan.forbidsFullCodewordReadback)
         XCTAssertTrue(codewordProver.commandPlan.forbidsIntermediateFRILayerReadback)
-        XCTAssertEqual(codewordProver.commandPlan.codewordCommitmentSchedule, .materializedCodewordThenCommit)
-        XCTAssertFalse(codewordProver.commandPlan.usesFusedTiledCodewordCommitment)
+        XCTAssertEqual(codewordProver.commandPlan.codewordCommitmentSchedule, .finalFFTStageLeafHashThenCommit)
+        XCTAssertTrue(codewordProver.commandPlan.usesFusedTiledCodewordCommitment)
         XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentCircleFFTBasisBuffer))
         XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentWitnessMonomialCoefficientColumns))
         let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
@@ -1942,7 +2066,6 @@ final class CircleDomainTests: XCTestCase {
             try CirclePCSFRIProofCodecV1.decode(residentWitnessProof.encodedProof),
             expectedProof
         )
-        let circleCoefficientBytes = QM31CanonicalEncoding.pack(expectedCircleCoefficients)
         let circleCoefficientBuffer = try Self.makePrivateBuffer(
             context: context,
             bytes: circleCoefficientBytes,

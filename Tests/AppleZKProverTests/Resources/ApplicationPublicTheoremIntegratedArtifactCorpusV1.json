@@ -1,0 +1,38 @@
+{
+  "artifact" : "ApplicationPublicTheoremIntegratedArtifactV1",
+  "schemaVersion" : 1,
+  "sourceCorpus" : "ApplicationPublicTheoremArtifactCorpusV1",
+  "statement" : {
+    "expected" : {
+      "airSumcheckByteCount" : 300,
+      "airSumcheckDigestHex" : "f1d72d15ce01d6379b3841bb07d0fa9f0d1c90cc01cea9c8833b80db5502f519",
+      "airSumcheckDomainDigestHex" : "0e12b13dfeabdf969b893166a99078bdbaf9195c8df83f65898edd069fbcb6dc",
+      "artifactByteCount" : 19919,
+      "artifactDigestHex" : "cb6d95d0b60cb3e7297d122895f77cb0b36ec71c8bfd6298b72f93155c4d3c2e",
+      "artifactDomainDigestHex" : "892c1cc0eceb0e2d3094cb825dcbfbc84469b963a72e0a37433774d51870e140",
+      "quotientIdentityBundleByteCount" : 16510,
+      "quotientIdentityBundleDigestHex" : "00c03b00f97b2afc2815afb17fdce2c989ecc637e1e25df91b2cfd7d22253484",
+      "quotientIdentityBundleDomainDigestHex" : "faeb76d99433a071bc460c9ce03d77b895ce703af604cba38063864c40969cff",
+      "quotientIdentityQueryPlanCommitmentDigestHex" : "80829ddd3279a25a9f3329ee34ac975f47a2122abcde01dfbde79b0138c6358e"
+    },
+    "quotientIdentityDomainLogSize" : 6,
+    "quotientIdentityQueryCount" : 2
+  },
+  "tamperVectors" : [
+    {
+      "description" : "The AIR multilinear sum-check proof carries an evaluation digest that no longer matches the public AIR reduction vector.",
+      "expectedVerifierAccepted" : false,
+      "id" : "air-sumcheck-evaluation-digest-mismatch"
+    },
+    {
+      "description" : "The shared-domain quotient identity query plan no longer matches the committed trace and quotient PCS roots.",
+      "expectedVerifierAccepted" : false,
+      "id" : "quotient-identity-query-plan-commitment-mismatch"
+    },
+    {
+      "description" : "The canonical integrated artifact bytes are extended with trailing data and must be rejected by the strict decoder.",
+      "expectedVerifierAccepted" : false,
+      "id" : "trailing-byte-decode-rejection"
+    }
+  ]
+}

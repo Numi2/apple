@@ -1663,6 +1663,9 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputStride: roundCommitmentByteCount,
             materializedLayerBuffer: nil,
             materializedLayerOffset: 0,
+            precomputedFirstCommitmentBuffer: nil,
+            precomputedFirstCommitmentOffset: 0,
+            allowFirstMaterializedLayerAlias: false,
             readOutput: true
         )
     }
@@ -1775,6 +1778,48 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputStride: commitmentOutputStride,
             materializedLayerBuffer: materializedLayerBuffer,
             materializedLayerOffset: materializedLayerOffset,
+            precomputedFirstCommitmentBuffer: nil,
+            precomputedFirstCommitmentOffset: 0,
+            allowFirstMaterializedLayerAlias: false,
+            readOutput: false
+        )
+        return result.stats
+    }
+
+    public func executeMerkleTranscriptDerivedResidentWithPrecomputedFirstCommitment(
+        evaluationsBuffer: MTLBuffer,
+        evaluationsOffset: Int = 0,
+        inverseDomainBuffer: MTLBuffer,
+        inverseDomainOffset: Int = 0,
+        commitmentOutputBuffer: MTLBuffer,
+        commitmentOutputOffset: Int = 0,
+        commitmentOutputStride: Int = QM31FRIFoldTranscriptOracle.commitmentByteCount,
+        materializedLayerBuffer: MTLBuffer,
+        materializedLayerOffset: Int = 0,
+        precomputedFirstCommitmentBuffer: MTLBuffer,
+        precomputedFirstCommitmentOffset: Int,
+        outputBuffer: MTLBuffer,
+        outputOffset: Int = 0
+    ) throws -> GPUExecutionStats {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        _ = try ensureMerkleCommitPlans()
+        let result = try executeMerkleTranscriptDerivedLocked(
+            evaluationsBuffer: evaluationsBuffer,
+            evaluationsOffset: evaluationsOffset,
+            inverseDomainBuffer: inverseDomainBuffer,
+            inverseDomainOffset: inverseDomainOffset,
+            outputBuffer: outputBuffer,
+            outputOffset: outputOffset,
+            commitmentOutputBuffer: commitmentOutputBuffer,
+            commitmentOutputOffset: commitmentOutputOffset,
+            commitmentOutputStride: commitmentOutputStride,
+            materializedLayerBuffer: materializedLayerBuffer,
+            materializedLayerOffset: materializedLayerOffset,
+            precomputedFirstCommitmentBuffer: precomputedFirstCommitmentBuffer,
+            precomputedFirstCommitmentOffset: precomputedFirstCommitmentOffset,
+            allowFirstMaterializedLayerAlias: true,
             readOutput: false
         )
         return result.stats
@@ -1802,6 +1847,9 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputStride: roundCommitmentByteCount,
             materializedLayerBuffer: nil,
             materializedLayerOffset: 0,
+            precomputedFirstCommitmentBuffer: nil,
+            precomputedFirstCommitmentOffset: 0,
+            allowFirstMaterializedLayerAlias: false,
             readOutput: true
         )
     }
@@ -2164,6 +2212,9 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         commitmentOutputStride: Int,
         materializedLayerBuffer: MTLBuffer?,
         materializedLayerOffset: Int,
+        precomputedFirstCommitmentBuffer: MTLBuffer?,
+        precomputedFirstCommitmentOffset: Int,
+        allowFirstMaterializedLayerAlias: Bool,
         readOutput: Bool
     ) throws -> QM31FRIMerkleFoldChainResult {
         let merklePlans = try ensureMerkleCommitPlans()
@@ -2201,6 +2252,14 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
             commitmentOutputSpan = 0
         }
 
+        if let precomputedFirstCommitmentBuffer {
+            try validateBufferRange(
+                buffer: precomputedFirstCommitmentBuffer,
+                offset: precomputedFirstCommitmentOffset,
+                byteCount: roundCommitmentByteCount
+            )
+        }
+
         let materializedLayerSpan: Int
         if let materializedLayerBuffer {
             materializedLayerSpan = try validateMaterializedLayerBuffer(
@@ -2219,7 +2278,8 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
                 outputOffset: outputOffset,
                 commitmentOutputBuffer: commitmentOutputBuffer,
                 commitmentOutputOffset: commitmentOutputOffset,
-                commitmentOutputSpan: commitmentOutputSpan
+                commitmentOutputSpan: commitmentOutputSpan,
+                allowFirstMaterializedLayerAlias: allowFirstMaterializedLayerAlias
             )
         } else {
             materializedLayerSpan = 0
@@ -2283,30 +2343,51 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         var currentInputOffset = firstInputOffset
         for roundIndex in 0..<roundCount {
             if let materializedLayerBuffer {
-                guard let materializeBlit = commandBuffer.makeBlitCommandEncoder() else {
-                    throw AppleZKProverError.failedToCreateEncoder
+                let destinationOffset = materializedLayerOffset
+                    + roundInputElementOffsets[roundIndex] * Self.elementByteCount
+                let byteCount = roundInputCounts[roundIndex] * Self.elementByteCount
+                let alreadyMaterialized = materializedLayerBuffer === currentInputBuffer
+                    && destinationOffset == currentInputOffset
+                if !alreadyMaterialized {
+                    guard let materializeBlit = commandBuffer.makeBlitCommandEncoder() else {
+                        throw AppleZKProverError.failedToCreateEncoder
+                    }
+                    materializeBlit.label = "QM31.FRI.FoldChain.MerkleTranscript.Materialize.\(roundIndex)"
+                    materializeBlit.copy(
+                        from: currentInputBuffer,
+                        sourceOffset: currentInputOffset,
+                        to: materializedLayerBuffer,
+                        destinationOffset: destinationOffset,
+                        size: byteCount
+                    )
+                    materializeBlit.endEncoding()
                 }
-                materializeBlit.label = "QM31.FRI.FoldChain.MerkleTranscript.Materialize.\(roundIndex)"
-                materializeBlit.copy(
-                    from: currentInputBuffer,
-                    sourceOffset: currentInputOffset,
-                    to: materializedLayerBuffer,
-                    destinationOffset: materializedLayerOffset
-                        + roundInputElementOffsets[roundIndex] * Self.elementByteCount,
-                    size: roundInputCounts[roundIndex] * Self.elementByteCount
-                )
-                materializeBlit.endEncoding()
                 _ = materializedLayerSpan
             }
 
             let rootOffset = commitmentRootLog.offset + roundIndex * roundCommitmentByteCount
-            try merklePlans[roundIndex].encodeCommitmentRoot(
-                uploadBuffer: currentInputBuffer,
-                uploadOffset: currentInputOffset,
-                rootBuffer: commitmentRootLog.buffer,
-                rootOffset: rootOffset,
-                on: commandBuffer
-            )
+            if roundIndex == 0, let precomputedFirstCommitmentBuffer {
+                guard let rootBlit = commandBuffer.makeBlitCommandEncoder() else {
+                    throw AppleZKProverError.failedToCreateEncoder
+                }
+                rootBlit.label = "QM31.FRI.FoldChain.MerkleTranscript.PrecomputedRoot"
+                rootBlit.copy(
+                    from: precomputedFirstCommitmentBuffer,
+                    sourceOffset: precomputedFirstCommitmentOffset,
+                    to: commitmentRootLog.buffer,
+                    destinationOffset: rootOffset,
+                    size: roundCommitmentByteCount
+                )
+                rootBlit.endEncoding()
+            } else {
+                try merklePlans[roundIndex].encodeCommitmentRoot(
+                    uploadBuffer: currentInputBuffer,
+                    uploadOffset: currentInputOffset,
+                    rootBuffer: commitmentRootLog.buffer,
+                    rootOffset: rootOffset,
+                    on: commandBuffer
+                )
+            }
 
             try encodeTranscriptFrame(transcriptRoundFrames[roundIndex], on: commandBuffer)
             try encodeTranscriptCommitment(
@@ -2778,16 +2859,21 @@ public final class QM31FRIFoldChainPlan: @unchecked Sendable {
         outputOffset: Int,
         commitmentOutputBuffer: MTLBuffer?,
         commitmentOutputOffset: Int,
-        commitmentOutputSpan: Int
+        commitmentOutputSpan: Int,
+        allowFirstMaterializedLayerAlias: Bool
     ) throws {
-        guard !rangesOverlap(
+        let firstMaterializedLayerAliasAllowed = allowFirstMaterializedLayerAlias &&
+            materializedLayerBuffer === evaluationsBuffer &&
+            materializedLayerOffset == evaluationsOffset
+
+        guard (firstMaterializedLayerAliasAllowed || !rangesOverlap(
             lhsBuffer: materializedLayerBuffer,
             lhsOffset: materializedLayerOffset,
             lhsByteCount: materializedLayerSpan,
             rhsBuffer: evaluationsBuffer,
             rhsOffset: evaluationsOffset,
             rhsByteCount: inputByteCount
-        ),
+        )),
         !rangesOverlap(
             lhsBuffer: materializedLayerBuffer,
             lhsOffset: materializedLayerOffset,

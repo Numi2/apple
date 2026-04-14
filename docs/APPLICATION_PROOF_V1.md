@@ -96,6 +96,20 @@ threads that M31 report through as `m31SumcheckReport` and
 `m31SumcheckClaimScope`, so application callers can reject attempts to treat the
 current chunk transcript as a full AIR sum-check.
 
+`M31MultilinearSumcheckProofV1` is the separate public full multilinear
+sum-check path. It works over a revealed evaluation table, sends each
+univariate round as `(g_i(0), g_i(1))`, derives transcript challenges, folds with
+`(1-r) * f(0) + r * f(1)`, and checks the final multilinear evaluation. Its
+accepted scope is `fullMultilinearSumcheck`, but it is still not
+zero-knowledge because it carries the initial evaluation table.
+
+`AIRConstraintMultilinearSumcheckProofV1` binds that full multilinear proof to
+`AIRToSumcheckReductionV1.paddedEvaluationVector`, requires a zero hypercube-sum
+claim, and reports whether the public AIR semantics also hold for the supplied
+trace. This closes the public AIR-reduction sum-check surface without changing
+the older `ApplicationProofV1` byte format or claiming a succinct private AIR
+proof.
+
 ## PCS Component
 
 The PCS component is the existing `CirclePCSFRIContractVerifierV1` surface. It
@@ -153,6 +167,12 @@ supplies public sidecar material:
   ordered `ApplicationWitnessTraceV1` values for arbitrary AIR column orderings.
 - `WitnessToAIRTraceProducerV1` converts those columns into
   `AIRExecutionTraceV1`.
+- `AIRTraceResidentSynthesisPlanV1` is the resident-private mirror for that
+  layout conversion: it accepts private column-major M31 witness columns,
+  canonicality-checks them on GPU, and writes row-major AIR trace values into a
+  caller-owned resident buffer. The verified test path reads back that trace and
+  checks it is the same `AIRExecutionTraceV1` consumed by the CPU AIR semantic
+  verifier.
 - `AIRDefinitionV1` contains transition and boundary polynomial constraints
   over current and next trace rows.
 - `AIRSemanticVerifierV1` evaluates every AIR constraint over the trace.
@@ -169,8 +189,8 @@ supplies public sidecar material:
 - `AIRTraceToCircleFFTBasisWitnessV1` derives the matching Circle FFT-basis
   coefficient chunks for those arbitrary public AIR trace layouts and validates
   them against the independent Circle codeword oracle. This is the public
-  codeword-compatible representation for trace chunks; it is not resident-private
-  AIR synthesis and it does not verify AIR constraints.
+  codeword-compatible representation for trace chunks; it does not verify AIR
+  constraints.
 - `AIRTraceCirclePCSProofBundleBuilderV1` builds one ordinary
   `CirclePCSFRIStatementV1` / `CirclePCSFRIProofV1` pair per AIR trace chunk,
   and `AIRTraceCirclePCSProofBundleVerifierV1` verifies those PCS proofs and can
@@ -193,6 +213,14 @@ supplies public sidecar material:
   bit-reversed row storage indices. Its report intentionally leaves
   `quotientIdentityChecked`, `coordinateDomainsAlignedForAIRQuotientIdentity`,
   and `isZeroKnowledge` false; it is not a quotient-identity protocol.
+- `AIRSharedDomainQuotientIdentityPCSProofBundleV1` provides the public
+  quotient-identity path. It commits current row-domain trace polynomials,
+  shifted-next row-domain trace polynomials, and quotient polynomials as Circle
+  PCS chunks, derives non-root challenge storage indices from their commitment
+  roots, verifies all three PCS bundles at the same x-coordinates, and checks
+  the opened AIR identity `N(z) = Z(z) * Q(z)`. The report sets
+  `coordinateDomainsAlignedForAIRQuotientIdentity` and `quotientIdentityChecked`
+  only for that shared row-domain construction.
 - `AIRTraceCirclePCSProofBundleCodecV1` gives that ordered sidecar bundle a
   strict binary encoding; decoders reject trailing bytes and malformed witness
   layout metadata. `AIRTraceCirclePCSProofBundleDigestV1` hashes the
@@ -225,6 +253,27 @@ layouts.
 `ApplicationPublicTheoremArtifactManifestV1.current` records the exact stronger
 public scope: the artifact is self-contained for public theorem verification,
 but it is not zero-knowledge and it is not a succinct AIR/GKR proof.
+
+`ApplicationPublicTheoremIntegratedArtifactV1` is the current public theorem
+integration surface. It wraps `ApplicationPublicTheoremArtifactV1`,
+`AIRConstraintMultilinearSumcheckProofV1`, and
+`AIRSharedDomainQuotientIdentityPCSProofBundleV1` in one verifier-facing object.
+Its report requires the public theorem artifact to verify, the AIR constraint
+sumcheck to match the public theorem trace, the shared-domain quotient identity
+bundle to match the quotient proof derived from that same public trace, and the
+GKR claim semantics to hold through the public theorem report. This is still a
+public sidecar artifact, not a succinct or zero-knowledge proof.
+`ApplicationPublicTheoremIntegratedArtifactCodecV1` is the strict binary format
+for this surface; its decoder rejects trailing bytes, malformed nested
+sum-checks, malformed row-domain trace bundles, and malformed quotient-identity
+bundles before the verifier report is accepted.
+`ApplicationPublicTheoremIntegratedArtifactCorpusV1.json` pins canonical
+integrated artifact bytes, raw and domain-separated digests for the artifact,
+AIR sum-check, and shared-domain quotient-identity bundle, plus tamper vectors
+for AIR-reduction digest mismatch, quotient-identity query-plan commitment
+mismatch, and trailing-byte rejection.
+`zkmetal-bench --application-integrated-theorem` exercises the same strict
+codec and verifier path for benchmark and smoke-report use.
 
 `ApplicationPublicTheoremTracePCSArtifactV1` is an additive stricter artifact
 for public trace-commitment fixtures. It wraps an
