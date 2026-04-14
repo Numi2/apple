@@ -186,6 +186,11 @@ Implemented today:
   the statement, application proof, public witness trace, AIR definition, and
   GKR claim in one verifier-facing blob; `ApplicationPublicTheoremBuilderV1`
   rejects false AIR or GKR inputs before producing that public theorem artifact.
+  `ApplicationPublicTheoremTracePCSArtifactV1` is the stricter public artifact
+  form for trace-commitment fixtures: it carries the public theorem artifact plus
+  the AIR trace PCS proof bundle, verifies that the bundle was regenerated from
+  the public AIR trace, and requires the application PCS proof to be one of the
+  trace bundle proofs.
   `ApplicationPublicTheoremArtifactCorpusV1.json` pins the public theorem
   artifact digest plus digest-bound AIR/GKR rejection vectors.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation

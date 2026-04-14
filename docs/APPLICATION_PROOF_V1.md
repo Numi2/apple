@@ -169,6 +169,18 @@ layouts.
 public scope: the artifact is self-contained for public theorem verification,
 but it is not zero-knowledge and it is not a succinct AIR/GKR proof.
 
+`ApplicationPublicTheoremTracePCSArtifactV1` is an additive stricter artifact
+for public trace-commitment fixtures. It wraps an
+`ApplicationPublicTheoremArtifactV1` together with an
+`AIRTraceCirclePCSProofBundleV1`. Its verifier checks the public theorem,
+verifies every trace PCS proof in the bundle, rederives the bundle witness from
+the public AIR trace, and requires the application proof's PCS proof/statement
+pair to appear inside the trace bundle. This still does not move AIR semantics
+into `CirclePCSFRIProofV1`; it binds the two public verification surfaces inside
+one strict artifact. `ApplicationPublicTheoremTracePCSArtifactCodecV1` and
+`ApplicationPublicTheoremTracePCSArtifactDigestV1` provide strict bytes and a
+domain-separated digest for that combined artifact.
+
 ## Reproducible Corpus
 
 `Tests/AppleZKProverTests/Resources/ApplicationProofCorpusV1.json` pins a

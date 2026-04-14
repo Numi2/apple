@@ -29,12 +29,18 @@ Work completed:
   `AIRTraceCirclePCSProofBundleDigestV1`, and encoded verifier overloads so the
   ordered public trace PCS bundle has strict bytes, trailing-byte rejection, and
   a domain-separated digest.
+- Added `ApplicationPublicTheoremTracePCSArtifactV1` with builder, verifier,
+  strict codec, and domain-separated digest. This combined public artifact
+  verifies the public AIR/GKR theorem, verifies the trace PCS bundle against the
+  regenerated public AIR trace, and requires the application proof's PCS
+  statement/proof pair to appear inside that trace bundle.
 - Added regression coverage for named-column reordering, malformed layouts,
   multi-chunk five-column trace packing, interpolation correctness at every
   source row, claimed row opening values, proof-bundle verification, strict
   bundle codec round trips, digest stability, encoded-bundle verification,
-  altered trace rejection, duplicate claim-row rejection, trailing-byte
-  rejection, and domain capacity rejection.
+  combined public theorem trace PCS artifact verification, altered trace
+  rejection, unbound application PCS proof rejection, duplicate claim-row
+  rejection, trailing-byte rejection, and domain capacity rejection.
 
 Residual risk:
 
@@ -47,6 +53,9 @@ Residual risk:
 - The proof bundle is an ordered collection of existing single-polynomial PCS
   proofs. It is not a new batch PCS protocol and does not add cross-polynomial
   batching soundness claims.
+- The combined public theorem trace PCS artifact binds two public verification
+  surfaces in one artifact, but it is still public and non-ZK. It does not turn
+  the underlying PCS proof into an AIR proof.
 - The interpolation helper is intentionally simple and validation-oriented. A
   production large-trace compiler still needs a reviewed, tiled/interleaved
   construction path.

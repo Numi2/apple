@@ -39,6 +39,23 @@ final class ApplicationTheoremTests: XCTestCase {
         ])
     }
 
+    func testApplicationPublicTheoremTracePCSArtifactManifestRecordsTracePCSBundleScope() {
+        let manifest = ApplicationPublicTheoremTracePCSArtifactManifestV1.current
+        XCTAssertEqual(manifest.version, ApplicationPublicTheoremTracePCSArtifactManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, ApplicationPublicTheoremTracePCSArtifactManifestV1.artifactName)
+        XCTAssertTrue(manifest.includesPublicTheoremArtifact)
+        XCTAssertTrue(manifest.includesAIRTracePCSProofBundle)
+        XCTAssertTrue(manifest.verifiesEndToEndPublicTheorem)
+        XCTAssertTrue(manifest.verifiesTracePCSBundleAgainstAIRTrace)
+        XCTAssertTrue(manifest.requiresApplicationPCSProofInTraceBundle)
+        XCTAssertFalse(manifest.isSuccinctAIRGKRProof)
+        XCTAssertFalse(manifest.isZeroKnowledge)
+        XCTAssertEqual(manifest.openBoundaries, [
+            .succinctAIRGKRProof,
+            .zeroKnowledge,
+        ])
+    }
+
     func testWitnessLayoutProducesNamedAIRTrace() throws {
         let layout = try ApplicationWitnessLayoutV1(columns: [
             try ApplicationWitnessColumnV1(name: "next", values: [1, 2, 3]),
@@ -368,6 +385,120 @@ final class ApplicationTheoremTests: XCTestCase {
         var trailing = encodedArtifact
         trailing.append(0)
         XCTAssertThrowsError(try ApplicationPublicTheoremArtifactCodecV1.decode(trailing))
+    }
+
+    func testPublicTheoremTracePCSArtifactBindsTraceBundleAndApplicationPCSProof() throws {
+        let witness = try Self.fibonacciWitness()
+        let air = try Self.fibonacciAIRDefinition()
+        let gkrClaim = try Self.validGKRClaim()
+        let domain = try CircleDomainDescriptor.canonical(logSize: 6)
+        let parameterSet = try Self.smallPCSParameterSet()
+
+        let artifact = try ApplicationPublicTheoremTracePCSArtifactBuilderV1.prove(
+            applicationIdentifier: "apple-zk-prover.test.public-theorem-trace-pcs-artifact.v1",
+            witness: witness,
+            airDefinition: air,
+            gkrClaim: gkrClaim,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimRowIndices: [0, 3],
+            sumcheckRounds: 4
+        )
+
+        XCTAssertEqual(artifact.tracePCSProofBundle.witness.claimedRowIndices, [0, 3])
+        XCTAssertEqual(artifact.tracePCSProofBundle.chunks.count, 1)
+        XCTAssertEqual(
+            artifact.publicTheoremArtifact.statement.pcsStatement,
+            artifact.tracePCSProofBundle.chunks[0].statement
+        )
+        XCTAssertEqual(
+            artifact.publicTheoremArtifact.proof.pcsProof,
+            artifact.tracePCSProofBundle.chunks[0].proof
+        )
+
+        let report = try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verificationReport(artifact)
+        XCTAssertTrue(report.publicTheoremReport.publicSidecarTheoremVerified)
+        XCTAssertTrue(report.tracePCSBundleProofsVerify)
+        XCTAssertTrue(report.tracePCSBundleMatchesAIRTrace)
+        XCTAssertTrue(report.applicationPCSProofIsInTraceBundle)
+        XCTAssertTrue(report.verified)
+        XCTAssertFalse(report.isZeroKnowledge)
+        XCTAssertTrue(try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verify(artifact))
+
+        let encodedArtifact = try ApplicationPublicTheoremTracePCSArtifactCodecV1.encode(artifact)
+        let decodedArtifact = try ApplicationPublicTheoremTracePCSArtifactCodecV1.decode(encodedArtifact)
+        XCTAssertEqual(decodedArtifact, artifact)
+        XCTAssertEqual(
+            try ApplicationPublicTheoremTracePCSArtifactDigestV1.digest(decodedArtifact),
+            try ApplicationPublicTheoremTracePCSArtifactDigestV1.digest(artifact)
+        )
+        XCTAssertEqual(
+            try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verificationReport(
+                encodedArtifact: encodedArtifact
+            ),
+            report
+        )
+        XCTAssertTrue(try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verify(
+            encodedArtifact: encodedArtifact
+        ))
+
+        var trailing = encodedArtifact
+        trailing.append(0)
+        XCTAssertThrowsError(try ApplicationPublicTheoremTracePCSArtifactCodecV1.decode(trailing))
+
+        let trace = try WitnessToAIRTraceProducerV1.produce(witness: witness, for: air)
+        let mismatchedTrace = try WitnessToAIRTraceProducerV1.produce(witness: ApplicationWitnessTraceV1(columns: [
+            [1, 1, 2, 4],
+            [1, 2, 3, 5],
+        ]))
+        let mismatchedBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: mismatchedTrace,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimRowIndices: [0, 3]
+        )
+        XCTAssertNotEqual(
+            mismatchedBundle.witness,
+            try AIRTraceToCirclePCSWitnessV1.make(
+                trace: trace,
+                domain: domain,
+                claimRowIndices: [0, 3]
+            )
+        )
+        let mismatchedArtifact = try ApplicationPublicTheoremTracePCSArtifactV1(
+            publicTheoremArtifact: artifact.publicTheoremArtifact,
+            tracePCSProofBundle: mismatchedBundle
+        )
+        let mismatchedReport = try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verificationReport(
+            mismatchedArtifact
+        )
+        XCTAssertTrue(mismatchedReport.tracePCSBundleProofsVerify)
+        XCTAssertFalse(mismatchedReport.tracePCSBundleMatchesAIRTrace)
+        XCTAssertFalse(mismatchedReport.verified)
+
+        let externalPCSArtifact = try ApplicationPublicTheoremBuilderV1.prove(
+            applicationIdentifier: "apple-zk-prover.test.public-theorem-external-pcs.v1",
+            witness: witness,
+            airDefinition: air,
+            gkrClaim: gkrClaim,
+            pcsStatement: Self.pcsStatement(),
+            sumcheckRounds: 4
+        )
+        let unboundArtifact = try ApplicationPublicTheoremTracePCSArtifactV1(
+            publicTheoremArtifact: externalPCSArtifact,
+            tracePCSProofBundle: artifact.tracePCSProofBundle
+        )
+        let unboundReport = try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verificationReport(
+            unboundArtifact
+        )
+        XCTAssertTrue(unboundReport.tracePCSBundleMatchesAIRTrace)
+        XCTAssertFalse(unboundReport.applicationPCSProofIsInTraceBundle)
+        XCTAssertFalse(unboundReport.verified)
+
+        XCTAssertThrowsError(try ApplicationPublicTheoremTracePCSArtifactBuilderV1.assemble(
+            publicTheoremArtifact: externalPCSArtifact,
+            tracePCSProofBundle: artifact.tracePCSProofBundle
+        ))
     }
 
     func testApplicationPublicTheoremArtifactCorpusV1PinsCanonicalDigestsAndRejections() throws {

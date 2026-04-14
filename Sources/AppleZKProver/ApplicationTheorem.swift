@@ -80,6 +80,39 @@ public struct ApplicationPublicTheoremArtifactManifestV1: Equatable, Codable, Se
     }
 }
 
+public struct ApplicationPublicTheoremTracePCSArtifactManifestV1: Equatable, Codable, Sendable {
+    public static let currentVersion: UInt32 = 1
+    public static let artifactName = "ApplicationPublicTheoremTracePCSArtifactV1"
+    public static let current = ApplicationPublicTheoremTracePCSArtifactManifestV1()
+
+    public let version: UInt32
+    public let artifact: String
+    public let includesPublicTheoremArtifact: Bool
+    public let includesAIRTracePCSProofBundle: Bool
+    public let verifiesEndToEndPublicTheorem: Bool
+    public let verifiesTracePCSBundleAgainstAIRTrace: Bool
+    public let requiresApplicationPCSProofInTraceBundle: Bool
+    public let isSuccinctAIRGKRProof: Bool
+    public let isZeroKnowledge: Bool
+    public let openBoundaries: [ApplicationPublicTheoremArtifactOpenBoundaryV1]
+
+    public init() {
+        self.version = Self.currentVersion
+        self.artifact = Self.artifactName
+        self.includesPublicTheoremArtifact = true
+        self.includesAIRTracePCSProofBundle = true
+        self.verifiesEndToEndPublicTheorem = true
+        self.verifiesTracePCSBundleAgainstAIRTrace = true
+        self.requiresApplicationPCSProofInTraceBundle = true
+        self.isSuccinctAIRGKRProof = false
+        self.isZeroKnowledge = false
+        self.openBoundaries = [
+            .succinctAIRGKRProof,
+            .zeroKnowledge,
+        ]
+    }
+}
+
 public enum AIRTraceReferenceKindV1: UInt32, Codable, Sendable {
     case current = 0
     case next = 1
@@ -1381,6 +1414,194 @@ public enum ApplicationPublicTheoremBuilderV1 {
     }
 }
 
+public struct ApplicationPublicTheoremTracePCSArtifactV1: Equatable, Sendable {
+    public static let currentVersion: UInt32 = 1
+
+    public let version: UInt32
+    public let publicTheoremArtifact: ApplicationPublicTheoremArtifactV1
+    public let tracePCSProofBundle: AIRTraceCirclePCSProofBundleV1
+
+    public init(
+        version: UInt32 = currentVersion,
+        publicTheoremArtifact: ApplicationPublicTheoremArtifactV1,
+        tracePCSProofBundle: AIRTraceCirclePCSProofBundleV1
+    ) throws {
+        guard version == Self.currentVersion else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        self.version = version
+        self.publicTheoremArtifact = publicTheoremArtifact
+        self.tracePCSProofBundle = tracePCSProofBundle
+    }
+}
+
+public enum ApplicationPublicTheoremTracePCSArtifactBuilderV1 {
+    public static func prove(
+        applicationIdentifier: String,
+        witness: ApplicationWitnessTraceV1,
+        airDefinition: AIRDefinitionV1,
+        gkrClaim: GKRClaimV1,
+        domain: CircleDomainDescriptor,
+        parameterSet: CirclePCSFRIParameterSetV1 = .conservative128,
+        claimRowIndices: [Int]? = nil,
+        sumcheckRounds: Int? = nil
+    ) throws -> ApplicationPublicTheoremTracePCSArtifactV1 {
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: witness,
+            for: airDefinition
+        )
+        let tracePCSProofBundle = try AIRTraceCirclePCSProofBundleBuilderV1.prove(
+            trace: trace,
+            domain: domain,
+            parameterSet: parameterSet,
+            claimRowIndices: claimRowIndices
+        )
+        guard let primaryTracePCSChunk = tracePCSProofBundle.chunks.first else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        guard try AIRSemanticVerifierV1.verify(definition: airDefinition, trace: trace) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Public witness trace does not satisfy the AIR definition."
+            )
+        }
+        guard try GKRSemanticVerifierV1.verify(gkrClaim) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "GKR claim outputs do not match the supplied layered circuit."
+            )
+        }
+
+        let evaluations = try AIRToSumcheckReductionV1.paddedEvaluationVector(
+            definition: airDefinition,
+            trace: trace
+        )
+        let rounds = try sumcheckRounds ?? log2Exact(evaluations.count)
+        let sumcheckProof = try M31SumcheckProofBuilderV1.prove(
+            evaluations: evaluations,
+            rounds: rounds
+        )
+        let statement = try ApplicationProofStatementV1(
+            applicationIdentifier: applicationIdentifier,
+            witnessCommitmentDigest: ApplicationWitnessDigestV1.digest(witness),
+            airDefinitionDigest: AIRDefinitionDigestV1.digest(airDefinition),
+            gkrClaimDigest: GKRClaimDigestV1.digest(gkrClaim),
+            sumcheckStatement: sumcheckProof.statement,
+            pcsStatement: primaryTracePCSChunk.statement
+        )
+        let proof = try ApplicationProofBuilderV1.assemble(
+            statement: statement,
+            sumcheckProof: sumcheckProof,
+            pcsProof: primaryTracePCSChunk.proof
+        )
+        let publicTheoremArtifact = try ApplicationPublicTheoremBuilderV1.assemble(
+            statement: statement,
+            proof: proof,
+            witness: witness,
+            airDefinition: airDefinition,
+            gkrClaim: gkrClaim
+        )
+        return try assemble(
+            publicTheoremArtifact: publicTheoremArtifact,
+            tracePCSProofBundle: tracePCSProofBundle
+        )
+    }
+
+    public static func assemble(
+        publicTheoremArtifact: ApplicationPublicTheoremArtifactV1,
+        tracePCSProofBundle: AIRTraceCirclePCSProofBundleV1
+    ) throws -> ApplicationPublicTheoremTracePCSArtifactV1 {
+        let artifact = try ApplicationPublicTheoremTracePCSArtifactV1(
+            publicTheoremArtifact: publicTheoremArtifact,
+            tracePCSProofBundle: tracePCSProofBundle
+        )
+        guard try ApplicationPublicTheoremTracePCSArtifactVerifierV1.verify(artifact) else {
+            throw AppleZKProverError.correctnessValidationFailed(
+                "Application public theorem trace PCS artifact does not verify."
+            )
+        }
+        return artifact
+    }
+
+    private static func log2Exact(_ value: Int) throws -> Int {
+        guard value > 1,
+              value.nonzeroBitCount == 1 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        var remaining = value
+        var result = 0
+        while remaining > 1 {
+            remaining >>= 1
+            result += 1
+        }
+        return result
+    }
+}
+
+public struct ApplicationPublicTheoremTracePCSVerificationReportV1: Equatable, Sendable {
+    public let publicTheoremReport: ApplicationTheoremVerificationReportV1
+    public let tracePCSBundleProofsVerify: Bool
+    public let tracePCSBundleMatchesAIRTrace: Bool
+    public let applicationPCSProofIsInTraceBundle: Bool
+    public let isZeroKnowledge: Bool
+
+    public var verified: Bool {
+        publicTheoremReport.publicSidecarTheoremVerified &&
+            tracePCSBundleProofsVerify &&
+            tracePCSBundleMatchesAIRTrace &&
+            applicationPCSProofIsInTraceBundle
+    }
+}
+
+public enum ApplicationPublicTheoremTracePCSArtifactVerifierV1 {
+    public static func verificationReport(
+        _ artifact: ApplicationPublicTheoremTracePCSArtifactV1
+    ) throws -> ApplicationPublicTheoremTracePCSVerificationReportV1 {
+        let publicTheorem = artifact.publicTheoremArtifact
+        let publicTheoremReport = try ApplicationTheoremVerifierV1.verificationReport(
+            artifact: publicTheorem
+        )
+        let trace = try WitnessToAIRTraceProducerV1.produce(
+            witness: publicTheorem.witness,
+            for: publicTheorem.airDefinition
+        )
+        let expectedTracePCSWitness = try AIRTraceToCirclePCSWitnessV1.make(
+            trace: trace,
+            domain: artifact.tracePCSProofBundle.witness.domain,
+            claimRowIndices: artifact.tracePCSProofBundle.witness.claimedRowIndices
+        )
+        let bundleProofsVerify = try AIRTraceCirclePCSProofBundleVerifierV1.verify(
+            artifact.tracePCSProofBundle
+        )
+        let bundleMatchesTrace = expectedTracePCSWitness == artifact.tracePCSProofBundle.witness
+        let applicationPCSProofIsInTraceBundle = artifact.tracePCSProofBundle.chunks.contains { chunk in
+            chunk.statement == publicTheorem.statement.pcsStatement &&
+                chunk.proof == publicTheorem.proof.pcsProof
+        }
+        return ApplicationPublicTheoremTracePCSVerificationReportV1(
+            publicTheoremReport: publicTheoremReport,
+            tracePCSBundleProofsVerify: bundleProofsVerify,
+            tracePCSBundleMatchesAIRTrace: bundleMatchesTrace,
+            applicationPCSProofIsInTraceBundle: applicationPCSProofIsInTraceBundle,
+            isZeroKnowledge: false
+        )
+    }
+
+    public static func verificationReport(
+        encodedArtifact: Data
+    ) throws -> ApplicationPublicTheoremTracePCSVerificationReportV1 {
+        try verificationReport(
+            ApplicationPublicTheoremTracePCSArtifactCodecV1.decode(encodedArtifact)
+        )
+    }
+
+    public static func verify(_ artifact: ApplicationPublicTheoremTracePCSArtifactV1) throws -> Bool {
+        try verificationReport(artifact).verified
+    }
+
+    public static func verify(encodedArtifact: Data) throws -> Bool {
+        try verificationReport(encodedArtifact: encodedArtifact).verified
+    }
+}
+
 public struct ApplicationTheoremVerificationReportV1: Equatable, Sendable {
     public let componentReport: ApplicationProofVerificationReportV1
     public let witnessCommitmentDigestMatches: Bool
@@ -1943,6 +2164,60 @@ public enum ApplicationPublicTheoremArtifactCodecV1 {
             airDefinition: airDefinition,
             gkrClaim: gkrClaim
         )
+    }
+}
+
+public enum ApplicationPublicTheoremTracePCSArtifactCodecV1 {
+    private static let magic = Data([0x41, 0x5a, 0x4b, 0x50, 0x54, 0x50, 0x43, 0x31])
+
+    public static func encode(_ artifact: ApplicationPublicTheoremTracePCSArtifactV1) throws -> Data {
+        var data = Data()
+        data.append(magic)
+        CanonicalBinary.appendUInt32(artifact.version, to: &data)
+        try CanonicalBinary.appendLengthPrefixed(
+            try ApplicationPublicTheoremArtifactCodecV1.encode(artifact.publicTheoremArtifact),
+            to: &data
+        )
+        try CanonicalBinary.appendLengthPrefixed(
+            try AIRTraceCirclePCSProofBundleCodecV1.encode(artifact.tracePCSProofBundle),
+            to: &data
+        )
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> ApplicationPublicTheoremTracePCSArtifactV1 {
+        var reader = CanonicalByteReader(data)
+        guard try reader.readBytes(count: magic.count) == magic else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let version = try reader.readUInt32()
+        let publicTheoremArtifact = try ApplicationPublicTheoremArtifactCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        let tracePCSProofBundle = try AIRTraceCirclePCSProofBundleCodecV1.decode(
+            try reader.readLengthPrefixed()
+        )
+        try reader.finish()
+        return try ApplicationPublicTheoremTracePCSArtifactV1(
+            version: version,
+            publicTheoremArtifact: publicTheoremArtifact,
+            tracePCSProofBundle: tracePCSProofBundle
+        )
+    }
+}
+
+public enum ApplicationPublicTheoremTracePCSArtifactDigestV1 {
+    private static let domain = Data("AppleZKProver.ApplicationPublicTheoremTracePCSArtifact.V1".utf8)
+
+    public static func digest(_ artifact: ApplicationPublicTheoremTracePCSArtifactV1) throws -> Data {
+        var data = Data()
+        CanonicalBinary.appendUInt32(UInt32(domain.count), to: &data)
+        data.append(domain)
+        try CanonicalBinary.appendLengthPrefixed(
+            try ApplicationPublicTheoremTracePCSArtifactCodecV1.encode(artifact),
+            to: &data
+        )
+        return SHA3Oracle.sha3_256(data)
     }
 }
 
