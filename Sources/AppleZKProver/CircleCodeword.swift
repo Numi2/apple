@@ -330,6 +330,8 @@ public struct CircleCodewordPCSFRIResidentCommandPlanV1: Equatable, Codable, Sen
     public let coefficientInputs: [CircleCodewordPCSFRICoefficientInputV1]
     public let phases: [CircleCodewordPCSFRICommandPhaseV1]
     public let publicReadbacks: [CircleCodewordPCSFRIPublicReadbackV1]
+    public let codewordCommitmentSchedule: CirclePCSFRICodewordCommitmentScheduleV1
+    public let usesFusedTiledCodewordCommitment: Bool
     public let forbidsFullCodewordReadback: Bool
     public let forbidsIntermediateFRILayerReadback: Bool
     public let codewordElementCount: Int
@@ -343,6 +345,8 @@ public struct CircleCodewordPCSFRIResidentCommandPlanV1: Equatable, Codable, Sen
         coefficientInputs: [CircleCodewordPCSFRICoefficientInputV1],
         phases: [CircleCodewordPCSFRICommandPhaseV1],
         publicReadbacks: [CircleCodewordPCSFRIPublicReadbackV1],
+        codewordCommitmentSchedule: CirclePCSFRICodewordCommitmentScheduleV1,
+        usesFusedTiledCodewordCommitment: Bool,
         forbidsFullCodewordReadback: Bool,
         forbidsIntermediateFRILayerReadback: Bool,
         codewordElementCount: Int,
@@ -355,6 +359,8 @@ public struct CircleCodewordPCSFRIResidentCommandPlanV1: Equatable, Codable, Sen
               !coefficientInputs.isEmpty,
               phases == Self.canonicalPhases,
               publicReadbacks == Self.canonicalPublicReadbacks,
+              codewordCommitmentSchedule == .materializedCodewordThenCommit,
+              !usesFusedTiledCodewordCommitment,
               forbidsFullCodewordReadback,
               forbidsIntermediateFRILayerReadback,
               codewordElementCount > 1,
@@ -368,6 +374,8 @@ public struct CircleCodewordPCSFRIResidentCommandPlanV1: Equatable, Codable, Sen
         self.coefficientInputs = coefficientInputs
         self.phases = phases
         self.publicReadbacks = publicReadbacks
+        self.codewordCommitmentSchedule = codewordCommitmentSchedule
+        self.usesFusedTiledCodewordCommitment = usesFusedTiledCodewordCommitment
         self.forbidsFullCodewordReadback = forbidsFullCodewordReadback
         self.forbidsIntermediateFRILayerReadback = forbidsIntermediateFRILayerReadback
         self.codewordElementCount = codewordElementCount
@@ -812,6 +820,8 @@ public final class CircleCodewordPCSFRIProverV1: @unchecked Sendable {
             coefficientInputs: CircleCodewordPCSFRICoefficientInputV1.allCases,
             phases: CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPhases,
             publicReadbacks: CircleCodewordPCSFRIResidentCommandPlanV1.canonicalPublicReadbacks,
+            codewordCommitmentSchedule: .materializedCodewordThenCommit,
+            usesFusedTiledCodewordCommitment: false,
             forbidsFullCodewordReadback: true,
             forbidsIntermediateFRILayerReadback: true,
             codewordElementCount: domain.size,

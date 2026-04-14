@@ -66,6 +66,33 @@ public enum SHA3Oracle {
             }
             return challenges
         }
+
+        public func squeezeBytes(count: Int) throws -> Data {
+            guard count >= 0 else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            guard count > 0 else {
+                return Data()
+            }
+
+            let rate = SHA3Oracle.sha3_256Rate
+            var squeezeState = state
+            var output = Data()
+            output.reserveCapacity(count)
+            var byteIndex = 0
+
+            while output.count < count {
+                if byteIndex > 0, byteIndex.isMultiple(of: rate) {
+                    SHA3Oracle.keccakF1600(&squeezeState)
+                }
+
+                let laneIndex = (byteIndex % rate) >> 3
+                let laneByte = (byteIndex % rate) & 7
+                output.append(UInt8((squeezeState[laneIndex] >> UInt64(laneByte * 8)) & 0xff))
+                byteIndex += 1
+            }
+            return output
+        }
     }
 
     private static let roundConstants: [UInt64] = [

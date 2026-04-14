@@ -175,6 +175,131 @@ final class CircleDomainTests: XCTestCase {
         }
     }
 
+    func testCirclePCSArtifactManifestRecordsConservativeV1Boundary() {
+        let manifest = CirclePCSFRIArtifactManifestV1.current
+        XCTAssertEqual(manifest.version, CirclePCSFRIArtifactManifestV1.currentVersion)
+        XCTAssertEqual(manifest.artifact, CirclePCSFRIArtifactManifestV1.artifactName)
+        XCTAssertTrue(manifest.includesCirclePCS)
+        XCTAssertFalse(manifest.includesWitnessAIR)
+        XCTAssertFalse(manifest.includesSumcheck)
+        XCTAssertFalse(manifest.includesGKR)
+        XCTAssertTrue(manifest.supportsNonzeroGrinding)
+        XCTAssertFalse(manifest.residentWitnessToCircleFFTBasis)
+        XCTAssertEqual(manifest.codewordCommitmentSchedule, .materializedCodewordThenCommit)
+        XCTAssertEqual(manifest.openBoundaries, [
+            .witnessAIRToCircleFFTBasis,
+            .sumcheckGKRArtifactIntegration,
+            .fusedTiledCodewordCommitmentScheduling,
+        ])
+        XCTAssertFalse(manifest.openBoundaries.contains(.nonzeroGrinding))
+    }
+
+    func testCircleProofV1SupportsVerifierCheckedGrindingNonce() throws {
+        let domain = try CircleDomainDescriptor.canonical(logSize: 4)
+        let security = try CircleFRISecurityParametersV1(
+            logBlowupFactor: 2,
+            queryCount: 3,
+            foldingStep: 1,
+            grindingBits: 8
+        )
+        let publicInputs = try CirclePCSFRIPublicInputsV1(
+            publicInputDigest: Data((0..<32).map { UInt8(0xe0 + $0) })
+        )
+        let evaluations = Self.makeStableCircleEvaluations(count: domain.size)
+        let proof = try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: security,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )
+        let nonce = try XCTUnwrap(proof.grindingNonce)
+        let transcript = try CircleFRITranscriptV1.derive(proof: proof)
+
+        XCTAssertEqual(transcript.queryPairIndices.count, Int(security.queryCount))
+        XCTAssertTrue(try CirclePCSFRIProofVerifierV1.verify(proof: proof, publicInputs: publicInputs))
+        XCTAssertEqual(
+            try CirclePCSFRIProofCodecV1.decode(try CirclePCSFRIProofCodecV1.encode(proof)),
+            proof
+        )
+
+        XCTAssertThrowsError(try CircleFRITranscriptV1.derive(
+            domain: proof.domain,
+            securityParameters: security,
+            publicInputDigest: proof.publicInputDigest,
+            commitments: proof.commitments,
+            finalLayer: proof.finalLayer
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        XCTAssertThrowsError(try CirclePCSFRIProofV1(
+            domain: proof.domain,
+            securityParameters: security,
+            publicInputDigest: proof.publicInputDigest,
+            commitments: proof.commitments,
+            finalLayer: proof.finalLayer,
+            queries: proof.queries
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+
+        var rejectedTamperedNonce = false
+        var tamperedNonce = nonce &+ 1
+        for _ in 0..<512 {
+            let tamperedProof = try CirclePCSFRIProofV1(
+                domain: proof.domain,
+                securityParameters: proof.securityParameters,
+                publicInputDigest: proof.publicInputDigest,
+                commitments: proof.commitments,
+                finalLayer: proof.finalLayer,
+                queries: proof.queries,
+                grindingNonce: tamperedNonce
+            )
+            if !(try CirclePCSFRIProofVerifierV1.verify(proof: tamperedProof, publicInputs: publicInputs)) {
+                rejectedTamperedNonce = true
+                break
+            }
+            tamperedNonce &+= 1
+        }
+        XCTAssertTrue(rejectedTamperedNonce)
+
+        let parameterSet = try CirclePCSFRIParameterSetV1(
+            profileID: .conservative128,
+            logBlowupFactor: 4,
+            queryCount: 32,
+            grindingBits: 1,
+            targetSoundnessBits: 128
+        )
+        XCTAssertEqual(parameterSet.securityParameters.grindingBits, 1)
+        XCTAssertEqual(CirclePCSFRIParameterSetV1.conservative128.securityParameters.grindingBits, 0)
+
+        let locallyTooExpensiveSecurity = try CircleFRISecurityParametersV1(
+            logBlowupFactor: security.logBlowupFactor,
+            queryCount: security.queryCount,
+            foldingStep: security.foldingStep,
+            grindingBits: CircleFRIGrindingV1.maximumLocalSearchBits + 1
+        )
+        XCTAssertThrowsError(try CircleFRIProofBuilderV1.prove(
+            evaluations: evaluations,
+            domain: domain,
+            securityParameters: locallyTooExpensiveSecurity,
+            publicInputs: publicInputs,
+            roundCount: 2
+        )) { error in
+            XCTAssertEqual(error as? AppleZKProverError, .invalidInputLayout)
+        }
+    }
+
+    func testCircleFRIGrindingTargetChecksLeadingBits() {
+        XCTAssertTrue(CircleFRIGrindingV1.digestMeetsTarget(Data([0x80]), grindingBits: 0))
+        XCTAssertTrue(CircleFRIGrindingV1.digestMeetsTarget(Data([0x7f]), grindingBits: 1))
+        XCTAssertFalse(CircleFRIGrindingV1.digestMeetsTarget(Data([0x80]), grindingBits: 1))
+        XCTAssertTrue(CircleFRIGrindingV1.digestMeetsTarget(Data([0x00, 0x7f]), grindingBits: 9))
+        XCTAssertFalse(CircleFRIGrindingV1.digestMeetsTarget(Data([0x00, 0x80]), grindingBits: 9))
+        XCTAssertFalse(CircleFRIGrindingV1.digestMeetsTarget(Data([0x00]), grindingBits: 9))
+    }
+
     func testCircleFirstFoldProofBuilderVerifierAndTamperRejection() throws {
         let domain = try CircleDomainDescriptor.canonical(logSize: 4)
         let security = try CircleFRISecurityParametersV1(
@@ -1331,6 +1456,8 @@ final class CircleDomainTests: XCTestCase {
         )
         XCTAssertTrue(codewordProver.commandPlan.forbidsFullCodewordReadback)
         XCTAssertTrue(codewordProver.commandPlan.forbidsIntermediateFRILayerReadback)
+        XCTAssertEqual(codewordProver.commandPlan.codewordCommitmentSchedule, .materializedCodewordThenCommit)
+        XCTAssertFalse(codewordProver.commandPlan.usesFusedTiledCodewordCommitment)
         XCTAssertTrue(codewordProver.commandPlan.coefficientInputs.contains(.residentCircleFFTBasisBuffer))
         let proofResult = try codewordProver.proveVerified(polynomial: polynomial)
         XCTAssertEqual(proofResult.proof, expectedProof)

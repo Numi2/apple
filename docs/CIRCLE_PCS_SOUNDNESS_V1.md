@@ -55,10 +55,12 @@ implementation achieves exactly 128 bits against every adversary. It claims
 that the public verifier enforces this conservative profile and does not accept
 developer/test parameter choices as production statements.
 
-`grindingBits = 0` is intentional. The current proof format has no grinding
-nonce or proof-of-work check, so assigning nonzero grinding security would be an
-overclaim. The field remains present in `CircleFRISecurityParametersV1` for a
-future proof format that actually verifies grinding.
+`grindingBits = 0` is intentional for this production-facing profile. The V1
+proof format can verify nonzero grinding through an optional 8-byte nonce and a
+leading-zero SHA3 transcript target, but this profile does not assign grinding
+credit until that parameter choice receives separate review. Lower-level
+developer artifacts may use verifier-checked nonzero grinding; the public
+contract profile does not.
 
 ## FRI Argument
 
@@ -70,8 +72,8 @@ The verifier accepts only if all of the following hold:
 3. The number of committed layers equals `domain.logSize - logBlowupFactor`.
 4. The final layer has the profile terminal size and is constant.
 5. The transcript re-derives every folding challenge and query pair from the
-   domain, security parameters, public-input digest, Merkle commitments, and
-   final layer.
+   domain, security parameters, public-input digest, Merkle commitments, final
+   layer, and any required grinding nonce.
 6. Every sampled pair has valid SHA3-256 Merkle openings against the committed
    root for that layer.
 7. The first sampled fold uses the Circle inverse-`y` twiddle schedule for the
@@ -117,6 +119,13 @@ coefficient budget for the committed polynomial. A proof that is internally
 consistent under developer parameters can still be rejected by the contract.
 The checked-in corpus includes this rejection vector.
 
+`CirclePCSFRIArtifactManifestV1.current` is the code-level scope manifest for this
+boundary. It records that the artifact includes only the Circle PCS/FRI slice,
+does not include witness/AIR, sumcheck, or GKR output, does not produce Circle
+FFT-basis coefficients from a resident witness pipeline, does not use fused/tiled
+codeword-to-commitment scheduling, and supports verifier-checked nonzero
+grinding.
+
 ## Fiat-Shamir Binding
 
 `CircleFRITranscriptV1` uses SHA3-256 transcript frames. The verifier replays
@@ -133,15 +142,19 @@ The transcript binds:
 - structured public-input digest,
 - each Merkle commitment before the corresponding challenge,
 - final-layer bytes before query sampling,
+- an 8-byte grinding nonce and grinding target frame when `grindingBits > 0`,
 - query request count and initial pair-count range.
 
 QM31 challenges are squeezed by rejection-sampling four M31 limbs from the
 SHA3 transcript stream. Query pair indices are squeezed after final-layer
-binding and reduced modulo the initial pair count.
+binding, after any required grinding nonce has been absorbed and checked, and
+reduced modulo the initial pair count.
 
 The Fiat-Shamir use is modeled as a random oracle for:
 
 - per-round QM31 fold challenges,
+- grinding target checks for lower-level artifacts that request nonzero
+  `grindingBits`,
 - transcript-sampled query pair indices.
 
 The same SHA3-256 primitive is also used as a collision-resistant digest for
@@ -204,7 +217,7 @@ The following remain outside the V1 soundness claim:
 - witness/AIR/sumcheck/GKR output into Circle FFT-basis coefficients,
 - one combined final proof artifact that includes sumcheck/GKR and PCS data,
 - a reviewed end-to-end proof-system theorem for an application statement,
-- nonzero grinding,
+- a reviewed production profile that assigns nonzero grinding credit,
 - GPU-resident canonicality checks for private witness buffers,
 - fused/tiled codeword-to-commitment performance claims,
 - side-channel resistance on shared hardware,

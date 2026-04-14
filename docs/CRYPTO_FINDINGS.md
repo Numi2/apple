@@ -2,6 +2,42 @@
 
 This log records security-relevant implementation findings and the work completed to close them. It is not a production security audit.
 
+## 2026-04-14: V1 Scope Manifest And Grinding Nonce Support
+
+Finding:
+
+- The Circle V1 proof format serialized `grindingBits` and counted it in nominal security
+  bits, but the artifact initially had no nonce or proof-of-work predicate for the verifier
+  to check. The docs and production profile used `grindingBits = 0`, but lower-level
+  developer surfaces needed either fail-closed rejection or a verifier-checked nonce.
+- The remaining open boundaries were documented, but there was no code-level manifest that
+  made those non-capabilities machine-checkable.
+
+Work completed:
+
+- Added `CirclePCSFRIArtifactManifestV1.current`, which records that V1 includes the
+  Circle PCS/FRI slice and explicitly does not include witness/AIR, sumcheck, or GKR
+  output, resident witness-to-Circle-FFT-basis production, or fused/tiled
+  codeword-to-commitment scheduling.
+- Extended `CircleCodewordPCSFRIResidentCommandPlanV1` with an explicit
+  materialized-codeword-then-commit schedule and a `usesFusedTiledCodewordCommitment`
+  flag fixed to `false`.
+- Added V1 grinding nonce support: nonzero `grindingBits` require an encoded 8-byte nonce,
+  the transcript absorbs that nonce after the final layer and before query sampling, and
+  the verifier checks the leading-zero SHA3 target before accepting the proof.
+- Wired nonce search into the CPU proof builder and resident proof emitter. Local prover
+  search is capped by `CircleFRIGrindingV1.maximumLocalSearchBits`; the verifier checks
+  any valid encoded nonce independently.
+- Added regression tests for the manifest, grinding-nonce round trips, missing nonce
+  rejection, and tampered nonce rejection.
+
+Residual risk:
+
+- This deliberately does not implement witness/AIR/sumcheck/GKR integration, resident
+  witness-to-FFT-basis generation, or fused/tiled scheduling. The production-facing
+  `conservative128` profile still uses `grindingBits = 0`; assigning grinding credit to a
+  public profile remains separate parameter-review work.
+
 ## 2026-04-14: Production-Facing Circle PCS Contract, Parameters, And Corpus
 
 Finding:
@@ -22,7 +58,8 @@ Residual risk:
 
 - This is still the implemented Circle PCS/FRI slice, not a complete application proof system. Witness/AIR/sumcheck/GKR generation is not integrated into the final proof artifact.
 - The concrete profile has not received external cryptographic review or a mechanized theorem for exact 128-bit soundness.
-- Nonzero grinding remains unsupported by the proof format.
+- The production-facing profile still claims no grinding credit, even though lower-level
+  V1 artifacts can now carry verifier-checked grinding nonces.
 - The resident path still writes a full private codeword before commitment; fused/tiled codeword-to-commitment scheduling remains performance work.
 
 ## 2026-04-14: End-To-End Resident Circle Coefficient-To-Proof Boundary

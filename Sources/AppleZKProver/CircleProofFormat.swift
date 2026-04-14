@@ -157,6 +157,51 @@ public struct CircleFRISecurityParametersV1: Equatable, Sendable {
     }
 }
 
+public enum CirclePCSFRICodewordCommitmentScheduleV1: String, Codable, CaseIterable, Sendable {
+    case materializedCodewordThenCommit = "materialized-codeword-then-commit"
+}
+
+public enum CirclePCSFRIOpenBoundaryV1: String, Codable, CaseIterable, Sendable {
+    case witnessAIRToCircleFFTBasis = "witness-air-to-circle-fft-basis"
+    case sumcheckGKRArtifactIntegration = "sumcheck-gkr-artifact-integration"
+    case nonzeroGrinding = "nonzero-grinding"
+    case fusedTiledCodewordCommitmentScheduling = "fused-tiled-codeword-commitment-scheduling"
+}
+
+public struct CirclePCSFRIArtifactManifestV1: Equatable, Codable, Sendable {
+    public static let currentVersion: UInt32 = 1
+    public static let artifactName = "CirclePCSFRIProofV1"
+    public static let current = CirclePCSFRIArtifactManifestV1()
+
+    public let version: UInt32
+    public let artifact: String
+    public let includesCirclePCS: Bool
+    public let includesWitnessAIR: Bool
+    public let includesSumcheck: Bool
+    public let includesGKR: Bool
+    public let supportsNonzeroGrinding: Bool
+    public let residentWitnessToCircleFFTBasis: Bool
+    public let codewordCommitmentSchedule: CirclePCSFRICodewordCommitmentScheduleV1
+    public let openBoundaries: [CirclePCSFRIOpenBoundaryV1]
+
+    public init() {
+        self.version = Self.currentVersion
+        self.artifact = Self.artifactName
+        self.includesCirclePCS = true
+        self.includesWitnessAIR = false
+        self.includesSumcheck = false
+        self.includesGKR = false
+        self.supportsNonzeroGrinding = true
+        self.residentWitnessToCircleFFTBasis = false
+        self.codewordCommitmentSchedule = .materializedCodewordThenCommit
+        self.openBoundaries = [
+            .witnessAIRToCircleFFTBasis,
+            .sumcheckGKRArtifactIntegration,
+            .fusedTiledCodewordCommitmentScheduling,
+        ]
+    }
+}
+
 public struct CirclePCSFRIParameterSetV1: Equatable, Sendable {
     public enum ProfileID: String, Sendable {
         case conservative128 = "circle-pcs-fri-v1-conservative-128"
@@ -303,6 +348,7 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
     public let finalLayer: [QM31Element]
     public let queries: [CircleFRIQueryV1]
     public let claimedEvaluationOpenings: [CircleFRIValueOpeningV1]
+    public let grindingNonce: UInt64?
 
     public init(
         version: UInt32 = proofVersion,
@@ -313,13 +359,18 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
         commitments: [Data],
         finalLayer: [QM31Element],
         queries: [CircleFRIQueryV1],
-        claimedEvaluationOpenings: [CircleFRIValueOpeningV1] = []
+        claimedEvaluationOpenings: [CircleFRIValueOpeningV1] = [],
+        grindingNonce: UInt64? = nil
     ) throws {
         guard version == Self.proofVersion,
               transcriptVersion == Self.currentTranscriptVersion,
               domain.storageOrder == .circleDomainBitReversed,
               domain.isCanonical,
               securityParameters.foldingStep == 1,
+              Self.grindingNonceShapeIsValid(
+                securityParameters: securityParameters,
+                grindingNonce: grindingNonce
+              ),
               publicInputDigest.count == 32,
               !commitments.isEmpty,
               commitments.count <= Int(domain.logSize),
@@ -338,6 +389,7 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
         self.finalLayer = finalLayer
         self.queries = queries
         self.claimedEvaluationOpenings = claimedEvaluationOpenings
+        self.grindingNonce = grindingNonce
         try Self.validateQueryShape(
             queries: queries,
             domain: domain,
@@ -347,6 +399,16 @@ public struct CirclePCSFRIProofV1: Equatable, Sendable {
             claimedEvaluationOpenings,
             domain: domain
         )
+    }
+
+    private static func grindingNonceShapeIsValid(
+        securityParameters: CircleFRISecurityParametersV1,
+        grindingNonce: UInt64?
+    ) -> Bool {
+        guard securityParameters.grindingBits > 0 else {
+            return grindingNonce == nil
+        }
+        return grindingNonce != nil
     }
 
     private static func validateQueryShape(
@@ -448,11 +510,14 @@ public enum CirclePCSFRIProofCodecV1 {
                 try encodeOpening(layer.right, to: &data)
             }
         }
-        if !proof.claimedEvaluationOpenings.isEmpty {
+        if !proof.claimedEvaluationOpenings.isEmpty || proof.grindingNonce != nil {
             CanonicalBinary.appendUInt32(try checkedUInt32(proof.claimedEvaluationOpenings.count), to: &data)
             for opening in proof.claimedEvaluationOpenings {
                 try encodeOpening(opening, to: &data)
             }
+        }
+        if let grindingNonce = proof.grindingNonce {
+            CanonicalBinary.appendUInt64(grindingNonce, to: &data)
         }
         return data
     }
@@ -520,11 +585,15 @@ public enum CirclePCSFRIProofCodecV1 {
             ))
         }
         var claimedEvaluationOpenings: [CircleFRIValueOpeningV1] = []
+        var grindingNonce: UInt64?
         if !reader.isAtEnd {
             let openingCount = Int(try reader.readUInt32())
             claimedEvaluationOpenings.reserveCapacity(openingCount)
             for _ in 0..<openingCount {
                 claimedEvaluationOpenings.append(try decodeOpening(from: &reader))
+            }
+            if !reader.isAtEnd {
+                grindingNonce = try reader.readUInt64()
             }
         }
         try reader.finish()
@@ -537,7 +606,8 @@ public enum CirclePCSFRIProofCodecV1 {
             commitments: commitments,
             finalLayer: finalLayer,
             queries: queries,
-            claimedEvaluationOpenings: claimedEvaluationOpenings
+            claimedEvaluationOpenings: claimedEvaluationOpenings,
+            grindingNonce: grindingNonce
         )
     }
 
@@ -577,6 +647,38 @@ public struct CircleFRITranscriptV1Result: Equatable, Sendable {
     public let queryPairIndices: [Int]
 }
 
+public enum CircleFRIGrindingV1 {
+    public static let nonceByteCount = MemoryLayout<UInt64>.stride
+    public static let maximumLocalSearchBits: UInt32 = 20
+
+    public static func nonceBytes(_ nonce: UInt64) -> Data {
+        var data = Data()
+        data.reserveCapacity(nonceByteCount)
+        CanonicalBinary.appendUInt64(nonce, to: &data)
+        return data
+    }
+
+    public static func digestMeetsTarget(_ digest: Data, grindingBits: UInt32) -> Bool {
+        guard grindingBits <= UInt32(digest.count * 8) else {
+            return false
+        }
+        var remaining = Int(grindingBits)
+        var index = 0
+        while remaining >= 8 {
+            guard digest[index] == 0 else {
+                return false
+            }
+            index += 1
+            remaining -= 8
+        }
+        guard remaining > 0 else {
+            return true
+        }
+        let mask = UInt8(0xff) << UInt8(8 - remaining)
+        return (digest[index] & mask) == 0
+    }
+}
+
 public enum CircleFRITranscriptV1 {
     private static let domain = Data("AppleZKProver.CircleFRI.PCS.V1".utf8)
 
@@ -586,33 +688,23 @@ public enum CircleFRITranscriptV1 {
         publicInputDigest: Data,
         commitments: [Data],
         finalLayer: [QM31Element],
+        grindingNonce: UInt64? = nil,
         transcriptVersion: UInt32 = CirclePCSFRIProofV1.currentTranscriptVersion
     ) throws -> CircleFRITranscriptV1Result {
-        guard descriptor.storageOrder == .circleDomainBitReversed,
-              descriptor.isCanonical,
-              transcriptVersion == CirclePCSFRIProofV1.currentTranscriptVersion,
-              publicInputDigest.count == 32,
-              !commitments.isEmpty,
-              commitments.allSatisfy({ $0.count == 32 }),
-              !finalLayer.isEmpty else {
-            throw AppleZKProverError.invalidInputLayout
-        }
-        try QM31Field.validateCanonical(finalLayer)
-
-        var (transcript, challenges) = try prefixTranscriptAndChallenges(
+        var (transcript, challenges) = try transcriptAfterFinalLayer(
             descriptor: descriptor,
             securityParameters: securityParameters,
             publicInputDigest: publicInputDigest,
             commitments: commitments,
+            finalLayer: finalLayer,
             transcriptVersion: transcriptVersion
         )
 
-        let finalLayerBytes = QM31CanonicalEncoding.pack(finalLayer)
-        try transcript.absorb(finalLayerFrame(
-            elementCount: finalLayer.count,
-            byteCount: finalLayerBytes.count
-        ))
-        try transcript.absorb(finalLayerBytes)
+        try applyGrindingIfNeeded(
+            transcript: &transcript,
+            securityParameters: securityParameters,
+            grindingNonce: grindingNonce
+        )
         try transcript.absorb(queryFrame(
             queryCount: Int(securityParameters.queryCount),
             initialPairCount: descriptor.halfSize
@@ -651,8 +743,52 @@ public enum CircleFRITranscriptV1 {
             publicInputDigest: proof.publicInputDigest,
             commitments: proof.commitments,
             finalLayer: proof.finalLayer,
+            grindingNonce: proof.grindingNonce,
             transcriptVersion: proof.transcriptVersion
         )
+    }
+
+    public static func findGrindingNonce(
+        domain descriptor: CircleDomainDescriptor,
+        securityParameters: CircleFRISecurityParametersV1,
+        publicInputDigest: Data,
+        commitments: [Data],
+        finalLayer: [QM31Element],
+        transcriptVersion: UInt32 = CirclePCSFRIProofV1.currentTranscriptVersion
+    ) throws -> UInt64? {
+        guard securityParameters.grindingBits > 0 else {
+            return nil
+        }
+        guard securityParameters.grindingBits <= CircleFRIGrindingV1.maximumLocalSearchBits else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let (transcript, _) = try transcriptAfterFinalLayer(
+            descriptor: descriptor,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            transcriptVersion: transcriptVersion
+        )
+        var nonce: UInt64 = 0
+        while true {
+            var candidateTranscript = transcript
+            let digest = try absorbGrindingNonce(
+                into: &candidateTranscript,
+                grindingBits: securityParameters.grindingBits,
+                nonce: nonce
+            )
+            if CircleFRIGrindingV1.digestMeetsTarget(
+                digest,
+                grindingBits: securityParameters.grindingBits
+            ) {
+                return nonce
+            }
+            guard nonce < UInt64.max else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            nonce += 1
+        }
     }
 
     private static func prefixTranscriptAndChallenges(
@@ -688,6 +824,81 @@ public enum CircleFRITranscriptV1 {
             challenges.append(QM31Element(a: limbs[0], b: limbs[1], c: limbs[2], d: limbs[3]))
         }
         return (transcript, challenges)
+    }
+
+    private static func transcriptAfterFinalLayer(
+        descriptor: CircleDomainDescriptor,
+        securityParameters: CircleFRISecurityParametersV1,
+        publicInputDigest: Data,
+        commitments: [Data],
+        finalLayer: [QM31Element],
+        transcriptVersion: UInt32
+    ) throws -> (SHA3Oracle.TranscriptState, [QM31Element]) {
+        guard descriptor.storageOrder == .circleDomainBitReversed,
+              descriptor.isCanonical,
+              transcriptVersion == CirclePCSFRIProofV1.currentTranscriptVersion,
+              publicInputDigest.count == 32,
+              !commitments.isEmpty,
+              commitments.allSatisfy({ $0.count == 32 }),
+              !finalLayer.isEmpty else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        try QM31Field.validateCanonical(finalLayer)
+
+        var (transcript, challenges) = try prefixTranscriptAndChallenges(
+            descriptor: descriptor,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputDigest,
+            commitments: commitments,
+            transcriptVersion: transcriptVersion
+        )
+        let finalLayerBytes = QM31CanonicalEncoding.pack(finalLayer)
+        try transcript.absorb(finalLayerFrame(
+            elementCount: finalLayer.count,
+            byteCount: finalLayerBytes.count
+        ))
+        try transcript.absorb(finalLayerBytes)
+        return (transcript, challenges)
+    }
+
+    private static func applyGrindingIfNeeded(
+        transcript: inout SHA3Oracle.TranscriptState,
+        securityParameters: CircleFRISecurityParametersV1,
+        grindingNonce: UInt64?
+    ) throws {
+        guard securityParameters.grindingBits > 0 else {
+            guard grindingNonce == nil else {
+                throw AppleZKProverError.invalidInputLayout
+            }
+            return
+        }
+        guard let grindingNonce else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+        let digest = try absorbGrindingNonce(
+            into: &transcript,
+            grindingBits: securityParameters.grindingBits,
+            nonce: grindingNonce
+        )
+        guard CircleFRIGrindingV1.digestMeetsTarget(
+            digest,
+            grindingBits: securityParameters.grindingBits
+        ) else {
+            throw AppleZKProverError.invalidInputLayout
+        }
+    }
+
+    private static func absorbGrindingNonce(
+        into transcript: inout SHA3Oracle.TranscriptState,
+        grindingBits: UInt32,
+        nonce: UInt64
+    ) throws -> Data {
+        try transcript.absorb(try grindingFrame(
+            grindingBits: grindingBits,
+            nonceByteCount: CircleFRIGrindingV1.nonceByteCount
+        ))
+        try transcript.absorb(CircleFRIGrindingV1.nonceBytes(nonce))
+        return try transcript.squeezeBytes(count: 32)
     }
 
     static func headerFrame(transcriptVersion: UInt32) -> Data {
@@ -742,6 +953,13 @@ public enum CircleFRITranscriptV1 {
         var frame = baseFrame(type: 6)
         CanonicalBinary.appendUInt32(try checkedUInt32(queryCount), to: &frame)
         CanonicalBinary.appendUInt64(UInt64(try checkedNonNegative(initialPairCount)), to: &frame)
+        return frame
+    }
+
+    static func grindingFrame(grindingBits: UInt32, nonceByteCount: Int) throws -> Data {
+        var frame = baseFrame(type: 7)
+        CanonicalBinary.appendUInt32(grindingBits, to: &frame)
+        CanonicalBinary.appendUInt32(try checkedUInt32(nonceByteCount), to: &frame)
         return frame
     }
 
@@ -962,6 +1180,7 @@ public enum CircleFRIProofBuilderV1 {
               domain.isCanonical,
               evaluations.count == domain.size,
               securityParameters.foldingStep == 1,
+              securityParameters.grindingBits <= CircleFRIGrindingV1.maximumLocalSearchBits,
               roundCount > 0,
               roundCount <= Int(domain.logSize) else {
             throw AppleZKProverError.invalidInputLayout
@@ -1020,12 +1239,20 @@ public enum CircleFRIProofBuilderV1 {
             }
         }
         let finalLayer = current
-        let transcript = try CircleFRITranscriptV1.derive(
+        let grindingNonce = try CircleFRITranscriptV1.findGrindingNonce(
             domain: domain,
             securityParameters: securityParameters,
             publicInputDigest: publicInputs.publicInputDigest,
             commitments: commitments,
             finalLayer: finalLayer
+        )
+        let transcript = try CircleFRITranscriptV1.derive(
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            grindingNonce: grindingNonce
         )
         guard transcript.challenges == challenges else {
             throw AppleZKProverError.correctnessValidationFailed(
@@ -1050,7 +1277,8 @@ public enum CircleFRIProofBuilderV1 {
             commitments: commitments,
             finalLayer: finalLayer,
             queries: queries,
-            claimedEvaluationOpenings: claimedEvaluationOpenings
+            claimedEvaluationOpenings: claimedEvaluationOpenings,
+            grindingNonce: grindingNonce
         )
     }
 
@@ -1178,7 +1406,9 @@ public enum CirclePCSFRIProofVerifierV1 {
         }
         try QM31Field.validateCanonical(proof.finalLayer)
 
-        let transcript = try CircleFRITranscriptV1.derive(proof: proof)
+        guard let transcript = try? CircleFRITranscriptV1.derive(proof: proof) else {
+            return false
+        }
         guard transcript.challenges.count == proof.commitments.count,
               transcript.queryPairIndices.count == proof.queries.count else {
             return false

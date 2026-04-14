@@ -687,6 +687,9 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
         publicInputs: CirclePCSFRIPublicInputsV1,
         roundCount: Int
     ) throws {
+        guard securityParameters.grindingBits <= CircleFRIGrindingV1.maximumLocalSearchBits else {
+            throw AppleZKProverError.invalidInputLayout
+        }
         let foldPlan = try CircleFRIMerkleTranscriptFoldChainPlan(
             context: context,
             domain: domain,
@@ -770,12 +773,20 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
             finalLayerBuffer,
             count: outputCount
         )
-        let transcript = try CircleFRITranscriptV1.derive(
+        let grindingNonce = try CircleFRITranscriptV1.findGrindingNonce(
             domain: domain,
             securityParameters: securityParameters,
             publicInputDigest: publicInputs.publicInputDigest,
             commitments: commitments,
             finalLayer: finalLayer
+        )
+        let transcript = try CircleFRITranscriptV1.derive(
+            domain: domain,
+            securityParameters: securityParameters,
+            publicInputDigest: publicInputs.publicInputDigest,
+            commitments: commitments,
+            finalLayer: finalLayer,
+            grindingNonce: grindingNonce
         )
         let extracted = try queryExtractor.extractQueries(
             committedLayerBuffer: committedLayerBuffer,
@@ -788,7 +799,8 @@ public final class CirclePCSFRIResidentProverV1: @unchecked Sendable {
             publicInputDigest: publicInputs.publicInputDigest,
             commitments: commitments,
             finalLayer: finalLayer,
-            queries: extracted.queries
+            queries: extracted.queries,
+            grindingNonce: grindingNonce
         )
         let encodedProof = try CirclePCSFRIProofCodecV1.encode(proof)
         let end = DispatchTime.now()

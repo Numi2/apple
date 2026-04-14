@@ -129,9 +129,15 @@ Implemented today:
   `CirclePCSFRIParameterSetV1.conservative128` fixes the production-facing V1
   profile for this implemented slice, and `CirclePCSFRIContractVerifierV1`
   enforces that profile, the terminal final layer, exact round count, and
-  committed-polynomial semantics as the public verifier contract. The checked-in
-  corpus under `Tests/AppleZKProverTests/Resources/` pins canonical accepted
-  proof bytes and tamper/rejection vectors for that contract.
+  committed-polynomial semantics as the public verifier contract. V1 proof and
+  transcript surfaces support verifier-checked nonzero grinding through an
+  8-byte nonce, while the conservative public profile still claims no grinding
+  credit. `CirclePCSFRIArtifactManifestV1` records the implemented PCS slice
+  and the remaining non-capabilities: no witness/AIR, sum-check/GKR artifact
+  integration, resident witness-to-Circle-FFT basis pipeline, or fused/tiled
+  codeword-to-commitment schedule. The checked-in corpus under
+  `Tests/AppleZKProverTests/Resources/` pins canonical accepted proof bytes and
+  tamper/rejection vectors for that contract.
 - A chained QM31 radix-2 FRI fold plan that consumes one resident evaluation
   buffer plus concatenated per-round inverse-domain buffers, encodes every fold
   round into one command buffer, ping-pongs private scratch between intermediate
@@ -397,6 +403,9 @@ designed to be testable and conservative:
 - The current Circle PCS/FRI contract is scoped to the implemented
   coefficient-to-proof slice; witness/AIR/sumcheck/GKR integration and external
   cryptographic review remain open before any full proof-system security claim.
+- Lower-level V1 artifacts can carry verifier-checked nonzero grinding nonces,
+  but the conservative public profile still claims no grinding credit until a
+  reviewed parameter profile assigns it.
 
 See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) for assets, attacker model,
 trust boundaries, current guarantees, and pre-production review gates.
