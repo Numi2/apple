@@ -10,7 +10,8 @@ FRI fold layer, resident multi-layer Circle FRI fold chains with explicit or
 Circle V1 Merkle-transcript challenges, multi-layer CPU Circle FRI proof
 verification, Circle FFT codeword generation feeding resident PCS/FRI proof
 emission, a strict Circle PCS verifier contract for the implemented slice, and
-early M31 sum-check execution plus an application proof envelope that binds
+early M31 sum-check execution, CPU FIPS 205 SLH-DSA signing/verification, plus
+an application proof envelope that binds
 witness/AIR/GKR digests to verified M31 sum-check and Circle PCS components.
 
 The project is intentionally narrow, measured, and correctness-gated. It is not
@@ -26,6 +27,7 @@ round-trips.
 | Language and platform | Swift 6 package targeting macOS 14+ |
 | Accelerator | Metal compute kernels tuned for Apple GPU families |
 | Hashing | CPU SHA3-256 and Keccak-256 oracles; GPU fixed-rate SHA3-256 and Keccak-256 for `0...136` byte messages |
+| Signatures | CPU FIPS 205 SLH-DSA pure and pre-hash signing/verification for all 12 SHA2/SHAKE parameter sets, with structured key/signature parsing and verifier gadget descriptors |
 | Merkle commitments | GPU leaf hashing, fixed-rate lower treelets, GPU parent reduction, upper-tree fusion, final-root and requested-opening readback only |
 | Keccak-F1600 | Reusable scalar permutation plans plus opt-in Apple7+ simdgroup benchmarks |
 | M31/CM31/QM31 field lanes | CPU oracle plus reusable GPU M31 vector add, subtract, negate, multiply, square, inverse, and dot-product plans; CM31 vector add, subtract, negate, multiply, and square plans; QM31 vector add, subtract, negate, multiply, square, inverse, single-layer/chained radix-2 FRI fold plans with explicit, transcript-derived, or Merkle-bound transcript challenges, canonical Circle first-fold and multi-layer fold plans with explicit or Circle V1 Merkle-transcript challenges, Circle FFT codeword generation over `P(x) + yQ(x)` into resident buffers, a multi-layer CPU Circle FRI proof verifier, and a linear QM31 FRI proof/decommitment verifier |

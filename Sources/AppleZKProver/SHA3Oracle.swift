@@ -2,6 +2,8 @@ import Foundation
 
 public enum SHA3Oracle {
     public static let sha3_256Rate = 136
+    public static let shake128Rate = 168
+    public static let shake256Rate = 136
 
     public struct TranscriptState: Sendable {
         private var state: [UInt64]
@@ -136,6 +138,26 @@ public enum SHA3Oracle {
         sponge256(data, domainSuffix: 0x06)
     }
 
+    public static func sha3_224(_ data: Data) -> Data {
+        try! sponge(data, rate: 144, domainSuffix: 0x06, outputByteCount: 28)
+    }
+
+    public static func sha3_384(_ data: Data) -> Data {
+        try! sponge(data, rate: 104, domainSuffix: 0x06, outputByteCount: 48)
+    }
+
+    public static func sha3_512(_ data: Data) -> Data {
+        try! sponge(data, rate: 72, domainSuffix: 0x06, outputByteCount: 64)
+    }
+
+    public static func shake128(_ data: Data, outputByteCount: Int) throws -> Data {
+        try sponge(data, rate: shake128Rate, domainSuffix: 0x1f, outputByteCount: outputByteCount)
+    }
+
+    public static func shake256(_ data: Data, outputByteCount: Int) throws -> Data {
+        try sponge(data, rate: shake256Rate, domainSuffix: 0x1f, outputByteCount: outputByteCount)
+    }
+
     public static func sha3_256(oneBlock data: Data) throws -> Data {
         guard data.count <= sha3_256Rate else {
             throw AppleZKProverError.unsupportedOneBlockLength(data.count)
@@ -153,13 +175,19 @@ public enum SHA3Oracle {
     }
 
     static func sponge256(_ data: Data, domainSuffix: UInt8) -> Data {
+        try! sponge(data, rate: sha3_256Rate, domainSuffix: domainSuffix, outputByteCount: 32)
+    }
+
+    static func sponge(_ data: Data, rate: Int, domainSuffix: UInt8, outputByteCount: Int) throws -> Data {
+        guard rate > 0, rate <= 200, rate.isMultiple(of: 8), outputByteCount >= 0 else {
+            throw AppleZKProverError.invalidInputLayout
+        }
         var state = Array(repeating: UInt64(0), count: 25)
         let bytes = [UInt8](data)
-        let rate = sha3_256Rate
         var offset = 0
 
         while offset + rate <= bytes.count {
-            absorbBlock(bytes, offset: offset, into: &state)
+            absorbBlock(bytes, offset: offset, rate: rate, into: &state)
             keccakF1600(&state)
             offset += rate
         }
@@ -171,25 +199,33 @@ public enum SHA3Oracle {
         }
         tail[tailCount] ^= domainSuffix
         tail[rate - 1] ^= 0x80
-        absorbBlock(tail, offset: 0, into: &state)
+        absorbBlock(tail, offset: 0, rate: rate, into: &state)
         keccakF1600(&state)
 
-        var digest = Data(count: 32)
-        digest.withUnsafeMutableBytes { rawBuffer in
-            guard let out = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
-                return
+        var output = Data()
+        output.reserveCapacity(outputByteCount)
+        while output.count < outputByteCount {
+            let bytesToTake = min(rate, outputByteCount - output.count)
+            for byteIndex in 0..<bytesToTake {
+                let laneIndex = byteIndex >> 3
+                let laneByte = byteIndex & 7
+                output.append(UInt8((state[laneIndex] >> UInt64(laneByte * 8)) & 0xff))
             }
-            for lane in 0..<4 {
-                storeLittleEndian(state[lane], to: out.advanced(by: lane * 8))
+            if output.count < outputByteCount {
+                keccakF1600(&state)
             }
         }
-        return digest
+        return output
     }
 
     private static func absorbBlock(_ bytes: [UInt8], offset: Int, into state: inout [UInt64]) {
+        absorbBlock(bytes, offset: offset, rate: sha3_256Rate, into: &state)
+    }
+
+    private static func absorbBlock(_ bytes: [UInt8], offset: Int, rate: Int, into state: inout [UInt64]) {
         precondition(offset >= 0)
-        precondition(offset + sha3_256Rate <= bytes.count)
-        for lane in 0..<(sha3_256Rate / 8) {
+        precondition(offset + rate <= bytes.count)
+        for lane in 0..<(rate / 8) {
             var value: UInt64 = 0
             for shift in 0..<8 {
                 value |= UInt64(bytes[offset + lane * 8 + shift]) << UInt64(shift * 8)
